@@ -1,13 +1,21 @@
 /**
- * ESP32 Mesh Gateway Web Interface Client v3.1
+ * ESP32 Mesh Gateway Web Interface Client v3.2
  *
  * WS Inbound:  { type:"meta"|"update"|"discovered"|"pair_timeout"|"ap_config_ack"|
- *                     "gw_portal_starting"|"gw_factory_reset" }
- * WS Outbound: { type:"relay_cmd"|"pair_cmd"|"unpair_cmd"|"rename_node"|
- *                     "reboot_gw"|"reboot_node"|"set_ap_config"|
- *                     "start_wifi_portal"|"factory_reset"|"ping" }
+ *                     "gw_portal_starting"|"gw_factory_reset"|"gw_rebooting"|
+ *                     "auth_required"|"auth_ok"|"auth_fail"|"session_expired"|
+ *                     "web_creds_ack"|"node_settings" }
+ * WS Outbound: { type:"auth"|"relay_cmd"|"pair_cmd"|"unpair_cmd"|"rename_node"|
+ *                     "reboot_gw"|"reboot_node"|"set_ap_config"|"set_web_credentials"|
+ *                     "start_wifi_portal"|"factory_reset"|"node_settings_get"|
+ *                     "node_settings_set"|"ping" }
  */
 "use strict";
+
+// ── Auth state ────────────────────────────────────────────────────────────────
+let authToken        = null;  // session token (in-memory, cleared on page reload)
+let authRemToken     = null;  // remember-me token (persisted in localStorage)
+let webCredsJustSet  = false; // flag: user just set new web credentials
 
 // ── State ─────────────────────────────────────────────────────────────────────
 const nodes      = new Map();   // nodeId → NodeRecord
@@ -41,6 +49,7 @@ const $themeBtn = $("theme-btn");
 const $toast    = $("toast");
 const $gwReboot  = $("gw-reboot-btn");
 const $gwFactory = $("gw-factory-btn");
+const $logoutBtn = $("logout-btn");
 
 // ── Node Settings Modal ────────────────────────────────────────────────────────
 const $nsOverlay = $("nsettings-overlay");
@@ -104,13 +113,170 @@ $("sb-overlay").addEventListener("click", () => {
   $("sb-overlay").classList.remove("open");
 });
 
+// ── Auth ──────────────────────────────────────────────────────────────────────
+function showLoginScreen(infoMsg) {
+  const $overlay = $("login-overlay");
+  $overlay.style.display = "flex";
+  setLoginError("");
+  if (infoMsg) setLoginInfo(infoMsg);
+  // Focus username if empty, else password
+  const uEl = $("login-username");
+  const pEl = $("login-password");
+  setTimeout(() => (uEl.value ? pEl.focus() : uEl.focus()), 80);
+}
+
+function hideLoginScreen() {
+  $("login-overlay").style.display = "none";
+  setLoginError("");
+  setLoginInfo("");
+}
+
+function setLoginError(msg) {
+  const el = $("login-error");
+  el.textContent = msg;
+  el.style.display = msg ? "" : "none";
+}
+
+function setLoginInfo(msg) {
+  const el = $("login-info");
+  el.textContent = msg;
+  el.style.display = msg ? "" : "none";
+}
+
+async function doLogin() {
+  const username = $("login-username").value.trim();
+  const password = $("login-password").value;
+  const remember = $("login-remember").checked;
+
+  if (!username || !password) {
+    setLoginError("Please enter your username and password.");
+    return;
+  }
+
+  const btn = $("login-btn");
+  btn.disabled = true;
+  btn.textContent = "Signing in…";
+
+  try {
+    const resp = await fetch("/api/login", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ username, password, remember })
+    });
+    const data = await resp.json();
+
+    if (data.ok) {
+      authToken = data.token;
+      if (remember && data.remember_token) {
+        authRemToken = data.remember_token;
+        localStorage.setItem("gwRemToken", data.remember_token);
+      } else if (!remember) {
+        authRemToken = null;
+        localStorage.removeItem("gwRemToken");
+      }
+      setLoginError("");
+      $("login-password").value = "";
+      hideLoginScreen();
+      // If WS is already open send auth, else connect fresh
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        send({ type: "auth", token: authToken });
+      } else {
+        connect();
+      }
+    } else {
+      setLoginError(data.error || "Login failed. Please try again.");
+    }
+  } catch (e) {
+    setLoginError("Connection error. Please try again.");
+  } finally {
+    btn.disabled = false;
+    btn.innerHTML = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"
+        stroke-linecap="round" stroke-linejoin="round" width="16" height="16">
+      <path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4"/>
+      <polyline points="10 17 15 12 10 7"/>
+      <line x1="15" y1="12" x2="3" y2="12"/>
+    </svg> Sign In`;
+  }
+}
+
+async function doLogout() {
+  try { await fetch("/api/logout", { method: "POST" }); } catch (e) { /* ignore */ }
+  authToken    = null;
+  authRemToken = null;
+  localStorage.removeItem("gwRemToken");
+  if (ws) { ws.close(); ws = null; }
+  showLoginScreen();
+}
+
+// Called once on page load. Checks auth state and decides whether to show login
+// or connect the WebSocket.
+async function initAuth() {
+  // Load any stored remember-me token
+  const stored = localStorage.getItem("gwRemToken");
+  if (stored) authRemToken = stored;
+
+  try {
+    const resp = await fetch("/api/auth_check");
+    const data = await resp.json();
+
+    if (!data.credentials_set) {
+      // No credentials configured — open access
+      $logoutBtn.style.display = "none";
+      connect();
+      return;
+    }
+
+    // Credentials are configured
+    $logoutBtn.style.display = "";
+
+    if (data.authenticated) {
+      // Browser has a valid cookie; still need a token for WS auth.
+      // Use the remember token from localStorage if we have it.
+      if (!authToken && authRemToken) authToken = authRemToken;
+      connect();
+    } else if (authRemToken) {
+      // Cookie may have expired but we have a remember token in localStorage — try it.
+      authToken = authRemToken;
+      connect();
+    } else {
+      // Not authenticated, no fallback token → show login
+      showLoginScreen();
+    }
+  } catch (e) {
+    // Network error — still try connecting, WS will handle auth_required
+    connect();
+  }
+}
+
+// Set web credentials note helper
+function setWebCredsSaveNote(msg, cls) {
+  const el = $("web-creds-note");
+  if (!el) return;
+  el.textContent = msg;
+  el.className = "setting-save-note" + (cls ? " " + cls : "");
+}
+
 // ── WebSocket ─────────────────────────────────────────────────────────────────
+let authSentThisConnection = false;  // prevents double-auth when proactive send races auth_required
+
 function connect() {
   setWs("connecting");
   ws = new WebSocket(`ws://${location.host}/ws`);
 
-  ws.addEventListener("open",  () => setWs("live"));
-  ws.addEventListener("close", () => { setWs("error"); setTimeout(connect, 3000); });
+  ws.addEventListener("open", () => {
+    setWs("live");
+    authSentThisConnection = false;
+    // Send token proactively so auth completes before the server's auth_required arrives.
+    if (authToken) {
+      send({ type: "auth", token: authToken });
+      authSentThisConnection = true;
+    }
+  });
+  ws.addEventListener("close", () => {
+    setWs("error");
+    authSentThisConnection = false;
+    setTimeout(connect, 3000);
+  });
   ws.addEventListener("error", () => ws.close());
 
   ws.addEventListener("message", ({ data }) => {
@@ -118,6 +284,66 @@ function connect() {
     try { msg = JSON.parse(data); } catch { return; }
 
     switch (msg.type) {
+      // ── Auth messages ────────────────────────────────────────────────────
+      case "auth_required":
+        // Guard: if we already sent auth proactively this connection, the
+        // server's auth_required is just the racing connect-event message —
+        // ignore it to avoid authenticating the same client twice.
+        if (authSentThisConnection) break;
+        if (authToken) {
+          send({ type: "auth", token: authToken });
+          authSentThisConnection = true;
+        } else if (authRemToken) {
+          authToken = authRemToken;
+          send({ type: "auth", token: authToken });
+          authSentThisConnection = true;
+        } else {
+          showLoginScreen();
+        }
+        break;
+
+      case "auth_ok":
+        // Successfully authenticated — UI is already visible, nothing more needed
+        hideLoginScreen();
+        break;
+
+      case "auth_fail":
+        // Token rejected — clear stored tokens and force login
+        authToken    = null;
+        authRemToken = null;
+        localStorage.removeItem("gwRemToken");
+        showLoginScreen("Session expired or invalid. Please log in again.");
+        break;
+
+      case "session_expired":
+        // Server invalidated all sessions (e.g., new credentials were set or logout)
+        authToken    = null;
+        authRemToken = null;
+        localStorage.removeItem("gwRemToken");
+        if (webCredsJustSet) {
+          webCredsJustSet = false;
+          showLoginScreen("Credentials saved! Please log in with your new credentials.");
+        } else {
+          showLoginScreen("Your session has ended. Please log in again.");
+        }
+        break;
+
+      case "web_creds_ack":
+        if (msg.ok) {
+          webCredsJustSet = true;
+          setWebCredsSaveNote("✓ Credentials saved. Redirecting to login…", "ok");
+          showToast("✓ Web interface is now password-protected.", "success");
+          // Clear the form
+          const wu = $("web-user-input"), wp = $("web-pass-input"), wc = $("web-pass-confirm");
+          if (wu) wu.value = ""; if (wp) wp.value = ""; if (wc) wc.value = "";
+        } else {
+          setWebCredsSaveNote("✗ " + (msg.err || "Error saving credentials"), "err");
+          showToast("✗ " + (msg.err || "Could not save credentials"), "error");
+        }
+        const scBtn = $("save-web-creds-btn");
+        if (scBtn) scBtn.disabled = false;
+        break;
+
       case "node_settings":
         nodeSettings.set(msg.node_id, msg.settings || []);
         if (pendingSettingsFetches > 0) pendingSettingsFetches--;
@@ -202,6 +428,10 @@ function applyMeta(m) {
     fwVersion = m.fw_version;
     const sbFw = $("sb-fw");
     if (sbFw) sbFw.textContent = "Firmware v" + fwVersion;
+  }
+  // Show/hide logout button based on whether credentials are configured
+  if (m.credentials_set !== undefined) {
+    $logoutBtn.style.display = m.credentials_set ? "" : "none";
   }
   // Populate AP SSID field only when user isn't actively editing it
   if (m.ap_ssid && document.activeElement !== $apSsidInput) {
@@ -648,6 +878,47 @@ function saveApConfig() {
 
 $saveApBtn.addEventListener("click", saveApConfig);
 
+// ── Web interface credentials ─────────────────────────────────────────────────
+function saveWebCredentials() {
+  const user    = ($("web-user-input")    || {}).value?.trim()  || "";
+  const pass    = ($("web-pass-input")    || {}).value           || "";
+  const confirm = ($("web-pass-confirm")  || {}).value           || "";
+
+  if (user.length < 1 || user.length > 32) {
+    setWebCredsSaveNote("✗ Username must be 1–32 characters.", "err");
+    return;
+  }
+  if (pass.length < 4) {
+    setWebCredsSaveNote("✗ Password must be at least 4 characters.", "err");
+    return;
+  }
+  if (pass !== confirm) {
+    setWebCredsSaveNote("✗ Passwords do not match.", "err");
+    return;
+  }
+
+  showConfirm({
+    title: "Set Web Interface Credentials?",
+    body: `You are about to lock the web interface with a password.<br><br>
+           <strong>Username:</strong> ${esc(user)}<br><br>
+           Once set, the interface will lock immediately and you will need to
+           log in with these new credentials. <strong>There is no way to recover
+           a forgotten password</strong> — you would need to factory reset the
+           Gateway to regain access.`,
+    okLabel: "Set Credentials",
+    okClass: "confirm-ok-danger",
+    callback: () => {
+      const btn = $("save-web-creds-btn");
+      if (btn) btn.disabled = true;
+      setWebCredsSaveNote("Saving…");
+      send({ type: "set_web_credentials", username: user, password: pass });
+    }
+  });
+}
+
+const $saveWebCredsBtn = $("save-web-creds-btn");
+if ($saveWebCredsBtn) $saveWebCredsBtn.addEventListener("click", saveWebCredentials);
+
 // ── WiFi portal (change home-router network) ──────────────────────────────────
 function triggerWifiPortal() {
   showConfirm({
@@ -809,6 +1080,18 @@ function showToast(msg, type = "success") {
 }
 
 $gwReboot.addEventListener("click", sendGatewayReboot);
+
+// ── Login form ────────────────────────────────────────────────────────────────
+$("login-btn").addEventListener("click", doLogin);
+
+["login-username", "login-password"].forEach(id => {
+  $(id).addEventListener("keydown", e => { if (e.key === "Enter") doLogin(); });
+});
+
+// ── Logout button ─────────────────────────────────────────────────────────────
+$logoutBtn.addEventListener("click", () => {
+  doLogout();
+});
 
 // ── Delegated events ──────────────────────────────────────────────────────────
 document.addEventListener("click", e => {
@@ -977,4 +1260,4 @@ setInterval(() => {
 setInterval(() => send({ type: "ping" }), 20000);
 
 // ── Boot ──────────────────────────────────────────────────────────────────────
-connect();
+initAuth();

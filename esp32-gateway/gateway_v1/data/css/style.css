@@ -1,5 +1,5 @@
 /* ═══════════════════════════════════════════════════════════════════
-   ESP32 Mesh Gateway Web Interface Stylesheet v3.0
+   ESP32 Mesh Gateway Web Interface Stylesheet v3.1
    ═══════════════════════════════════════════════════════════════════ */
 
 @import url('https://fonts.googleapis.com/css2?family=Rajdhani:wght@500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
@@ -1461,3 +1461,278 @@ svg { display: block; }
   color: var(--amber);
   margin-bottom: .2rem;
 }
+
+/* ── Login Overlay ──────────────────────────────────────────────── */
+.login-overlay {
+  position: fixed;
+  inset: 0;
+  background: var(--bg);
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1.5rem;
+}
+
+.login-card {
+  background: var(--surface);
+  border: 1px solid var(--border-2);
+  border-radius: var(--radius);
+  width: 100%;
+  max-width: 430px;
+  padding: 2.4rem 2rem 1.8rem;
+  display: flex;
+  flex-direction: column;
+  gap: .9rem;
+  box-shadow: var(--shadow);
+  animation: slideModal .22s ease;
+}
+
+.login-brand {
+  display: flex;
+  align-items: center;
+  gap: .8rem;
+  margin-bottom: .1rem;
+}
+
+.login-brand-icon {
+  width: 42px; height: 42px;
+  color: var(--accent);
+  flex-shrink: 0;
+}
+
+.login-brand-main {
+  font-family: 'Rajdhani', sans-serif;
+  font-size: 1.15rem;
+  font-weight: 700;
+  color: var(--text);
+  letter-spacing: .07em;
+  line-height: 1.1;
+}
+
+.login-brand-sub {
+  font-family: 'Rajdhani', sans-serif;
+  font-size: .72rem;
+  font-weight: 600;
+  color: var(--accent);
+  letter-spacing: .12em;
+  margin-top: .05rem;
+}
+
+.login-title {
+  font-family: 'Rajdhani', sans-serif;
+  font-size: 1.5rem;
+  font-weight: 700;
+  color: var(--text);
+  letter-spacing: .04em;
+  margin-bottom: -.2rem;
+}
+
+.login-subtitle {
+  font-size: .82rem;
+  color: var(--text-muted);
+  margin-top: -.3rem;
+}
+
+.login-field {
+  display: flex;
+  flex-direction: column;
+  gap: .32rem;
+}
+
+.login-field label {
+  font-size: .74rem;
+  font-weight: 700;
+  color: var(--text-muted);
+  letter-spacing: .05em;
+  text-transform: uppercase;
+}
+
+.login-input {
+  width: 100%;
+  padding: .58rem .88rem;
+  background: var(--surface-2);
+  border: 1px solid var(--border-2);
+  border-radius: var(--radius-sm);
+  color: var(--text);
+  font-size: .9rem;
+  transition: border-color .15s, box-shadow .15s;
+  outline: none;
+}
+
+.login-input:focus {
+  border-color: var(--accent-border);
+  box-shadow: 0 0 0 3px var(--accent-dim);
+}
+
+.login-input::placeholder { color: var(--text-dim); }
+
+.login-remember {
+  display: flex;
+  align-items: center;
+}
+
+.login-cb-wrap {
+  display: flex;
+  align-items: center;
+  gap: .45rem;
+  font-size: .83rem;
+  color: var(--text-muted);
+  cursor: pointer;
+  user-select: none;
+}
+
+.login-cb-wrap input[type="checkbox"] { display: none; }
+
+.login-cb-box {
+  width: 16px; height: 16px;
+  border: 1.5px solid var(--border-2);
+  border-radius: 4px;
+  background: var(--surface-2);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  transition: background .15s, border-color .15s;
+  position: relative;
+}
+
+.login-cb-wrap input[type="checkbox"]:checked + .login-cb-box {
+  background: var(--accent);
+  border-color: var(--accent);
+}
+
+.login-cb-wrap input[type="checkbox"]:checked + .login-cb-box::after {
+  content: '';
+  position: absolute;
+  width: 4px; height: 7px;
+  border: 2px solid var(--bg);
+  border-top: none;
+  border-left: none;
+  transform: rotate(45deg) translate(0px, -1px);
+}
+
+.login-error {
+  background: var(--red-dim);
+  border: 1px solid var(--red-border);
+  color: var(--red);
+  border-radius: var(--radius-sm);
+  padding: .5rem .75rem;
+  font-size: .82rem;
+  line-height: 1.4;
+}
+
+.login-info {
+  background: var(--accent-dim);
+  border: 1px solid var(--accent-border);
+  color: var(--accent);
+  border-radius: var(--radius-sm);
+  padding: .5rem .75rem;
+  font-size: .82rem;
+  line-height: 1.4;
+}
+
+.login-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: .45rem;
+  width: 100%;
+  padding: .68rem 1.2rem;
+  background: var(--accent);
+  color: var(--bg);
+  border: none;
+  border-radius: var(--radius-sm);
+  font-size: .92rem;
+  font-weight: 700;
+  cursor: pointer;
+  transition: filter .15s, opacity .15s;
+  font-family: 'Rajdhani', sans-serif;
+  letter-spacing: .05em;
+  margin-top: .1rem;
+}
+
+.login-btn:hover:not(:disabled)  { filter: brightness(1.1); }
+.login-btn:active:not(:disabled) { filter: brightness(.92); }
+.login-btn:disabled { opacity: .5; cursor: not-allowed; }
+
+.login-note {
+  display: flex;
+  align-items: flex-start;
+  gap: .45rem;
+  font-size: .76rem;
+  color: var(--text-dim);
+  line-height: 1.45;
+  border-top: 1px solid var(--border);
+  padding-top: .8rem;
+  margin-top: .1rem;
+}
+
+.login-note svg { flex-shrink: 0; margin-top: .1rem; color: var(--amber); }
+
+/* ── Logout button (topbar) ─────────────────────────────────────── */
+.logout-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: .35rem;
+  padding: .3rem .72rem;
+  border-radius: var(--radius-pill);
+  border: 1px solid var(--border-2);
+  background: var(--surface-2);
+  color: var(--text-muted);
+  font-size: .76rem;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+  flex-shrink: 0;
+  transition: border-color .15s, color .15s, background .15s;
+  letter-spacing: .02em;
+}
+
+.logout-btn svg { width: 14px; height: 14px; flex-shrink: 0; }
+
+.logout-btn:hover {
+  border-color: var(--red-border);
+  color: var(--red);
+  background: var(--red-dim);
+}
+
+/* ── Settings warning box ───────────────────────────────────────── */
+.setting-warn-box {
+  display: flex;
+  align-items: flex-start;
+  gap: .5rem;
+  background: var(--amber-dim);
+  border: 1px solid var(--amber-border);
+  border-radius: var(--radius-sm);
+  padding: .65rem .85rem;
+  font-size: .8rem;
+  color: var(--amber);
+  line-height: 1.5;
+}
+
+.setting-warn-box strong { color: var(--amber); font-weight: 700; }
+
+/* Web creds save button — slightly different accent color to distinguish */
+.web-creds-save-color {
+  border-color: var(--blue-dim);
+  background: var(--blue-dim);
+  color: var(--blue);
+}
+[data-theme="light"] .web-creds-save-color {
+  border-color: var(--blue);
+  background: var(--blue-dim);
+}
+
+.web-creds-save-color:hover:not(:disabled) {
+  border-color: var(--blue);
+  filter: brightness(1.15);
+}
+
+/* Danger ok button variant for confirm modal */
+.confirm-ok-danger {
+  background: var(--red-dim) !important;
+  border-color: var(--red-border) !important;
+  color: var(--red) !important;
+}
+.confirm-ok-danger:hover { filter: brightness(1.15); }
