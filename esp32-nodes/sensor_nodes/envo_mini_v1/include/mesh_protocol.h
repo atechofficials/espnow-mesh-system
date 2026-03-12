@@ -1,0 +1,192 @@
+#pragma once
+/**
+ * mesh_protocol.h v2.0 —  Shared ESP-NOW message definitions
+ * Copy this file into the include/ folder of every node project.
+ *
+ * All structs are packed (no compiler padding) so that the raw byte
+ * layout is identical on every device, regardless of toolchain defaults.
+ */
+
+#include <stdint.h>
+
+// ─── Message Types ────────────────────────────────────────────────────────────
+typedef enum : uint8_t {
+    MSG_REGISTER      = 0x01,  // Node  → Master  : request registration / re-register after reboot
+    MSG_REGISTER_ACK  = 0x02,  // Master → Node   : assign ID + confirm channel
+    MSG_SENSOR_DATA   = 0x03,  // Node  → Master  : BMP280 readings
+    MSG_RELAY_CMD     = 0x04,  // Master → Node   : toggle a relay
+    MSG_RELAY_STATE   = 0x05,  // Node  → Master  : current relay bitmask
+    MSG_HEARTBEAT     = 0x06,  // Node  → Master  : keepalive
+    MSG_BEACON        = 0x07,  // Node  → broadcast: announce availability (pairing mode)
+    MSG_PAIR_CMD      = 0x08,  // Master → Node   : "connect to me on this channel"
+    MSG_UNPAIR_CMD    = 0x09,  // Master ↔ Node   : bidirectional disconnect + clear NVS
+    MSG_REBOOT_CMD    = 0x0A,  // Master → Node   : reboot the node remotely
+    MSG_SETTINGS_GET  = 0x0B,  // Master → Node   : request settings schema + current values
+    MSG_SETTINGS_DATA = 0x0C,  // Node  → Master  : settings schema + current values
+    MSG_SETTINGS_SET  = 0x0D,  // Master → Node   : update a single setting value
+} MeshMsgType;
+
+// ─── Node Types ───────────────────────────────────────────────────────────────
+typedef enum : uint8_t {
+    NODE_SENSOR = 0x01,
+    NODE_RELAY  = 0x02,
+} NodeType;
+
+// ─── Setting Types ────────────────────────────────────────────────────────────
+typedef enum : uint8_t {
+    SETTING_BOOL = 0x00,  // toggle — value is 0 or 1
+    SETTING_ENUM = 0x01,  // picker — value is option index 0..opt_count-1
+    SETTING_INT  = 0x02,  // number — value is i_min..i_max in i_step increments
+} SettingType;
+
+// ─── Settings Constants ───────────────────────────────────────────────────────
+// NODE_MAX_SETTINGS caps one ESP-NOW packet:
+//   sizeof(MeshHeader)+1 + NODE_MAX_SETTINGS×sizeof(SettingDef)
+//   = 3 + 1 + 4×55 = 224 bytes  (limit 250)
+#define NODE_MAX_SETTINGS    4   // max settings transmitted per packet
+#define SETTING_LABEL_LEN   12   // chars for human-readable label (incl. NUL)
+#define SETTING_OPT_MAXCOUNT 4   // max enum options per setting
+#define SETTING_OPT_LEN      8   // chars per enum option string (incl. NUL)
+
+// ─── Packed Structs ───────────────────────────────────────────────────────────
+#pragma pack(push, 1)
+
+// Common 3-byte header — every message starts with this.
+typedef struct {
+    MeshMsgType type;
+    uint8_t     node_id;    // 0 = unassigned (during pairing/registration)
+    NodeType    node_type;
+} MeshHeader;
+
+// ── MSG_REGISTER  (Node → Master) ────────────────────────────────────────────
+typedef struct {
+    MeshHeader hdr;
+    char       name[16];
+    char       fw_version[8];   // e.g. "1.2.0\0" — populated from FW_VERSION define
+} MsgRegister;
+
+// ── MSG_REGISTER_ACK  (Master → Node) ────────────────────────────────────────
+typedef struct {
+    MeshHeader hdr;
+    uint8_t    assigned_id;
+    uint8_t    channel;
+} MsgRegisterAck;
+
+// ── MSG_SENSOR_DATA  (Node → Master) ─────────────────────────────────────────
+typedef struct {
+    MeshHeader hdr;
+    float      temperature;
+    float      pressure;
+    uint32_t   uptime_sec;
+} MsgSensorData;
+
+// ── MSG_RELAY_CMD  (Master → Node) ────────────────────────────────────────────
+typedef struct {
+    MeshHeader hdr;
+    uint8_t    relay_index;
+    uint8_t    state;
+} MsgRelayCmd;
+
+// ── MSG_RELAY_STATE  (Node → Master) ──────────────────────────────────────────
+typedef struct {
+    MeshHeader hdr;
+    uint8_t    relay_mask;
+} MsgRelayState;
+
+// ── MSG_HEARTBEAT  (Node → Master) ────────────────────────────────────────────
+typedef struct {
+    MeshHeader hdr;
+    uint32_t   uptime_sec;
+} MsgHeartbeat;
+
+// ── MSG_BEACON  (Node → broadcast, pairing mode only) ────────────────────────
+// tx_channel: the WiFi channel this beacon was sent on.
+// Gateway uses this to add the node as a peer on the correct channel
+// so MSG_PAIR_CMD retries can reach it.
+typedef struct {
+    MeshHeader hdr;        // node_id=0, node_type=actual
+    char       name[16];
+    uint8_t    tx_channel;
+} MsgBeacon;
+
+// ── MSG_PAIR_CMD  (Master → Node) ─────────────────────────────────────────────
+// Sent when user clicks "Connect" on the gateway dashboard.
+// Node responds by switching channel and sending MSG_REGISTER.
+typedef struct {
+    MeshHeader hdr;
+    uint8_t    channel;
+} MsgPairCmd;
+
+// ── MSG_UNPAIR_CMD  (Master ↔ Node, bidirectional) ────────────────────────────
+// Master → Node : user clicked "Disconnect" in dashboard.
+// Node  → Master: user held pairing button 5 s.
+typedef struct {
+    MeshHeader hdr;
+} MsgUnpairCmd;
+
+// ── MSG_REBOOT_CMD  (Master → Node) ───────────────────────────────────────────
+// Sent when user clicks "Reboot" in the dashboard for a specific node.
+// Node calls ESP.restart() on receipt; it will re-register automatically via NVS.
+typedef struct {
+    MeshHeader hdr;
+} MsgRebootCmd;
+
+// ── SettingDef  (embedded in MSG_SETTINGS_DATA) ───────────────────────────────
+// Fixed-size descriptor for a single configurable setting.
+// Packed: 1+1+12+2+2+2+2+1+(4×8) = 55 bytes per entry.
+//
+//  BOOL : current = 0|1  (i_min/max/step and opts[] are unused)
+//  ENUM : current = selected option index 0..opt_count-1  (i_min/max/step unused)
+//  INT  : current is the live value; i_min/i_max/i_step define the allowed range
+typedef struct {
+    uint8_t     id;                                        // unique per-node ID (0–7)
+    SettingType type;                                      // BOOL / ENUM / INT
+    char        label[SETTING_LABEL_LEN];                  // display name
+    int16_t     current;                                   // current value
+    int16_t     i_min;                                     // INT only: minimum
+    int16_t     i_max;                                     // INT only: maximum
+    int16_t     i_step;                                    // INT only: step size
+    uint8_t     opt_count;                                 // ENUM only: # options
+    char        opts[SETTING_OPT_MAXCOUNT][SETTING_OPT_LEN]; // ENUM only: strings
+} SettingDef;   // 55 bytes packed
+
+// ── MSG_SETTINGS_GET  (Master → Node) ─────────────────────────────────────────
+// Gateway sends this after registration to request the node's settings schema.
+// Node must respond with MSG_SETTINGS_DATA.
+typedef struct {
+    MeshHeader hdr;
+} MsgSettingsGet;
+
+// ── MSG_SETTINGS_DATA  (Node → Master) ────────────────────────────────────────
+// Node sends its full settings schema + current values.
+// Only `count` entries in settings[] are valid; send exactly:
+//   sizeof(MeshHeader) + 1 + count * sizeof(SettingDef)  bytes.
+// Maximum packet: 3 + 1 + 4×55 = 224 bytes  (within 250-byte ESP-NOW limit).
+typedef struct {
+    MeshHeader hdr;
+    uint8_t    count;                        // number of valid entries (0..NODE_MAX_SETTINGS)
+    SettingDef settings[NODE_MAX_SETTINGS];  // only first `count` entries matter
+} MsgSettingsData;
+
+// ── MSG_SETTINGS_SET  (Master → Node) ─────────────────────────────────────────
+// Gateway sends this when the user changes a setting in the dashboard.
+// Node must apply, optionally persist, then echo back MSG_SETTINGS_DATA.
+typedef struct {
+    MeshHeader hdr;
+    uint8_t    id;     // SettingDef.id to update
+    int16_t    value;  // new value (bool:0/1, enum:index, int:value)
+} MsgSettingsSet;
+
+#pragma pack(pop)
+
+// ─── Shared Constants ─────────────────────────────────────────────────────────
+#define MESH_MAX_NODES          20
+#define MESH_MAX_RELAYS         4
+#define NODE_TIMEOUT_MS         35000UL     // if no message received within this time, node is considered offline (must be longer than HEARTBEAT_INTERVAL)
+#define HEARTBEAT_INTERVAL      30000UL
+#define SENSOR_INTERVAL         10000UL
+#define BEACON_INTERVAL         2000UL      // beacon broadcast period (pairing mode)
+#define PAIRING_TIMEOUT_MS      60000UL     // pairing mode auto-cancel
+#define DISCOVERED_TIMEOUT_MS   60000UL     // remove from discovered list (must survive full 13-ch beacon cycle ~26 s)
+#define PAIR_CMD_RETRY_MS       2000UL      // gateway PAIR_CMD retry interval
+#define PAIR_CMD_TIMEOUT_MS     30000UL     // gateway gives up pairing attempt

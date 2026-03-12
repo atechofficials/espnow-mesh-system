@@ -1,0 +1,10 @@
+# OS
+.DS_Store
+Thumbs.db
+
+# VS Code workspace files (personal)
+*.code-workspace
+
+# Claude workspace
+.claude/
+.claude_cache/

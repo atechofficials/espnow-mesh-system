@@ -1,0 +1,360 @@
+<!-- ESP32 Mesh Gateway Web Interface v3.1 -->
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>ESP32 Mesh Gateway</title>
+  <link rel="icon" type="image/svg+xml" href="/favicon.svg">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Rajdhani:wght@500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/css/style.css">
+</head>
+<body>
+
+  <div class="app" id="app">
+
+    <!-- ── Sidebar ─────────────────────────────────────────────── -->
+    <aside class="sidebar" id="sidebar">
+      <div class="sb-brand">
+        <svg class="sb-brand-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+          <circle cx="12" cy="5"  r="2.2"/>
+          <circle cx="5"  cy="19" r="2.2"/>
+          <circle cx="19" cy="19" r="2.2"/>
+          <line x1="12" y1="7.2" x2="5.9"  y2="16.9"/>
+          <line x1="12" y1="7.2" x2="18.1" y2="16.9"/>
+          <line x1="7"  y1="19"  x2="17"   y2="19"/>
+        </svg>
+        <div class="sb-brand-text">
+          <span class="sb-brand-main">ESP32</span>
+          <span class="sb-brand-sub">MESH GATEWAY</span>
+        </div>
+      </div>
+
+      <nav class="sb-nav">
+        <button class="sb-btn active" data-section="dashboard">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <rect x="3" y="3" width="7" height="9" rx="1"/><rect x="14" y="3" width="7" height="5" rx="1"/>
+            <rect x="3" y="16" width="7" height="5" rx="1"/><rect x="14" y="12" width="7" height="9" rx="1"/>
+          </svg>
+          <span>Dashboard</span>
+        </button>
+
+        <button class="sb-btn" data-section="nodes">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+            <circle cx="9" cy="7" r="3"/><circle cx="17" cy="10" r="2.5"/>
+            <path d="M2 20c0-3.3 3.1-6 7-6s7 2.7 7 6"/>
+            <path d="M22 20c0-2.2-2.2-4-5-4"/>
+          </svg>
+          <span>Connected Nodes</span>
+          <span class="sb-badge" id="nb-nodes">0</span>
+        </button>
+
+        <button class="sb-btn" data-section="available">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+            <circle cx="12" cy="12" r="2" fill="currentColor"/>
+            <path d="M16.24 7.76a6 6 0 0 1 0 8.49"/><path d="M7.76 7.76a6 6 0 0 0 0 8.49"/>
+            <path d="M20.49 3.51a12 12 0 0 1 0 16.97"/><path d="M3.51 3.51a12 12 0 0 0 0 16.97"/>
+          </svg>
+          <span>Available to Pair</span>
+          <span class="sb-badge pulse" id="nb-avail" style="display:none">0</span>
+        </button>
+
+        <button class="sb-btn" data-section="settings">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+            <circle cx="12" cy="12" r="3"/>
+            <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+          </svg>
+          <span>Settings</span>
+        </button>
+      </nav>
+
+      <footer class="sb-footer">
+        <div class="sb-footer-row">
+          <span class="sb-fw" id="sb-fw">Firmware v—</span>
+        </div>
+        <div class="sb-footer-row">
+          <span class="sb-dev">Developed by A-Tech Officials</span>
+        </div>
+        <a class="sb-gh" href="https://github.com/atechofficials" target="_blank" rel="noopener" title="GitHub">
+          <svg viewBox="0 0 24 24" fill="currentColor" width="14" height="14">
+            <path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.44 9.8 8.21 11.39.6.11.82-.26.82-.57v-2.23c-3.34.72-4.04-1.41-4.04-1.41-.54-1.38-1.33-1.75-1.33-1.75-1.09-.74.08-.73.08-.73 1.2.08 1.84 1.24 1.84 1.24 1.07 1.83 2.8 1.3 3.49 1 .1-.78.42-1.31.76-1.61-2.67-.3-5.47-1.34-5.47-5.93 0-1.31.47-2.38 1.24-3.22-.12-.3-.54-1.52.12-3.17 0 0 1.01-.32 3.3 1.23a11.5 11.5 0 0 1 3-.4c1.02.004 2.04.14 3 .4 2.28-1.55 3.29-1.23 3.29-1.23.66 1.65.24 2.87.12 3.17.77.84 1.23 1.91 1.23 3.22 0 4.61-2.81 5.62-5.48 5.92.43.37.81 1.1.81 2.22v3.29c0 .31.22.69.83.57C20.57 21.8 24 17.3 24 12 24 5.37 18.63 0 12 0z"/>
+          </svg>
+          GitHub
+        </a>
+      </footer>
+    </aside>
+
+    <!-- Sidebar overlay (mobile) -->
+    <div class="sb-overlay" id="sb-overlay"></div>
+
+    <!-- ── Main ──────────────────────────────────────────────────── -->
+    <div class="main-wrap">
+
+      <!-- Topbar -->
+      <header class="topbar">
+        <button class="topbar-menu" id="menu-btn" aria-label="Menu">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round">
+            <line x1="3" y1="6"  x2="21" y2="6"/>
+            <line x1="3" y1="12" x2="21" y2="12"/>
+            <line x1="3" y1="18" x2="21" y2="18"/>
+          </svg>
+        </button>
+
+        <div class="topbar-meta">
+          <span class="meta-chip"><span class="meta-lbl">IP</span><b id="m-ip">—</b></span>
+          <span class="meta-chip"><span class="meta-lbl">MAC</span><b id="m-mac">—</b></span>
+          <span class="meta-chip"><span class="meta-lbl">Ch</span><b id="m-ch">—</b></span>
+          <span class="meta-chip"><span class="meta-lbl">Up</span><b id="m-up">—</b></span>
+          <span class="meta-chip"><span class="meta-lbl">Nodes</span><b id="m-nd">0</b></span>
+        </div>
+
+        <button class="gw-reboot-btn" id="gw-reboot-btn" title="Reboot Gateway">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M21 12a9 9 0 1 1-9-9c2.52 0 4.93 1 6.74 2.74L21 8"/>
+            <path d="M21 3v5h-5"/>
+          </svg>
+          <span>Reboot GW</span>
+        </button>
+
+        <button class="gw-factory-btn" id="gw-factory-btn" title="Factory Reset Gateway">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+            <polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14H6L5 6"/>
+            <path d="M10 11v6"/><path d="M14 11v6"/>
+            <path d="M9 6V4h6v2"/>
+          </svg>
+          <span>Factory Reset</span>
+        </button>
+
+        <div class="ws-pill" id="ws-pill">
+          <span class="ws-dot"></span>
+          <span id="ws-label">Connecting</span>
+        </div>
+      </header>
+
+      <!-- Sections -->
+      <main class="content">
+
+        <!-- ── DASHBOARD ─────────────────────────────────────────── -->
+        <section class="sec active" id="sec-dashboard">
+          <div class="sec-hdr">
+            <h2>Dashboard</h2>
+            <p>Live sensor data and node controls</p>
+          </div>
+          <div class="node-grid" id="node-grid">
+            <div class="empty-state" id="dash-empty">
+              <div class="empty-glyph">⬡</div>
+              <p>No paired nodes</p>
+              <small>Go to <strong>Available to Pair</strong>, hold a node button for 3 s, then click Connect.</small>
+            </div>
+          </div>
+        </section>
+
+        <!-- ── CONNECTED NODES ────────────────────────────────────── -->
+        <section class="sec" id="sec-nodes">
+          <div class="sec-hdr">
+            <h2>Connected Nodes</h2>
+            <p>Rename, inspect, or disconnect paired nodes</p>
+          </div>
+          <div class="table-wrap">
+            <table class="data-table">
+              <thead>
+                <tr>
+                  <th style="width:56px">Status</th>
+                  <th>Name</th>
+                  <th style="width:80px">Type</th>
+                  <th>MAC Address</th>
+                  <th style="width:110px">Last Seen</th>
+                  <th style="width:240px">Actions</th>
+                </tr>
+              </thead>
+              <tbody id="nodes-tbody">
+                <tr id="nodes-empty-row">
+                  <td colspan="6"><div class="empty-state compact">No connected nodes.</div></td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </section>
+
+        <!-- ── AVAILABLE TO PAIR ──────────────────────────────────── -->
+        <section class="sec" id="sec-available">
+          <div class="sec-hdr">
+            <h2>Available to Pair</h2>
+            <p>Nodes currently in pairing mode — hold button 3 s to activate</p>
+          </div>
+          <div class="avail-list" id="avail-list">
+            <div class="empty-state" id="avail-empty">
+              <div class="empty-glyph">((·))</div>
+              <p>No nodes broadcasting</p>
+              <small>Hold a node's pairing button for 3 seconds to make it appear here.</small>
+            </div>
+          </div>
+        </section>
+
+        <!-- ── SETTINGS ───────────────────────────────────────────── -->
+        <section class="sec" id="sec-settings">
+          <div class="sec-hdr">
+            <h2>Settings</h2>
+            <p>Dashboard preferences, gateway network, and future integrations</p>
+          </div>
+
+          <div class="settings-grid">
+
+            <div class="settings-card">
+              <div class="settings-card-hdr">Appearance</div>
+              <div class="setting-row">
+                <div class="setting-info">
+                  <div class="setting-name">Interface Theme</div>
+                  <div class="setting-desc">Switch between dark and light mode</div>
+                </div>
+                <button class="theme-btn" id="theme-btn">
+                  <!-- Shows Light Button when Dark Theme is active -->
+                  <span class="theme-icon-dark">☀️ Light</span>
+                  <!-- Shows Dark Button when Light Theme is active -->
+                  <span class="theme-icon-light">🌙 Dark</span>
+                </button>
+              </div>
+            </div>
+
+            <!-- ── Gateway Network card ───────────────────────────────── -->
+            <div class="settings-card">
+              <div class="settings-card-hdr">Gateway Network</div>
+
+              <!-- Sub-section: AP config -->
+              <div class="settings-subsec-hdr">Setup Portal Access Point</div>
+              <p class="settings-subsec-desc">
+                These credentials are used when the gateway opens its own Wi-Fi hotspot for
+                initial setup or when switching networks.
+              </p>
+              <div class="setting-row-2">
+                <div class="setting-field">
+                  <label>AP Name (SSID)</label>
+                  <input type="text" class="setting-input" id="ap-ssid-input"
+                         placeholder="ESP32-Mesh-Setup" maxlength="32" autocomplete="off">
+                </div>
+                <div class="setting-field">
+                  <label>AP Password</label>
+                  <input type="password" class="setting-input" id="ap-pass-input"
+                         placeholder="8+ chars · blank = open AP" maxlength="63" autocomplete="new-password">
+                </div>
+              </div>
+              <div class="setting-save-row">
+                <button class="settings-save-btn" id="save-ap-btn">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" width="14" height="14">
+                    <path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/>
+                    <polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/>
+                  </svg>
+                  Save AP Config
+                </button>
+                <span class="setting-save-note" id="ap-save-note"></span>
+              </div>
+
+              <!-- Divider -->
+              <div class="settings-divider"></div>
+
+              <!-- Sub-section: Change home router network -->
+              <div class="settings-subsec-hdr">Home Router / Network</div>
+              <div class="setting-row">
+                <div class="setting-info">
+                  <div class="setting-name">Connect to Different Network</div>
+                  <div class="setting-desc">
+                    Opens the WiFiManager setup portal so you can select a different
+                    router or Wi-Fi access point. The gateway will restart and open
+                    a temporary Wi-Fi hotspot — connect your phone or PC to it and
+                    follow the captive portal to pick your network.
+                  </div>
+                </div>
+                <button class="settings-portal-btn" id="wifi-portal-btn">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" width="14" height="14">
+                    <path d="M5 12.55a11 11 0 0 1 14.08 0"/><path d="M1.42 9a16 16 0 0 1 21.16 0"/>
+                    <path d="M8.53 16.11a6 6 0 0 1 6.95 0"/><circle cx="12" cy="20" r="1" fill="currentColor"/>
+                  </svg>
+                  Change Network
+                </button>
+              </div>
+            </div>
+
+            <div class="settings-card">
+              <div class="settings-card-hdr">
+                MQTT Integration
+                <span class="soon-badge">COMING SOON</span>
+              </div>
+              <div class="setting-field">
+                <label>Broker Address</label>
+                <input type="text" class="setting-input" placeholder="192.168.1.100" disabled>
+              </div>
+              <div class="setting-row-2">
+                <div class="setting-field">
+                  <label>Port</label>
+                  <input type="number" class="setting-input" placeholder="1883" disabled>
+                </div>
+                <div class="setting-field">
+                  <label>Base Topic</label>
+                  <input type="text" class="setting-input" placeholder="esp32/mesh" disabled>
+                </div>
+              </div>
+              <div class="setting-row-2">
+                <div class="setting-field">
+                  <label>Username</label>
+                  <input type="text" class="setting-input" placeholder="optional" disabled>
+                </div>
+                <div class="setting-field">
+                  <label>Password</label>
+                  <input type="password" class="setting-input" placeholder="optional" disabled>
+                </div>
+              </div>
+              <p class="setting-note">⚠ MQTT support will be added in a future firmware update.</p>
+            </div>
+
+          </div>
+        </section>
+
+      </main>
+    </div>
+  </div><!-- end .app -->
+
+  <!-- ── Info / Edit Modal ──────────────────────────────────────── -->
+  <div class="modal-overlay" id="modal-overlay" style="display:none">
+    <div class="modal" id="modal" role="dialog" aria-modal="true">
+      <div class="modal-hdr">
+        <span class="modal-title" id="modal-title">Node Details</span>
+        <button class="modal-close" id="modal-close" aria-label="Close">✕</button>
+      </div>
+      <div class="modal-body" id="modal-body"></div>
+    </div>
+  </div>
+
+  <!-- ── Node Settings Modal ──────────────────────────────────── -->
+  <div class="modal-overlay" id="nsettings-overlay" style="display:none" role="dialog" aria-modal="true">
+    <div class="modal nsettings-modal" id="nsettings-modal">
+      <div class="modal-hdr">
+        <span class="modal-title" id="nsettings-title">Node Settings</span>
+        <button class="modal-close" id="nsettings-close" aria-label="Close">✕</button>
+      </div>
+      <div class="nsettings-body" id="nsettings-body">
+        <!-- Dynamically populated by JS -->
+      </div>
+    </div>
+  </div>
+
+  <!-- ── Confirm Modal (for destructive / irreversible actions) ─ -->
+  <div class="confirm-overlay" id="confirm-overlay" style="display:none" role="dialog" aria-modal="true">
+    <div class="confirm-modal" id="confirm-modal">
+      <div class="confirm-icon" id="confirm-icon">⚠️</div>
+      <div class="confirm-title" id="confirm-title">Are you sure?</div>
+      <div class="confirm-body" id="confirm-body"></div>
+      <div class="confirm-actions">
+        <button class="confirm-cancel-btn" id="confirm-cancel-btn">Cancel</button>
+        <button class="confirm-ok-btn" id="confirm-ok-btn">Confirm</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── Pair timeout toast ─────────────────────────────────────── -->
+  <div class="toast" id="toast" style="display:none"></div>
+
+  <script src="/js/app.js"></script>
+</body>
+</html>

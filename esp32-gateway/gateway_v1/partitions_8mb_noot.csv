@@ -1,0 +1,19 @@
+# ESP32-S3  8MB Flash  —  No OTA  (single factory app + large LittleFS)
+#
+# Offset calculation:
+#   nvs       0x009000 → 0x00DFFF   (  20 KB)
+#   phy_init  0x00E000 → 0x00EFFF   (   4 KB)
+#   factory   0x010000 → 0x3FFFFF   (3968 KB  ~3.9 MB)
+#   littlefs  0x400000 → 0x7EFFFF   (3968 KB  ~3.9 MB)
+#   coredump  0x7F0000 → 0x7FFFFF   (  64 KB)
+#
+# SubType "spiffs" is the standard slot for both SPIFFS and LittleFS.
+# The actual filesystem used is selected at build time via:
+#   board_build.filesystem = littlefs   (in platformio.ini)
+
+# Name,     Type,  SubType,  Offset,    Size,    Flags
+nvs,        data,  nvs,      0x9000,    0x5000,
+phy_init,   data,  phy,      0xe000,    0x1000,
+factory,    app,   factory,  0x10000,   0x3F0000,
+spiffs,   data,  spiffs,   0x400000,  0x3F0000,
+coredump,   data,  coredump, 0x7F0000,  0x10000,
