@@ -1,9 +1,9 @@
 # Envo Mini V1 Node
 
-Firmware version: **1.3.0**
+Firmware version: **2.0.0**
 Target board: `dfrobot_firebeetle2_esp32e`
 
-Reads temperature and barometric pressure from a **Bosch BMP280** sensor over I²C and transmits the readings to the gateway every configurable interval over ESP-NOW.
+Reads temperature and barometric pressure from a **Bosch BMP280**, humidity from a **DHT22**, and ambient light level from a **TEMT6000** phototransistor. Transmits all readings to the gateway over ESP-NOW at a configurable interval using the v3.0 schema-driven sensor protocol — the node self-describes its sensors to the gateway at pair time, so no gateway changes are needed when sensors are added or removed.
 
 ---
 
@@ -12,12 +12,15 @@ Reads temperature and barometric pressure from a **Bosch BMP280** sensor over I�
 | Item | Detail |
 |------|--------|
 | Board | DFRobot Firebeetle 2 ESP32-E |
-| Sensor | Bosch BMP280 (temperature + pressure) |
-| Sensor interface | I²C |
+| Sensor 1 | Bosch BMP280 (temperature + pressure), I²C |
+| Sensor 2 | DHT22 (humidity), single-wire |
+| Sensor 3 | TEMT6000 phototransistor module (ambient light), ADC |
 | Status LED | WS2812B on GPIO 5 |
 | Pairing button | GPIO 27 (active-LOW, internal pull-up) |
 
-### Wiring (BMP280 breakout → Firebeetle 2)
+### Wiring
+
+**BMP280 breakout → Firebeetle 2**
 
 | BMP280 Pin | Firebeetle 2 Pin |
 |------------|-----------------|
@@ -27,6 +30,26 @@ Reads temperature and barometric pressure from a **Bosch BMP280** sensor over I�
 | SCL | GPIO 22 |
 
 The BMP280 I²C address is auto-detected (tries `0x76` then `0x77`).
+
+**DHT22 → Firebeetle 2**
+
+| DHT22 Pin | Firebeetle 2 Pin |
+|-----------|-----------------|
+| VCC | 3V3 |
+| GND | GND |
+| DATA | GPIO 16 |
+
+**TEMT6000 module → Firebeetle 2**
+
+| TEMT6000 Pin | Firebeetle 2 Pin |
+|--------------|-----------------|
+| VCC | 3V3 |
+| GND | GND |
+| SIG | GPIO 36 (ADC1_CH0) |
+
+The TEMT6000 module has an on-board 10K emitter resistor, so the signal pin is always actively driven and does not require an external pull-down.
+
+> **Note:** GPIO 36 on the ESP32 is an input-only pin. The firmware works around a known ESP32 hardware issue where ADC readings are corrupted during ESP-NOW transmissions by collecting 64 samples per reading cycle and discarding zero-valued samples before averaging.
 
 ---
 
@@ -39,6 +62,7 @@ Managed automatically by PlatformIO via `platformio.ini`:
 | Adafruit BMP280 Library | 2.6.8 |
 | Adafruit Unified Sensor | 1.1.15 |
 | Adafruit NeoPixel | 1.15.4 |
+| DHT sensor library | 1.4.6 |
 
 Framework libraries used directly: `Preferences`, `WiFi`, `Wire`.
 
@@ -53,6 +77,8 @@ Change these defines before flashing:
 | `NODE_NAME` | `"BMP280-Node-1"` | Display name shown in the dashboard (max 15 chars) |
 | `BMP_I2C_SDA` | `21` | I²C SDA GPIO |
 | `BMP_I2C_SCL` | `22` | I²C SCL GPIO |
+| `DHT_PIN` | `16` | DHT22 data GPIO |
+| `TEMT6000_PIN` | `36` | TEMT6000 ADC GPIO |
 | `PAIR_BTN_PIN` | `27` | Pairing button GPIO (active-LOW) |
 | `LED_PIN` | `5` | WS2812B data GPIO |
 
@@ -62,7 +88,7 @@ When deploying multiple nodes, give each a unique `NODE_NAME`.
 
 ## Build & Flash
 
-From the `bmp280_sensor/` directory:
+From the node project directory:
 
 ```bash
 # First time — erase flash for a clean start
@@ -88,6 +114,23 @@ No LittleFS upload is needed for sensor nodes (no web assets).
 5. The gateway detects the beacon and completes the handshake automatically
 6. The LED turns solid green — the node is now paired and transmitting
 
+At pair time the node sends its sensor schema to the gateway. The gateway and dashboard adapt automatically — no configuration required on the gateway side.
+
+---
+
+## Sensor Schema
+
+The node reports the following sensors. Only sensors that initialise successfully at boot are included in the schema.
+
+| ID | Label | Unit | Source |
+|----|-------|------|--------|
+| 0 | Temperature | °C or °F | BMP280 |
+| 1 | Atmospheric Pressure | hPa | BMP280 |
+| 2 | Humidity | % | DHT22 |
+| 3 | Ambient Light | % | TEMT6000 |
+
+The light level is scaled logarithmically to match perceptual brightness — a well-lit room reads approximately 40–60% at default sensitivity.
+
 ---
 
 ## Per-Node Settings
@@ -99,12 +142,14 @@ These settings are configurable from the dashboard (Gateway → Connected Nodes 
 | Temp Unit | Enum | °C | °C / °F |
 | Send Intvl | Integer | 10 s | 5–60 s (step 5) |
 | Status LED | Bool | On | On / Off |
+| Light Sens | Integer | 5 | 1–10 (step 1) |
 
 Settings are persisted in NVS under the namespace `"nodeconf"` — separate from pairing data, so a factory reset of the gateway does **not** wipe node settings.
 
-Changing **Temp Unit** affects the value transmitted to the gateway; the conversion happens on the node before transmission.
-Changing **Send Intvl** takes effect immediately — no reboot required.
-Disabling **Status LED** turns off the WS2812B except during pairing and boot sequences.
+- Changing **Temp Unit** affects the value transmitted; conversion happens on the node before transmission. The sensor schema unit label updates automatically.
+- Changing **Send Intvl** takes effect immediately — no reboot required.
+- Disabling **Status LED** turns off the WS2812B except during pairing and boot sequences.
+- **Light Sens** shifts the entire brightness curve up or down. Lower values make the sensor less responsive (useful in very bright environments); higher values increase sensitivity in dim conditions.
 
 ---
 
@@ -119,10 +164,13 @@ Default baud rate: **115200**. Log prefixes:
 | Prefix | Meaning |
 |--------|---------|
 | `[BOOT]` | Startup sequence |
-| `[BMP]` | Sensor read + transmit result |
+| `[BMP]` | BMP280 initialisation result |
+| `[DHT]` | DHT22 initialisation result |
+| `[TEMT]` | TEMT6000 ADC initialisation result |
+| `[SENS]` | Sensor schema transmit and per-cycle reading results |
 | `[PAIR]` | Pairing handshake steps |
-| `[CFG]` | Settings load/save/apply |
-| `[NVS]` | NVS read/write |
+| `[CFG]` | Settings load / save / apply |
+| `[NVS]` | NVS read / write |
 | `[MESH]` | Gateway-loss detection and re-registration |
 | `[ESP-NOW]` | TX result callbacks |
 
@@ -133,4 +181,4 @@ Default baud rate: **115200**. Log prefixes:
 | Namespace | Contents |
 |-----------|----------|
 | `"mesh"` | Pairing data (gateway MAC, channel, node ID) — cleared by factory reset |
-| `"nodeconf"` | Node settings (temp unit, send interval, LED enable) — **not** cleared by factory reset |
+| `"nodeconf"` | Node settings (temp unit, send interval, LED enable, light sensitivity) — **not** cleared by factory reset |

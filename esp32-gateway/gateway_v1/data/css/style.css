@@ -1,5 +1,5 @@
 /* ═══════════════════════════════════════════════════════════════════
-   ESP32 Mesh Gateway Web Interface Stylesheet v3.1
+   ESP32 Mesh Gateway Web Interface Stylesheet v3.2
    ═══════════════════════════════════════════════════════════════════ */
 
 @import url('https://fonts.googleapis.com/css2?family=Rajdhani:wght@500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
@@ -527,6 +527,14 @@ svg { display: block; }
 
 .val-temp { color: var(--amber); font-size: .95rem !important; font-weight: 700 !important; }
 .val-pres { color: var(--blue); }
+
+/* Generic sensor card helpers — used by the schema-driven buildSensorRows() */
+.val-uptime { color: var(--text-muted); font-size: .78rem !important; }
+.val-muted  { color: var(--text-muted); font-style: italic; font-size: .78rem !important; }
+
+/* Loading placeholder row shown while waiting for sensor schema */
+.sensor-loading .lbl,
+.sensor-loading .val { opacity: .55; }
 
 /* Relay grid */
 .relay-grid {

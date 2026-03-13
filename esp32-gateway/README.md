@@ -45,6 +45,8 @@ The gateway is the heart of the ESPNow Mesh System. It runs on an **ESP32-S3** a
 | Version | Notes |
 |---------|-------|
 | v1.6.0 | Per-node dynamic settings (schema-on-wire); remote reboot; gateway network config from dashboard; factory reset |
+| v1.7.1 | N/A |
+| v1.8.0 | Schema-driven sensor system (MSG_SENSOR_SCHEMA); generic sensor readings protocol; multi-sensor node support (DHT22, TEMT6000) |
 
 ---
 

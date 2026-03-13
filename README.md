@@ -9,6 +9,7 @@ A lightweight, extensible smart-home mesh network built on the **ESP-NOW** proto
 - **Zero-infrastructure node communication** — nodes talk directly to the gateway over ESP-NOW (IEEE 802.11 raw frames), no MQTT broker or Wi-Fi credentials required on the nodes
 - **Button-press pairing** — hold the pairing button on any node for 3 seconds; the gateway discovers and registers it automatically
 - **Live web dashboard** — served directly from the gateway over Wi-Fi; shows real-time sensor readings, node status, uptime, and controls
+- **Schema-driven sensor system** — nodes self-describe their sensors to the gateway at pair time (labels, units, precision); the gateway and dashboard adapt automatically with no hardcoded sensor knowledge — adding sensors to a node requires only node firmware changes
 - **Per-node dynamic settings** — schema-on-wire design: each node self-describes its own configurable parameters; the gateway relays them to the browser without needing to know their meaning — fully extensible without gateway firmware changes
 - **Remote management** — reboot any node, rename it, disconnect it, or reboot the gateway itself from the dashboard
 - **Gateway network configuration** — change the Wi-Fi AP SSID/password from the dashboard; no reflashing needed
@@ -25,19 +26,19 @@ espnow-mesh-system/
 ├── esp32-gateway/
 │   ├── README.md                      ← gateway overview & hardware setup
 │   └── gateway_v1/
-│       ├── src/main.cpp               ← gateway firmware (v1.6.0)
-│       ├── include/mesh_protocol.h    ← Mesh Communication Protocol file (v2.0)
+│       ├── src/main.cpp               ← gateway firmware (v1.8.0)
+│       ├── include/mesh_protocol.h    ← Mesh Communication Protocol file (v3.0)
 │       ├── data/                      ← LittleFS web assets
-│       │   ├── index.html             ← Gateway Web Interface HTML file (v3.1)
-│       │   ├── js/app.js              ← Gateway Web Interface JavaScript file (v3.1)
-│       │   └── css/style.css          ← Gateway Web Interface CSS file (v3.0)
+│       │   ├── index.html             ← Gateway Web Interface HTML file (v3.3)
+│       │   ├── js/app.js              ← Gateway Web Interface JavaScript file (v3.3)
+│       │   └── css/style.css          ← Gateway Web Interface CSS file (v3.2)
 │       ├── platformio.ini
 │       └── README.md                  ← build & flash instructions
 └── esp32-nodes/
     ├── README.md                      ← node overview & pairing guide
     ├── sensor_nodes/
     │   ├── envo_mini_v1/
-    │   │   ├── src/main.cpp           ← node firmware (v1.3.0)
+    │   │   ├── src/main.cpp           ← node firmware (v2.0.0)
     │   │   ├── include/mesh_protocol.h
     │   │   ├── platformio.ini
     │   │   └── README.md              ← wiring & configuration
@@ -62,12 +63,15 @@ espnow-mesh-system/
               ┌───────────────────┼───────────────────┐
               │                   │                   │
          Sensor Node 1      Sensor Node 2      Actuator Node
-         (BMP280)            (SCD41 CO2)           (Relay)
+       (Envo Mini V1)        (SCD41 CO2)           (Relay)
+     Temp · Pressure       CO2 · Temp · RH        (planned)
+     Humidity · Light
 ```
 
 - The **gateway** connects to your home Wi-Fi using WiFiManager (captive portal on first boot)
 - **Nodes** never touch Wi-Fi — they only speak ESP-NOW to the gateway's MAC address on a fixed channel
 - The **web dashboard** (AsyncWebServer + WebSocket) is served directly from the gateway's LittleFS flash partition
+- Each node **sends a sensor schema** to the gateway at pair time — the dashboard renders sensor rows from the schema with no hardcoded sensor knowledge
 
 ---
 
@@ -85,7 +89,7 @@ Any ESP32 or ESP32-S3 variant can be adapted with minor pin changes.
 ## 🚀 Quick Start
 
 1. **Flash the gateway** — see [`esp32-gateway/gateway_v1/README.md`](esp32-gateway/gateway_v1/README.md)
-2. **Flash a sensor node** — see [`esp32-nodes/sensor_nodes/bmp280_sensor/README.md`](esp32-nodes/sensor_nodes/bmp280_sensor/README.md)
+2. **Flash a sensor node** — see [`esp32-nodes/sensor_nodes/envo_mini_v1/README.md`](esp32-nodes/sensor_nodes/envo_mini_v1/README.md)
 3. Power on both devices
 4. On first boot the gateway opens a Wi-Fi captive portal (`ESP32-Mesh-Setup` / `meshsetup`) — connect and enter your Wi-Fi credentials
 5. Hold the pairing button on the sensor node for **3 seconds** — the gateway discovers and registers it
@@ -100,6 +104,7 @@ Any ESP32 or ESP32-S3 variant can be adapted with minor pin changes.
 - [ESPAsyncWebServer](https://github.com/ESP32Async/ESPAsyncWebServer) — non-blocking HTTP + WebSocket server
 - [ArduinoJson](https://arduinojson.org/) — JSON serialisation for WebSocket messages
 - [Adafruit BMP280 Library](https://github.com/adafruit/Adafruit_BMP280_Library) — temperature & pressure sensor driver
+- [DHT sensor library](https://github.com/adafruit/DHT-sensor-library) — DHT22 humidity sensor driver
 - [Adafruit NeoPixel](https://github.com/adafruit/Adafruit_NeoPixel) — WS2812B RGB status LED
 
 ---

@@ -1,29 +1,46 @@
 #pragma once
 /**
- * mesh_protocol.h v2.0 —  Shared ESP-NOW message definitions
+ * mesh_protocol.h v3.0 —  Shared ESP-NOW message definitions
  * Copy this file into the include/ folder of every node project.
  *
  * All structs are packed (no compiler padding) so that the raw byte
  * layout is identical on every device, regardless of toolchain defaults.
+ *
+ * ── Scalable sensor readings (v3.0) ──────────────────────────────────────────
+ * Sensor readings are now fully schema-driven, mirroring the settings system.
+ * Nodes self-describe their sensors once via MSG_SENSOR_SCHEMA (on request or
+ * proactively after a setting that changes a unit is applied).  Live readings
+ * then flow as a generic id→value array in MSG_SENSOR_DATA.
+ *
+ * The gateway never hardcodes knowledge of specific sensors.  Adding a new
+ * sensor to a node requires ONLY node firmware changes — the gateway and web
+ * interface pick it up automatically.
+ *
+ * ── Breaking change from v2.0 ────────────────────────────────────────────────
+ * MsgSensorData is NOT backward-compatible with v2.0 (named temperature /
+ * pressure fields replaced by a generic readings array).  All node firmware
+ * must be updated to v3.0 before connecting to a v3.0 gateway.
  */
 
 #include <stdint.h>
 
 // ─── Message Types ────────────────────────────────────────────────────────────
 typedef enum : uint8_t {
-    MSG_REGISTER      = 0x01,  // Node  → Master  : request registration / re-register after reboot
-    MSG_REGISTER_ACK  = 0x02,  // Master → Node   : assign ID + confirm channel
-    MSG_SENSOR_DATA   = 0x03,  // Node  → Master  : BMP280 readings
-    MSG_RELAY_CMD     = 0x04,  // Master → Node   : toggle a relay
-    MSG_RELAY_STATE   = 0x05,  // Node  → Master  : current relay bitmask
-    MSG_HEARTBEAT     = 0x06,  // Node  → Master  : keepalive
-    MSG_BEACON        = 0x07,  // Node  → broadcast: announce availability (pairing mode)
-    MSG_PAIR_CMD      = 0x08,  // Master → Node   : "connect to me on this channel"
-    MSG_UNPAIR_CMD    = 0x09,  // Master ↔ Node   : bidirectional disconnect + clear NVS
-    MSG_REBOOT_CMD    = 0x0A,  // Master → Node   : reboot the node remotely
-    MSG_SETTINGS_GET  = 0x0B,  // Master → Node   : request settings schema + current values
-    MSG_SETTINGS_DATA = 0x0C,  // Node  → Master  : settings schema + current values
-    MSG_SETTINGS_SET  = 0x0D,  // Master → Node   : update a single setting value
+    MSG_REGISTER           = 0x01,  // Node  → Master  : request registration / re-register after reboot
+    MSG_REGISTER_ACK       = 0x02,  // Master → Node   : assign ID + confirm channel
+    MSG_SENSOR_DATA        = 0x03,  // Node  → Master  : generic sensor readings array
+    MSG_RELAY_CMD          = 0x04,  // Master → Node   : toggle a relay
+    MSG_RELAY_STATE        = 0x05,  // Node  → Master  : current relay bitmask
+    MSG_HEARTBEAT          = 0x06,  // Node  → Master  : keepalive
+    MSG_BEACON             = 0x07,  // Node  → broadcast: announce availability (pairing mode)
+    MSG_PAIR_CMD           = 0x08,  // Master → Node   : "connect to me on this channel"
+    MSG_UNPAIR_CMD         = 0x09,  // Master ↔ Node   : bidirectional disconnect + clear NVS
+    MSG_REBOOT_CMD         = 0x0A,  // Master → Node   : reboot the node remotely
+    MSG_SETTINGS_GET       = 0x0B,  // Master → Node   : request settings schema + current values
+    MSG_SETTINGS_DATA      = 0x0C,  // Node  → Master  : settings schema + current values
+    MSG_SETTINGS_SET       = 0x0D,  // Master → Node   : update a single setting value
+    MSG_SENSOR_SCHEMA_GET  = 0x0E,  // Master → Node   : request sensor schema
+    MSG_SENSOR_SCHEMA      = 0x0F,  // Node  → Master  : sensor schema (label / unit / precision per sensor)
 } MeshMsgType;
 
 // ─── Node Types ───────────────────────────────────────────────────────────────
@@ -47,6 +64,16 @@ typedef enum : uint8_t {
 #define SETTING_LABEL_LEN   12   // chars for human-readable label (incl. NUL)
 #define SETTING_OPT_MAXCOUNT 4   // max enum options per setting
 #define SETTING_OPT_LEN      8   // chars per enum option string (incl. NUL)
+
+// ─── Sensor Constants ─────────────────────────────────────────────────────────
+// NODE_MAX_SENSORS caps one ESP-NOW packet for schema and data:
+//   MsgSensorSchema : sizeof(MeshHeader)+1 + NODE_MAX_SENSORS×sizeof(SensorDef)
+//                   = 3 + 1 + 8×20 = 164 bytes  (limit 250) ✓
+//   MsgSensorData   : sizeof(MeshHeader)+5 + NODE_MAX_SENSORS×sizeof(SensorReading)
+//                   = 3 + 5 + 8×5  =  48 bytes  (limit 250) ✓
+#define NODE_MAX_SENSORS    8    // max sensor readings per node
+#define SENSOR_LABEL_LEN   12   // chars for human-readable sensor label (incl. NUL)
+#define SENSOR_UNIT_LEN     6   // chars for unit string e.g. "°C", "%RH" (incl. NUL)
 
 // ─── Packed Structs ───────────────────────────────────────────────────────────
 #pragma pack(push, 1)
@@ -73,11 +100,23 @@ typedef struct {
 } MsgRegisterAck;
 
 // ── MSG_SENSOR_DATA  (Node → Master) ─────────────────────────────────────────
+// Generic readings packet — carries only the sensors the node has measured this
+// cycle.  All values are float; the matching SensorDef (sent once via
+// MSG_SENSOR_SCHEMA) supplies the label, unit, and display precision.
+//
+// Packed size: sizeof(MeshHeader)=3 + uint32_t=4 + uint8_t=1
+//              + count×sizeof(SensorReading)=count×5
+//   Maximum (8 sensors): 48 bytes — well within the 250-byte ESP-NOW limit.
 typedef struct {
-    MeshHeader hdr;
-    float      temperature;
-    float      pressure;
-    uint32_t   uptime_sec;
+    uint8_t id;     // matches SensorDef.id sent in MSG_SENSOR_SCHEMA
+    float   value;  // the measured value in the unit declared by SensorDef.unit
+} SensorReading;    // 5 bytes packed
+
+typedef struct {
+    MeshHeader    hdr;
+    uint32_t      uptime_sec;
+    uint8_t       count;                        // number of valid entries (1..NODE_MAX_SENSORS)
+    SensorReading readings[NODE_MAX_SENSORS];   // only first `count` entries are valid
 } MsgSensorData;
 
 // ── MSG_RELAY_CMD  (Master → Node) ────────────────────────────────────────────
@@ -171,11 +210,53 @@ typedef struct {
 // ── MSG_SETTINGS_SET  (Master → Node) ─────────────────────────────────────────
 // Gateway sends this when the user changes a setting in the dashboard.
 // Node must apply, optionally persist, then echo back MSG_SETTINGS_DATA.
+// If the changed setting affects a sensor unit (e.g. °C ↔ °F), the node
+// SHOULD also proactively send an updated MSG_SENSOR_SCHEMA so the gateway
+// and web interface immediately reflect the new unit without waiting for the
+// next MSG_SENSOR_SCHEMA_GET request.
 typedef struct {
     MeshHeader hdr;
     uint8_t    id;     // SettingDef.id to update
     int16_t    value;  // new value (bool:0/1, enum:index, int:value)
 } MsgSettingsSet;
+
+// ── SensorDef  (embedded in MSG_SENSOR_SCHEMA) ────────────────────────────────
+// Fixed-size descriptor for one sensor reading channel.
+// Packed: 1+1+12+6 = 20 bytes per entry.
+//
+// The node assigns a stable id (0-based) to each sensor.  The gateway stores
+// the schema and uses it to label and format every MSG_SENSOR_DATA reading.
+// All values are transmitted as float; precision controls display rounding.
+typedef struct {
+    uint8_t id;                         // unique per-node sensor index (0..NODE_MAX_SENSORS-1)
+    uint8_t precision;                  // decimal places for display (0–4)
+    char    label[SENSOR_LABEL_LEN];    // human-readable name, e.g. "Temperature"
+    char    unit[SENSOR_UNIT_LEN];      // unit string,  e.g. "°C", "%RH", "hPa", "%"
+} SensorDef;    // 20 bytes packed
+
+// ── MSG_SENSOR_SCHEMA_GET  (Master → Node) ────────────────────────────────────
+// Gateway sends this after registration to request the node's sensor schema.
+// Node must respond with MSG_SENSOR_SCHEMA.
+typedef struct {
+    MeshHeader hdr;
+} MsgSensorSchemaGet;
+
+// ── MSG_SENSOR_SCHEMA  (Node → Master) ────────────────────────────────────────
+// Node sends its full sensor schema.  Only `count` entries in sensors[] are
+// valid; the node should send exactly:
+//   sizeof(MeshHeader) + 1 + count * sizeof(SensorDef)  bytes.
+// Maximum packet: 3 + 1 + 8×20 = 164 bytes  (within 250-byte ESP-NOW limit).
+//
+// Send this:
+//   • In response to MSG_SENSOR_SCHEMA_GET.
+//   • Proactively after applying any setting that changes a sensor unit
+//     (e.g. Temp Unit °C ↔ °F), so the gateway reflects the new unit
+//     without the user needing to reload the dashboard.
+typedef struct {
+    MeshHeader hdr;
+    uint8_t    count;                       // number of valid entries (0..NODE_MAX_SENSORS)
+    SensorDef  sensors[NODE_MAX_SENSORS];   // only first `count` entries matter
+} MsgSensorSchema;
 
 #pragma pack(pop)
 

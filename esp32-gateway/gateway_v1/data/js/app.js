@@ -1,14 +1,14 @@
 /**
- * ESP32 Mesh Gateway Web Interface Client v3.2
+ * ESP32 Mesh Gateway Web Interface Client v3.3
  *
  * WS Inbound:  { type:"meta"|"update"|"discovered"|"pair_timeout"|"ap_config_ack"|
  *                     "gw_portal_starting"|"gw_factory_reset"|"gw_rebooting"|
  *                     "auth_required"|"auth_ok"|"auth_fail"|"session_expired"|
- *                     "web_creds_ack"|"node_settings" }
+ *                     "web_creds_ack"|"node_settings"|"node_sensor_schema" }
  * WS Outbound: { type:"auth"|"relay_cmd"|"pair_cmd"|"unpair_cmd"|"rename_node"|
  *                     "reboot_gw"|"reboot_node"|"set_ap_config"|"set_web_credentials"|
  *                     "start_wifi_portal"|"factory_reset"|"node_settings_get"|
- *                     "node_settings_set"|"ping" }
+ *                     "node_settings_set"|"node_sensor_schema_get"|"ping" }
  */
 "use strict";
 
@@ -20,7 +20,8 @@ let webCredsJustSet  = false; // flag: user just set new web credentials
 // ── State ─────────────────────────────────────────────────────────────────────
 const nodes      = new Map();   // nodeId → NodeRecord
 const discovered = new Map();   // mac → DiscoveredNode
-const nodeSettings = new Map(); // nodeId → SettingDef[]  (schema from node)
+const nodeSettings     = new Map(); // nodeId → SettingDef[]   (schema from node)
+const nodeSensorSchemas = new Map(); // nodeId → SensorDef[]   (schema from node)
 let   ws         = null;
 let   serverUptime   = 0;
 let   uptimeSyncedAt = 0;
@@ -348,26 +349,33 @@ function connect() {
         nodeSettings.set(msg.node_id, msg.settings || []);
         if (pendingSettingsFetches > 0) pendingSettingsFetches--;
         if (nsCurrentNodeId === msg.node_id) renderNodeSettings(msg.node_id);
-        // Refresh dashboard so unit labels update immediately
-        renderDashboard();
         // Refresh table so ⚙ button state updates
         renderConnectedNodes();
+        break;
+      case "node_sensor_schema":
+        // Cache the schema and re-render the dashboard so labels/units appear.
+        nodeSensorSchemas.set(msg.node_id, msg.sensors || []);
+        renderDashboard();
         break;
       case "update":
         nodes.clear();
         (msg.nodes || []).forEach(n => nodes.set(n.id, n));
-        // On reconnect nodeSettings is empty; fetch for any node not yet cached.
-        // Count outstanding requests; defer renderDashboard until they arrive
-        // so tempUnitLabel() has the correct unit on the very first render.
+
         (msg.nodes || []).forEach(n => {
+          // Settings schema — fetch if not yet cached (drives the settings panel).
           if (n.settings_ready && !nodeSettings.has(n.id)) {
             pendingSettingsFetches++;
             send({ type: "node_settings_get", node_id: n.id });
           }
+          // Sensor schema — fetch if not yet cached (drives dashboard reading labels).
+          // Rendering is NOT deferred: the dashboard shows a loading placeholder
+          // immediately and updates itself when node_sensor_schema arrives.
+          if (n.sensor_schema_ready && !nodeSensorSchemas.has(n.id)) {
+            send({ type: "node_sensor_schema_get", node_id: n.id });
+          }
         });
-        // Only render immediately if we have all the settings we need.
-        // If not, node_settings handler will call renderDashboard() when responses arrive.
-        if (pendingSettingsFetches === 0) renderDashboard();
+
+        renderDashboard();
         renderConnectedNodes();
         updateBadges();
         break;
@@ -523,22 +531,52 @@ function buildCard(n) {
   </div>`;
 }
 
-// Returns "°F" if the node’s Temp Unit setting (id 0) is 1, otherwise "°C".
-function tempUnitLabel(nodeId) {
-  const schema = nodeSettings.get(nodeId);
-  if (!schema) return "°C";
-  const s = schema.find(s => s.id === 0);
-  return (s && s.current === 1) ? "°F" : "°C";
-}
-
+// Build sensor card rows entirely from the schema the node self-reported.
+// The gateway has no knowledge of what sensors are present — labels, units,
+// and precision all come from the SensorDef array received via MSG_SENSOR_SCHEMA.
+//
+// n.sensor_readings   — array of { id, value } from the latest MSG_SENSOR_DATA
+// nodeSensorSchemas   — Map<nodeId, SensorDef[]> populated by MSG_SENSOR_SCHEMA
 function buildSensorRows(n) {
-  const unit = tempUnitLabel(n.id);
-  const t = n.temperature != null ? `${n.temperature.toFixed(1)} ${unit}` : "—";
-  const p = n.pressure    != null ? `${n.pressure.toFixed(1)} hPa`    : "—";
-  return `
-    <div class="card-row"><span class="lbl">Temperature</span><span class="val val-temp">${t}</span></div>
-    <div class="card-row"><span class="lbl">Pressure</span>   <span class="val val-pres">${p}</span></div>
-    <div class="card-row"><span class="lbl">Uptime</span>     <span class="val">${fmtUptime(n.uptime || 0)}</span></div>`;
+  const schema   = nodeSensorSchemas.get(n.id);
+  const readings = n.sensor_readings || [];
+
+  // Schema not yet received — show a lightweight loading placeholder.
+  // The node_sensor_schema handler will call renderDashboard() when it arrives.
+  if (!schema || schema.length === 0) {
+    return `
+      <div class="card-row sensor-loading">
+        <span class="lbl">Sensors</span>
+        <span class="val val-muted">waiting for schema…</span>
+      </div>
+      <div class="card-row">
+        <span class="lbl">Uptime</span>
+        <span class="val val-uptime">${fmtUptime(n.uptime || 0)}</span>
+      </div>`;
+  }
+
+  // Build a quick id→value lookup from the readings array.
+  const byId = {};
+  readings.forEach(r => { byId[r.id] = r.value; });
+
+  // Render one row per sensor using only the schema for labels / units / precision.
+  const rows = schema.map(s => {
+    const raw = byId[s.id];
+    const val = raw != null
+      ? `${raw.toFixed(s.precision ?? 1)} ${s.unit}`
+      : "—";
+    return `
+      <div class="card-row">
+        <span class="lbl">${esc(s.label)}</span>
+        <span class="val">${val}</span>
+      </div>`;
+  }).join("");
+
+  return rows + `
+    <div class="card-row">
+      <span class="lbl">Uptime</span>
+      <span class="val val-uptime">${fmtUptime(n.uptime || 0)}</span>
+    </div>`;
 }
 
 function buildRelayGrid(n) {
@@ -561,10 +599,12 @@ function patchCard(el, n) {
   if (nameEl) nameEl.textContent = n.name || `Node #${n.id}`;
 
   if (n.type === 1) {
-    const rows = el.querySelectorAll(".card-row .val");
-    if (rows[0]) rows[0].textContent = n.temperature != null ? `${n.temperature.toFixed(1)} ${tempUnitLabel(n.id)}` : "—";
-    if (rows[1]) rows[1].textContent = n.pressure    != null ? `${n.pressure.toFixed(1)} hPa`   : "—";
-    if (rows[2]) rows[2].textContent = fmtUptime(n.uptime || 0);
+    // Rebuild sensor rows via innerHTML so row count automatically adapts when
+    // the sensor schema changes (e.g. a new firmware adds or removes a sensor).
+    // Safe: sensor card rows have no inline event listeners (all delegation is
+    // handled at the document level via .card-rows, .relay-btn, etc.).
+    const rowsEl = el.querySelector(".card-rows");
+    if (rowsEl) rowsEl.innerHTML = buildSensorRows(n);
   } else {
     el.querySelectorAll(".relay-btn").forEach(btn => {
       const i  = parseInt(btn.dataset.relay, 10);

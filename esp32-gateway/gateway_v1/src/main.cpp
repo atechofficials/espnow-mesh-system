@@ -10,7 +10,7 @@
  * ║  Hold BOOT (GPIO0) at reset to wipe saved WiFi credentials.             ║
  * ╚══════════════════════════════════════════════════════════════════════════╝
  */
-#define FW_VERSION "1.7.1"
+#define FW_VERSION "1.8.0"
 
 #include <Arduino.h>
 #include <WiFi.h>
@@ -58,13 +58,17 @@ struct NodeRecord {
     char          fw_version[8];  // reported by node in MSG_REGISTER
     unsigned long lastSeen;
     bool          online;
-    float         temperature;
-    float         pressure;
     uint32_t      uptime;
     uint8_t       relayMask;
     // ── Per-node dynamic settings schema (populated by MSG_SETTINGS_DATA) ──────
     uint8_t       settingsCount;                     // 0 = not yet received
     SettingDef    settings[NODE_MAX_SETTINGS];        // schema + current values
+    // ── Per-node dynamic sensor schema (populated by MSG_SENSOR_SCHEMA) ────────
+    // Indexed by position; sensorSchema[j] and sensorValues[j] are always parallel.
+    // sensorCount == 0 means schema has not yet been received from this node.
+    uint8_t       sensorCount;                       // 0 = schema not yet received
+    SensorDef     sensorSchema[NODE_MAX_SENSORS];    // descriptor for each sensor channel
+    float         sensorValues[NODE_MAX_SENSORS];    // last received value per channel
 };
 static NodeRecord nodes[MESH_MAX_NODES + 1];
 static uint8_t    nextId = 1;
@@ -300,6 +304,7 @@ static void saveApConfig(const char* ssid, const char* pass) {
 // Forward declarations needed by loadNodesFromNvs (defined further below)
 static bool addPeer(const uint8_t* mac, uint8_t channel = 0);
 static void sendSettingsGet(const uint8_t* mac, uint8_t nodeId, NodeType nodeType);
+static void sendSensorSchemaGet(const uint8_t* mac, uint8_t nodeId, NodeType nodeType);
 struct NodeNvsRecord {
     uint8_t  mac[6];
     NodeType type;
@@ -362,11 +367,12 @@ static void loadNodesFromNvs() {
     if (restored == 0) return;
     Serial.printf("[MESH] %d node(s) restored from NVS. nextId=%d\n", restored, nextId);
 
-    // Proactively request settings from every restored node so the settings
-    // panel repopulates as soon as each node replies.
+    // Proactively request both the settings and sensor schema from every restored
+    // node so the dashboard and settings panel repopulate as soon as each node replies.
     for (uint8_t i = 1; i < nextId; i++) {
         if (nodes[i].mac[0] == 0 && nodes[i].mac[1] == 0) continue;
         sendSettingsGet(nodes[i].mac, i, nodes[i].type);
+        sendSensorSchemaGet(nodes[i].mac, i, nodes[i].type);
     }
 }
 
@@ -439,6 +445,14 @@ static void sendRebootCmd(const uint8_t* mac, uint8_t nodeId) {
 static void sendSettingsGet(const uint8_t* mac, uint8_t nodeId, NodeType nodeType) {
     MsgSettingsGet msg;
     msg.hdr.type      = MSG_SETTINGS_GET;
+    msg.hdr.node_id   = nodeId;
+    msg.hdr.node_type = nodeType;
+    esp_now_send(mac, (uint8_t*)&msg, sizeof(msg));
+}
+
+static void sendSensorSchemaGet(const uint8_t* mac, uint8_t nodeId, NodeType nodeType) {
+    MsgSensorSchemaGet msg;
+    msg.hdr.type      = MSG_SENSOR_SCHEMA_GET;
     msg.hdr.node_id   = nodeId;
     msg.hdr.node_type = nodeType;
     esp_now_send(mac, (uint8_t*)&msg, sizeof(msg));
@@ -580,8 +594,15 @@ static String buildNodesJson() {
             n["fw_version"] = nodes[i].fw_version;
 
             if (nodes[i].type == NODE_SENSOR) {
-                n["temperature"] = nodes[i].temperature;
-                n["pressure"]    = nodes[i].pressure;
+                // sensor_schema_ready mirrors sensorCount > 0, used by the JS client
+                // to decide whether to request the schema via node_sensor_schema_get.
+                n["sensor_schema_ready"] = (nodes[i].sensorCount > 0);
+                JsonArray rdgs = n["sensor_readings"].to<JsonArray>();
+                for (uint8_t j = 0; j < nodes[i].sensorCount; j++) {
+                    JsonObject r = rdgs.add<JsonObject>();
+                    r["id"]    = nodes[i].sensorSchema[j].id;
+                    r["value"] = nodes[i].sensorValues[j];
+                }
             } else {
                 n["relay_mask"] = nodes[i].relayMask;
             }
@@ -642,6 +663,37 @@ static String buildNodeSettingsJson(uint8_t nodeId) {
                 for (uint8_t j = 0; j < s.opt_count && j < SETTING_OPT_MAXCOUNT; j++)
                     opts.add(s.opts[j]);
             }
+        }
+        xSemaphoreGive(nodesMutex);
+    }
+
+    String out;
+    serializeJson(doc, out);
+    return out;
+}
+
+// Builds the node_sensor_schema WS message for a specific sensor node.
+// Pushed to clients on schema receipt; also served on demand via
+// the "node_sensor_schema_get" WS command.
+static String buildNodeSensorSchemaJson(uint8_t nodeId) {
+    JsonDocument doc;
+    doc["type"]    = "node_sensor_schema";
+    doc["node_id"] = nodeId;
+    JsonArray arr  = doc["sensors"].to<JsonArray>();
+
+    if (nodeId == 0 || nodeId >= nextId) {
+        String out; serializeJson(doc, out); return out;
+    }
+
+    if (xSemaphoreTake(nodesMutex, pdMS_TO_TICKS(100)) == pdTRUE) {
+        const NodeRecord& n = nodes[nodeId];
+        for (uint8_t i = 0; i < n.sensorCount; i++) {
+            const SensorDef& s = n.sensorSchema[i];
+            JsonObject obj  = arr.add<JsonObject>();
+            obj["id"]        = s.id;
+            obj["label"]     = s.label;
+            obj["unit"]      = s.unit;
+            obj["precision"] = s.precision;
         }
         xSemaphoreGive(nodesMutex);
     }
@@ -750,8 +802,11 @@ static void processRxQueue() {
 
                 addPeer(pkt.mac);
                 sendRegisterAck(pkt.mac, assignId, hdr->node_type);
-                // Request settings schema from this node immediately after ACK
+                // Request both the settings schema and the sensor schema immediately
+                // after ACK so the dashboard and settings panel populate as soon as
+                // the node replies.
                 sendSettingsGet(pkt.mac, assignId, hdr->node_type);
+                sendSensorSchemaGet(pkt.mac, assignId, hdr->node_type);
                 // Persist the registry so nodes survive a gateway reboot
                 if (isNew) saveNodesToNvs();
                 wsBroadcast(buildNodesJson());
@@ -760,22 +815,46 @@ static void processRxQueue() {
             }
 
             case MSG_SENSOR_DATA: {
-                if (pkt.len < (int)sizeof(MsgSensorData)) break;
-                auto* sd  = (MsgSensorData*)pkt.data;
+                // Minimum: header(3) + uptime_sec(4) + count(1) = 8 bytes.
+                // A valid packet must also be large enough for the declared count.
+                if (pkt.len < 8) break;
+                auto* sd   = (MsgSensorData*)pkt.data;
                 uint8_t id = hdr->node_id;
                 if (id == 0 || id >= nextId) break;
                 if (nodes[id].mac[0] == 0) break;  // slot was recycled
 
+                uint8_t cnt = sd->count;
+                if (cnt > NODE_MAX_SENSORS) cnt = NODE_MAX_SENSORS;
+
+                // Validate packet is large enough for the declared number of readings
+                size_t expectedLen = sizeof(MeshHeader) + sizeof(uint32_t) + 1
+                                     + cnt * sizeof(SensorReading);
+                if ((size_t)pkt.len < expectedLen) {
+                    Serial.printf("[SENS] Node #%d data pkt too short (%d < %d)\n",
+                                  id, pkt.len, (int)expectedLen);
+                    break;
+                }
+
                 if (xSemaphoreTake(nodesMutex, pdMS_TO_TICKS(50)) == pdTRUE) {
-                    nodes[id].temperature = sd->temperature;
-                    nodes[id].pressure    = sd->pressure;
-                    nodes[id].uptime      = sd->uptime_sec;
-                    nodes[id].lastSeen    = millis();
-                    nodes[id].online      = true;
+                    nodes[id].uptime   = sd->uptime_sec;
+                    nodes[id].lastSeen = millis();
+                    nodes[id].online   = true;
+
+                    // Match each incoming reading to its schema position by sensor ID.
+                    // This allows the node to send a subset of sensors in any cycle
+                    // without invalidating values from sensors it skipped.
+                    for (uint8_t k = 0; k < cnt; k++) {
+                        for (uint8_t j = 0; j < nodes[id].sensorCount; j++) {
+                            if (nodes[id].sensorSchema[j].id == sd->readings[k].id) {
+                                nodes[id].sensorValues[j] = sd->readings[k].value;
+                                break;
+                            }
+                        }
+                    }
                     xSemaphoreGive(nodesMutex);
                 }
-                Serial.printf("[MESH] Node #%d  T=%.1f°C  P=%.1fhPa\n",
-                              id, sd->temperature, sd->pressure);
+                Serial.printf("[SENS] Node #%d  uptime=%us  readings=%u\n",
+                              id, sd->uptime_sec, cnt);
                 break;
             }
 
@@ -852,6 +931,47 @@ static void processRxQueue() {
                 // Push updated settings to authenticated WS clients
                 wsBroadcast(buildNodeSettingsJson(id));
                 // Also push nodes update so settings_ready flag refreshes in the table
+                wsBroadcast(buildNodesJson());
+                break;
+            }
+
+            // ── Sensor schema received from node ──────────────────────────
+            case MSG_SENSOR_SCHEMA: {
+                // Minimum: header(3) + count(1) = 4 bytes
+                if (pkt.len < 4) break;
+                uint8_t id = hdr->node_id;
+                if (id == 0 || id >= nextId) break;
+                if (nodes[id].mac[0] == 0) break;
+
+                auto* ss    = (MsgSensorSchema*)pkt.data;
+                uint8_t cnt = ss->count;
+                if (cnt > NODE_MAX_SENSORS) cnt = NODE_MAX_SENSORS;
+
+                // Validate packet is large enough for the declared schema entries
+                size_t expectedLen = sizeof(MeshHeader) + 1 + cnt * sizeof(SensorDef);
+                if ((size_t)pkt.len < expectedLen) {
+                    Serial.printf("[SENS] Node #%d schema pkt too short (%d < %d)\n",
+                                  id, pkt.len, (int)expectedLen);
+                    break;
+                }
+
+                if (xSemaphoreTake(nodesMutex, pdMS_TO_TICKS(50)) == pdTRUE) {
+                    nodes[id].sensorCount = cnt;
+                    for (uint8_t i = 0; i < cnt; i++)
+                        nodes[id].sensorSchema[i] = ss->sensors[i];
+                    xSemaphoreGive(nodesMutex);
+                }
+
+                Serial.printf("[SENS] Node #%d: %d sensor(s) registered", id, cnt);
+                for (uint8_t i = 0; i < cnt; i++)
+                    Serial.printf("  [%d]\"%s\"(%s)", ss->sensors[i].id,
+                                  ss->sensors[i].label, ss->sensors[i].unit);
+                Serial.println();
+
+                flashGwLed(gwLed.Color(0, 80, 255), 100);   // brief blue = schema rx
+                // Push updated schema to connected WS clients
+                wsBroadcast(buildNodeSensorSchemaJson(id));
+                // Also push nodes update so sensor_schema_ready flag refreshes
                 wsBroadcast(buildNodesJson());
                 break;
             }
@@ -1097,6 +1217,24 @@ static void onWsEvent(AsyncWebSocket*, AsyncWebSocketClient* client,
                         sendSettingsGet(nodes[nodeId].mac, nodeId, nodes[nodeId].type);
                     // Respond with empty settings until node replies
                     client->text(buildNodeSettingsJson(nodeId));
+                }
+
+            // ── Sensor schema: request current schema from node ───────────
+            } else if (strcmp(msgType, "node_sensor_schema_get") == 0) {
+                uint8_t nodeId = doc["node_id"] | 0;
+                if (nodeId == 0 || nodeId >= nextId) break;
+                if (nodes[nodeId].mac[0] == 0) break;
+
+                if (nodes[nodeId].sensorCount > 0) {
+                    // Already cached — serve immediately from RAM
+                    client->text(buildNodeSensorSchemaJson(nodeId));
+                } else {
+                    // Not yet received — re-request from node if it is online
+                    if (nodes[nodeId].online)
+                        sendSensorSchemaGet(nodes[nodeId].mac, nodeId, nodes[nodeId].type);
+                    // Respond with empty schema for now; MSG_SENSOR_SCHEMA handler
+                    // will broadcast the real schema when the node replies.
+                    client->text(buildNodeSensorSchemaJson(nodeId));
                 }
 
             // ── Node settings: apply a single setting change ──────────────

@@ -1,6 +1,6 @@
 # Gateway v1 — Build & Flash Guide
 
-Firmware version: **1.6.0**
+Firmware version: **1.8.0**
 Target board: `esp32-s3-devkitc1-n8r8`
 
 ---
@@ -120,10 +120,12 @@ Default baud rate: **115200**. Log prefixes:
 | `[FS]` | LittleFS mount / file listing |
 | `[WiFi]` | Wi-Fi connection events |
 | `[ESP-NOW]` | ESP-NOW init and TX callbacks |
+| `[DISC]` | Node discovery (beacon detected) |
 | `[PAIR]` | Pairing handshake steps |
-| `[MESH]` | Incoming sensor data |
-| `[CFG]` | Node settings get/set |
-| `[WS]` | WebSocket client connect/disconnect |
+| `[MESH]` | Node registration (new or restored from NVS) |
+| `[SENS]` | Sensor schema registration and incoming readings |
+| `[CFG]` | Node settings get / set |
+| `[WS]` | WebSocket client connect / disconnect |
 
 ---
 
@@ -135,11 +137,12 @@ The dashboard communicates with the gateway over a single WebSocket at `ws://<ip
 
 | `type` | Description |
 |--------|-------------|
-| `update` | Full node list with sensor readings, online status, uptime |
+| `update` | Full node list with sensor readings (as `sensor_readings[]` id/value array), schema-ready flag, online status, uptime |
 | `meta` | Gateway metadata (firmware version, uptime, IP, AP SSID) |
 | `discovered` | Nodes broadcasting in pairing mode |
 | `pair_timeout` | Pairing window expired |
 | `node_settings` | Settings schema + current values for one node |
+| `node_sensor_schema` | Sensor schema (labels, units, precision) for one node |
 | `ap_config_ack` | Confirmation that new AP config was saved |
 | `gw_portal_starting` | Gateway is about to open the captive portal |
 | `gw_factory_reset` | Factory reset acknowledged |
@@ -159,3 +162,4 @@ The dashboard communicates with the gateway over a single WebSocket at `ws://<ip
 | `factory_reset` | Erase NVS and reboot |
 | `node_settings_get` | Request settings schema for a node |
 | `node_settings_set` | Update one setting value on a node |
+| `node_sensor_schema_get` | Request sensor schema for a node (served from cache or fetched live) |

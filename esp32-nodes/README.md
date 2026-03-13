@@ -8,13 +8,13 @@ This directory contains firmware for all node types in the ESPNow Mesh System. N
 
 ### Sensor Nodes (`sensor_nodes/`)
 
-Sensor nodes periodically read one or more physical sensors and transmit the data to the gateway. They also respond to settings requests (temperature unit, send interval, LED behaviour, etc.).
+Sensor nodes periodically read one or more physical sensors and transmit the data to the gateway. Each node self-describes its sensors to the gateway via a schema handshake at pair time — defining labels, units, and precision for every measurement. The gateway and web dashboard adapt automatically, so adding sensors to a node requires only node firmware changes.
 
 Currently implemented:
 
-| Node | Sensor | Firmware |
-|------|--------|----------|
-| Envo Mini V1 Node | Bosch BMP280 (temperature + pressure) | v1.3.0 |
+| Node | Sensors | Firmware |
+|------|---------|----------|
+| Envo Mini V1 Node | Bosch BMP280 (temperature + pressure) + DHT22 (humidity) + TEMT6000 (ambient light) | v2.0.0 |
 
 ### Actuator Nodes (`actuator_nodes/`)
 
