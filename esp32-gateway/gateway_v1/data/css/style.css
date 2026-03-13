@@ -1,8 +1,48 @@
 /* ═══════════════════════════════════════════════════════════════════
-   ESP32 Mesh Gateway Web Interface Stylesheet v3.2
+   ESP32 Mesh Gateway Web Interface Stylesheet v3.3
    ═══════════════════════════════════════════════════════════════════ */
 
-@import url('https://fonts.googleapis.com/css2?family=Rajdhani:wght@500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
+/* ── Local Fonts ───────────────────────────────────────────── */
+
+@font-face {
+  font-family: "Exo 2";
+  src: url("/fonts/exo2-500.woff2") format("woff2");
+  font-weight: 500;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Exo 2";
+  src: url("/fonts/exo2-600.woff2") format("woff2");
+  font-weight: 600;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Exo 2";
+  src: url("/fonts/exo2-700.woff2") format("woff2");
+  font-weight: 700;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "JetBrains Mono";
+  src: url("/fonts/jetbrainsmono-400.woff2") format("woff2");
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "JetBrains Mono";
+  src: url("/fonts/jetbrainsmono-500.woff2") format("woff2");
+  font-weight: 500;
+  font-style: normal;
+  font-display: swap;
+}
 
 /* ── CSS Variables (dark theme default) ──────────────────────── */
 :root {
@@ -74,7 +114,7 @@
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 html { font-size: 15px; }
 body {
-  font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+  font-family: 'Exo 2', system-ui, sans-serif;
   background: var(--bg);
   color: var(--text);
   min-height: 100vh;
@@ -85,6 +125,38 @@ a { color: inherit; text-decoration: none; }
 button { font-family: inherit; cursor: pointer; border: none; background: none; }
 input { font-family: inherit; }
 svg { display: block; }
+
+/* Icon Styles */
+.icon{
+  display:inline-block;
+
+  /* This is what gives the icon its color */
+  background-color:currentColor;
+  
+  /* Mask configuration */
+  mask-size:contain;
+  mask-repeat:no-repeat;
+  mask-position:center;
+  mask-mode:alpha;
+
+  -webkit-mask-size:contain;
+  -webkit-mask-repeat:no-repeat;
+  -webkit-mask-position:center;
+
+  flex-shrink:0;
+
+  vertical-align:middle;
+  user-select:none;
+  pointer-events:none;
+
+  will-change: background-color;
+}
+
+.icon-xs { width:12px; height:12px; }
+.icon-sm { width:14px; height:14px; }
+.icon-md { width:18px; height:18px; }
+.icon-lg { width:24px; height:24px; }
+.icon-xl { width:32px; height:32px; }
 
 /* ── App layout ──────────────────────────────────────────────── */
 .app {
@@ -115,9 +187,9 @@ svg { display: block; }
 }
 
 .sb-brand-icon {
-  width: 32px; height: 32px;
   color: var(--accent);
-  flex-shrink: 0;
+  -webkit-mask-image:url("/icons/esp32-mesh-icon.svg");
+  mask-image:url("/icons/esp32-mesh-icon.svg");
 }
 
 .sb-brand-text {
@@ -127,7 +199,7 @@ svg { display: block; }
 }
 
 .sb-brand-main {
-  font-family: 'Rajdhani', sans-serif;
+  font-family: 'Exo 2', sans-serif;
   font-size: 1.2rem;
   font-weight: 700;
   color: var(--accent);
@@ -135,7 +207,7 @@ svg { display: block; }
 }
 
 .sb-brand-sub {
-  font-family: 'Rajdhani', sans-serif;
+  font-family: 'Exo 2', sans-serif;
   font-size: .62rem;
   font-weight: 600;
   letter-spacing: .14em;
@@ -169,7 +241,30 @@ svg { display: block; }
   position: relative;
 }
 
-.sb-btn svg { width: 17px; height: 17px; flex-shrink: 0; transition: color .15s; }
+.sb-btn-icon {
+  transition: color .15s;
+}
+
+.icon-dashboard { 
+  mask-image:url("/icons/chart-line-solid-icon.svg"); 
+  -webkit-mask-image:url("/icons/chart-line-solid-icon.svg");
+}
+
+.icon-con-nodes { 
+  mask-image:url("/icons/share-nodes-solid-icon.svg"); 
+  -webkit-mask-image:url("/icons/share-nodes-solid-icon.svg");
+}
+
+.icon-avail-nodes { 
+  mask-image:url("/icons/tower-broadcast-solid-icon.svg"); 
+  -webkit-mask-image:url("/icons/tower-broadcast-solid-icon.svg");
+}
+
+.icon-gears { 
+  mask-image:url("/icons/gears-solid-icon.svg"); 
+  -webkit-mask-image:url("/icons/gears-solid-icon.svg");
+}
+
 .sb-btn span:not(.sb-badge) { flex: 1; }
 
 .sb-btn:hover {
@@ -182,8 +277,6 @@ svg { display: block; }
   background: var(--accent-dim);
   border-color: var(--accent-border);
 }
-
-.sb-btn.active svg { color: var(--accent); }
 
 .sb-badge {
   font-family: 'JetBrains Mono', monospace;
@@ -255,6 +348,12 @@ svg { display: block; }
   transition: color .15s, border-color .15s;
   width: fit-content;
   margin-top: .1rem;
+}
+
+.sb-gh-icon {
+  transition: color .15s;
+  mask-image: url("/icons/github-black-icon.svg");
+  -webkit-mask-image: url("/icons/github-black-icon.svg");
 }
 
 .sb-gh:hover { color: var(--text); border-color: var(--border-2); }
@@ -386,7 +485,7 @@ svg { display: block; }
 }
 
 .sec-hdr h2 {
-  font-family: 'Rajdhani', sans-serif;
+  font-family: 'Exo 2', sans-serif;
   font-size: 1.45rem;
   font-weight: 700;
   letter-spacing: .04em;
@@ -501,6 +600,12 @@ svg { display: block; }
 }
 .card-info-btn:hover { color: var(--blue); border-color: var(--blue); background: var(--blue-dim); }
 
+.card-info-btn-icon {
+  transition: color .15s;
+  mask-image:url("/icons/info-solid-icon.svg");
+  -webkit-mask-image:url("/icons/info-solid-icon.svg");
+}
+
 /* Card data rows */
 .card-rows { display: flex; flex-direction: column; }
 
@@ -579,7 +684,7 @@ svg { display: block; }
   background: var(--surface-2);
   padding: .65rem 1rem;
   text-align: left;
-  font-family: 'Rajdhani', sans-serif;
+  font-family: 'Exo 2', sans-serif;
   font-size: .78rem;
   font-weight: 700;
   letter-spacing: .06em;
@@ -640,6 +745,30 @@ svg { display: block; }
 .tbl-btn.settings:hover { color: var(--purple); border-color: var(--purple-border); background: var(--purple-dim); }
 .tbl-btn.disc:hover   { color: var(--red);   border-color: var(--red-border); background: var(--red-dim); }
 
+.tbl-btn-info-icon {
+  transition: color .15s;
+  mask-image:url("/icons/circle-info-solid-icon.svg");
+  -webkit-mask-image:url("/icons/circle-info-solid-icon.svg");
+}
+
+.tbl-btn-settings-icon {
+  transition: color .15s;
+  mask-image:url("/icons/sliders-solid-icon.svg");
+  -webkit-mask-image:url("/icons/sliders-solid-icon.svg");
+}
+
+.tbl-btn-reboot-icon {
+  transition: color .15s;
+  mask-image:url("/icons/reboot-left-icon.svg");
+  -webkit-mask-image:url("/icons/reboot-left-icon.svg");
+}
+
+.tbl-btn-disc-icon {
+  transition: color .15s;
+  mask-image:url("/icons/disconnect-icon.svg");
+  -webkit-mask-image:url("/icons/disconnect-icon.svg");
+}
+
 /* ── Gateway reboot button (topbar) ─────────────────────────── */
 .gw-reboot-btn {
   display: flex;
@@ -658,7 +787,11 @@ svg { display: block; }
   white-space: nowrap;
 }
 
-.gw-reboot-btn svg { width: 14px; height: 14px; flex-shrink: 0; }
+.gw-reboot-btn-icon { 
+  mask-image:url("/icons/reboot-left-icon.svg");
+  -webkit-mask-image:url("/icons/reboot-left-icon.svg");
+}
+
 .gw-reboot-btn:hover:not(:disabled) { filter: brightness(1.25); }
 .gw-reboot-btn:active:not(:disabled) { transform: scale(.95); }
 .gw-reboot-btn:disabled { opacity: .4; cursor: not-allowed; }
@@ -686,7 +819,11 @@ svg { display: block; }
   white-space: nowrap;
 }
 
-.gw-factory-btn svg { width: 14px; height: 14px; flex-shrink: 0; }
+.gw-factory-btn-icon {
+  mask-image:url("/icons/trash-solid-icon.svg");
+  -webkit-mask-image:url("/icons/trash-solid-icon.svg");
+}
+
 .gw-factory-btn:hover:not(:disabled) { filter: brightness(1.25); }
 .gw-factory-btn:active:not(:disabled) { transform: scale(.95); }
 .gw-factory-btn:disabled { opacity: .4; cursor: not-allowed; }
@@ -796,7 +933,7 @@ svg { display: block; }
 }
 
 .settings-card-hdr {
-  font-family: 'Rajdhani', sans-serif;
+  font-family: 'Exo 2', sans-serif;
   font-size: .88rem;
   font-weight: 700;
   letter-spacing: .07em;
@@ -830,22 +967,50 @@ svg { display: block; }
 .setting-desc { font-size: .78rem; color: var(--text-muted); margin-top: .1rem; }
 
 .theme-btn {
-  padding: .45rem 1rem;
-  border-radius: var(--radius-pill);
-  border: 1px solid var(--border-2);
-  background: var(--surface-2);
-  font-size: .82rem;
-  font-weight: 700;
-  color: var(--text);
-  cursor: pointer;
-  transition: border-color .15s, background .15s;
-  white-space: nowrap;
+  display:flex;
+  align-items:center;
+  gap:.4rem;
+  padding:.45rem 1rem;
+  border-radius:var(--radius-pill);
+  border:1px solid var(--border-2);
+  background:var(--surface-2);
+  font-size:.82rem;
+  font-weight:700;
+  color:var(--text);
+  cursor:pointer;
+  transition:border-color .15s, background .15s;
 }
 
-.theme-btn:hover { border-color: var(--accent-border); background: var(--accent-dim); color: var(--accent); }
+.theme-btn:hover { 
+  border-color: var(--accent-border); 
+  background: var(--accent-dim); 
+  color: var(--accent); 
+}
 
-[data-theme="dark"]  .theme-icon-light { display: none; }
-[data-theme="light"] .theme-icon-dark  { display: none; }
+.theme-btn-icon {
+  width:14px;
+  height:14px;
+}
+
+[data-theme="dark"] .theme-btn-icon{
+  color:#FF5C00;
+  mask-image:url("/icons/sun-solid-icon.svg");
+  -webkit-mask-image:url("/icons/sun-solid-icon.svg");
+}
+
+[data-theme="dark"] .theme-label::after{
+  content:"Light";
+}
+
+[data-theme="light"] .theme-btn-icon{
+  color:#00022E;
+  mask-image:url("/icons/moon-solid-icon.svg");
+  -webkit-mask-image:url("/icons/moon-solid-icon.svg");
+}
+
+[data-theme="light"] .theme-label::after{
+  content:"Dark";
+}
 
 .setting-field {
   display: flex;
@@ -941,6 +1106,16 @@ svg { display: block; }
   white-space: nowrap;
 }
 
+.gw-ui-cred-save-btn-icon {
+  mask-image:url("/icons/lock-solid-icon.svg");
+  -webkit-mask-image:url("/icons/lock-solid-icon.svg");
+}
+
+.gw-ap-save-btn-icon {
+  mask-image:url("/icons/save-icon.svg");
+  -webkit-mask-image:url("/icons/save-icon.svg");
+}
+
 .settings-save-btn:hover:not(:disabled) { filter: brightness(1.2); }
 .settings-save-btn:disabled { opacity: .4; cursor: not-allowed; }
 
@@ -968,6 +1143,11 @@ svg { display: block; }
   white-space: nowrap;
   flex-shrink: 0;
   transition: border-color .15s, background .15s, color .15s;
+}
+
+.settings-portal-btn-icon {
+  mask-image:url("/icons/wifi-solid-icon.svg");
+  -webkit-mask-image:url("/icons/wifi-solid-icon.svg");
 }
 
 .settings-portal-btn:hover:not(:disabled) {
@@ -1125,7 +1305,7 @@ svg { display: block; }
 }
 
 .modal-title {
-  font-family: 'Rajdhani', sans-serif;
+  font-family: 'Exo 2', sans-serif;
   font-size: 1rem;
   font-weight: 700;
   letter-spacing: .05em;
@@ -1506,11 +1686,12 @@ svg { display: block; }
 .login-brand-icon {
   width: 42px; height: 42px;
   color: var(--accent);
-  flex-shrink: 0;
+  mask-image:url("/icons/esp32-mesh-icon.svg");
+  -webkit-mask-image:url("/icons/esp32-mesh-icon.svg");
 }
 
 .login-brand-main {
-  font-family: 'Rajdhani', sans-serif;
+  font-family: 'Exo 2', sans-serif;
   font-size: 1.15rem;
   font-weight: 700;
   color: var(--text);
@@ -1519,7 +1700,7 @@ svg { display: block; }
 }
 
 .login-brand-sub {
-  font-family: 'Rajdhani', sans-serif;
+  font-family: 'Exo 2', sans-serif;
   font-size: .72rem;
   font-weight: 600;
   color: var(--accent);
@@ -1528,7 +1709,7 @@ svg { display: block; }
 }
 
 .login-title {
-  font-family: 'Rajdhani', sans-serif;
+  font-family: 'Exo 2', sans-serif;
   font-size: 1.5rem;
   font-weight: 700;
   color: var(--text);
@@ -1655,7 +1836,7 @@ svg { display: block; }
   font-weight: 700;
   cursor: pointer;
   transition: filter .15s, opacity .15s;
-  font-family: 'Rajdhani', sans-serif;
+  font-family: 'Exo 2', sans-serif;
   letter-spacing: .05em;
   margin-top: .1rem;
 }
@@ -1663,6 +1844,12 @@ svg { display: block; }
 .login-btn:hover:not(:disabled)  { filter: brightness(1.1); }
 .login-btn:active:not(:disabled) { filter: brightness(.92); }
 .login-btn:disabled { opacity: .5; cursor: not-allowed; }
+
+.login-btn-icon {
+  width: 16px; height: 16px;
+  mask-image:url("/icons/login-icon.svg");
+  -webkit-mask-image:url("/icons/login-icon.svg");
+}
 
 .login-note {
   display: flex;
@@ -1675,8 +1862,6 @@ svg { display: block; }
   padding-top: .8rem;
   margin-top: .1rem;
 }
-
-.login-note svg { flex-shrink: 0; margin-top: .1rem; color: var(--amber); }
 
 /* ── Logout button (topbar) ─────────────────────────────────────── */
 .logout-btn {
@@ -1697,9 +1882,18 @@ svg { display: block; }
   letter-spacing: .02em;
 }
 
-.logout-btn svg { width: 14px; height: 14px; flex-shrink: 0; }
+.logout-btn-icon { 
+  mask-image:url("/icons/logout-icon.svg");
+  -webkit-mask-image:url("/icons/logout-icon.svg");
+}
 
 .logout-btn:hover {
+  border-color: var(--red-border);
+  color: var(--red);
+  background: var(--red-dim);
+}
+
+.logout-btn-icon:hover { 
   border-color: var(--red-border);
   color: var(--red);
   background: var(--red-dim);
@@ -1720,6 +1914,13 @@ svg { display: block; }
 }
 
 .setting-warn-box strong { color: var(--amber); font-weight: 700; }
+
+.setting-warn-box-icon {
+  width: 16px; height: 16px;
+  margin-top: .1rem;
+  mask-image:url("/icons/triangle-exclamation-solid-icon.svg");
+  -webkit-mask-image:url("/icons/triangle-exclamation-solid-icon.svg");
+}
 
 /* Web creds save button — slightly different accent color to distinguish */
 .web-creds-save-color {

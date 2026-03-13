@@ -1,14 +1,11 @@
-<!-- ESP32 Mesh Gateway Web Interface v3.3 -->
+<!-- ESP32 Mesh Gateway Web Interface v3.4 -->
 <!DOCTYPE html>
 <html lang="en" data-theme="dark">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>ESP32 Mesh Gateway</title>
-  <link rel="icon" type="image/svg+xml" href="/favicon.svg">
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Rajdhani:wght@500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <link rel="icon" type="image/svg+xml" href="/icons/esp32-mesh-icon.svg">
   <link rel="stylesheet" href="/css/style.css">
 </head>
 <body>
@@ -17,14 +14,7 @@
   <div class="login-overlay" id="login-overlay" style="display:none">
     <div class="login-card">
       <div class="login-brand">
-        <svg class="login-brand-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
-          <circle cx="12" cy="5"  r="2.2"/>
-          <circle cx="5"  cy="19" r="2.2"/>
-          <circle cx="19" cy="19" r="2.2"/>
-          <line x1="12" y1="7.2" x2="5.9"  y2="16.9"/>
-          <line x1="12" y1="7.2" x2="18.1" y2="16.9"/>
-          <line x1="7"  y1="19"  x2="17"   y2="19"/>
-        </svg>
+        <span class="icon login-brand-icon"></span>
         <div>
           <div class="login-brand-main">ESP32 MESH</div>
           <div class="login-brand-sub">GATEWAY</div>
@@ -57,22 +47,12 @@
       </div>
 
       <button class="login-btn" id="login-btn">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"
-             stroke-linecap="round" stroke-linejoin="round" width="16" height="16">
-          <path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4"/>
-          <polyline points="10 17 15 12 10 7"/>
-          <line x1="15" y1="12" x2="3" y2="12"/>
-        </svg>
+        <span class="icon login-btn-icon"></span>
         Sign In
       </button>
 
       <div class="login-note">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
-             stroke-linecap="round" width="13" height="13">
-          <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/>
-          <line x1="12" y1="9" x2="12" y2="13"/>
-          <circle cx="12" cy="17" r=".5" fill="currentColor"/>
-        </svg>
+        <span class="icon setting-warn-box-icon"></span>
         Forgotten your password? You must factory reset the Gateway via the hardware push button to regain access.
       </div>
     </div>
@@ -83,14 +63,7 @@
     <!-- ── Sidebar ─────────────────────────────────────────────── -->
     <aside class="sidebar" id="sidebar">
       <div class="sb-brand">
-        <svg class="sb-brand-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
-          <circle cx="12" cy="5"  r="2.2"/>
-          <circle cx="5"  cy="19" r="2.2"/>
-          <circle cx="19" cy="19" r="2.2"/>
-          <line x1="12" y1="7.2" x2="5.9"  y2="16.9"/>
-          <line x1="12" y1="7.2" x2="18.1" y2="16.9"/>
-          <line x1="7"  y1="19"  x2="17"   y2="19"/>
-        </svg>
+        <span class="icon icon-xl sb-brand-icon"></span>
         <div class="sb-brand-text">
           <span class="sb-brand-main">ESP32</span>
           <span class="sb-brand-sub">MESH GATEWAY</span>
@@ -99,38 +72,24 @@
 
       <nav class="sb-nav">
         <button class="sb-btn active" data-section="dashboard">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-            <rect x="3" y="3" width="7" height="9" rx="1"/><rect x="14" y="3" width="7" height="5" rx="1"/>
-            <rect x="3" y="16" width="7" height="5" rx="1"/><rect x="14" y="12" width="7" height="9" rx="1"/>
-          </svg>
+          <span class="icon icon-md sb-btn-icon icon-dashboard"></span>
           <span>Dashboard</span>
         </button>
 
         <button class="sb-btn" data-section="nodes">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
-            <circle cx="9" cy="7" r="3"/><circle cx="17" cy="10" r="2.5"/>
-            <path d="M2 20c0-3.3 3.1-6 7-6s7 2.7 7 6"/>
-            <path d="M22 20c0-2.2-2.2-4-5-4"/>
-          </svg>
+          <span class="icon icon-md sb-btn-icon icon-con-nodes"></span>
           <span>Connected Nodes</span>
           <span class="sb-badge" id="nb-nodes">0</span>
         </button>
 
         <button class="sb-btn" data-section="available">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
-            <circle cx="12" cy="12" r="2" fill="currentColor"/>
-            <path d="M16.24 7.76a6 6 0 0 1 0 8.49"/><path d="M7.76 7.76a6 6 0 0 0 0 8.49"/>
-            <path d="M20.49 3.51a12 12 0 0 1 0 16.97"/><path d="M3.51 3.51a12 12 0 0 0 0 16.97"/>
-          </svg>
+          <span class="icon icon-md sb-btn-icon icon-avail-nodes"></span>
           <span>Available to Pair</span>
           <span class="sb-badge pulse" id="nb-avail" style="display:none">0</span>
         </button>
 
         <button class="sb-btn" data-section="settings">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
-            <circle cx="12" cy="12" r="3"/>
-            <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>
-          </svg>
+          <span class="icon icon-md sb-btn-icon icon-gears"></span>
           <span>Settings</span>
         </button>
       </nav>
@@ -143,9 +102,7 @@
           <span class="sb-dev">Developed by A-Tech Officials</span>
         </div>
         <a class="sb-gh" href="https://github.com/atechofficials" target="_blank" rel="noopener" title="GitHub">
-          <svg viewBox="0 0 24 24" fill="currentColor" width="14" height="14">
-            <path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.44 9.8 8.21 11.39.6.11.82-.26.82-.57v-2.23c-3.34.72-4.04-1.41-4.04-1.41-.54-1.38-1.33-1.75-1.33-1.75-1.09-.74.08-.73.08-.73 1.2.08 1.84 1.24 1.84 1.24 1.07 1.83 2.8 1.3 3.49 1 .1-.78.42-1.31.76-1.61-2.67-.3-5.47-1.34-5.47-5.93 0-1.31.47-2.38 1.24-3.22-.12-.3-.54-1.52.12-3.17 0 0 1.01-.32 3.3 1.23a11.5 11.5 0 0 1 3-.4c1.02.004 2.04.14 3 .4 2.28-1.55 3.29-1.23 3.29-1.23.66 1.65.24 2.87.12 3.17.77.84 1.23 1.91 1.23 3.22 0 4.61-2.81 5.62-5.48 5.92.43.37.81 1.1.81 2.22v3.29c0 .31.22.69.83.57C20.57 21.8 24 17.3 24 12 24 5.37 18.63 0 12 0z"/>
-          </svg>
+          <span class="icon icon-sm sb-gh-icon"></span>
           GitHub
         </a>
       </footer>
@@ -176,28 +133,17 @@
         </div>
 
         <button class="logout-btn" id="logout-btn" title="Log out of web interface" style="display:none">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
-            <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/>
-            <polyline points="16 17 21 12 16 7"/>
-            <line x1="21" y1="12" x2="9" y2="12"/>
-          </svg>
+          <span class="icon icon-sm logout-btn-icon"></span>
           <span>Logout</span>
         </button>
 
         <button class="gw-reboot-btn" id="gw-reboot-btn" title="Reboot Gateway">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
-            <path d="M21 12a9 9 0 1 1-9-9c2.52 0 4.93 1 6.74 2.74L21 8"/>
-            <path d="M21 3v5h-5"/>
-          </svg>
+          <span class="icon icon-sm gw-reboot-btn-icon"></span>
           <span>Reboot GW</span>
         </button>
 
         <button class="gw-factory-btn" id="gw-factory-btn" title="Factory Reset Gateway">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
-            <polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14H6L5 6"/>
-            <path d="M10 11v6"/><path d="M14 11v6"/>
-            <path d="M9 6V4h6v2"/>
-          </svg>
+          <span class="icon icon-sm gw-factory-btn-icon"></span>
           <span>Factory Reset</span>
         </button>
 
@@ -220,7 +166,7 @@
             <div class="empty-state" id="dash-empty">
               <div class="empty-glyph">⬡</div>
               <p>No paired nodes</p>
-              <small>Go to <strong>Available to Pair</strong>, hold a node button for 3 s, then click Connect.</small>
+              <small>Go to <strong>Available to Pair</strong>, hold a node button for 3-seconds, then click Connect.</small>
             </div>
           </div>
         </section>
@@ -285,12 +231,7 @@
                 Once credentials are set, all users must log in to access the dashboard.
               </p>
               <div class="setting-warn-box">
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
-                     stroke-linecap="round" width="15" height="15" style="flex-shrink:0;margin-top:.1rem">
-                  <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/>
-                  <line x1="12" y1="9" x2="12" y2="13"/>
-                  <circle cx="12" cy="17" r=".5" fill="currentColor"/>
-                </svg>
+                <span class="icon setting-warn-box-icon"></span>
                 <span>Once credentials are set, there is <strong>no way to recover a forgotten password</strong>.
                 You must manually factory reset the Gateway via the hardware push button to regain access to the web interface.</span>
               </div>
@@ -313,11 +254,7 @@
               </div>
               <div class="setting-save-row" style="margin-top:.75rem">
                 <button class="settings-save-btn web-creds-save-color" id="save-web-creds-btn">
-                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"
-                       stroke-linecap="round" stroke-linejoin="round" width="14" height="14">
-                    <rect x="3" y="11" width="18" height="11" rx="2" ry="2"/>
-                    <path d="M7 11V7a5 5 0 0 1 10 0v4"/>
-                  </svg>
+                  <span class="icon icon-sm gw-ui-cred-save-btn-icon"></span>
                   Set Credentials
                 </button>
                 <span class="setting-save-note" id="web-creds-note"></span>
@@ -332,10 +269,8 @@
                   <div class="setting-desc">Switch between dark and light mode</div>
                 </div>
                 <button class="theme-btn" id="theme-btn">
-                  <!-- Shows Light Button when Dark Theme is active -->
-                  <span class="theme-icon-dark">☀️ Light</span>
-                  <!-- Shows Dark Button when Light Theme is active -->
-                  <span class="theme-icon-light">🌙 Dark</span>
+                  <span class="icon icon-sm theme-btn-icon"></span>
+                  <span class="theme-label"></span>
                 </button>
               </div>
             </div>
@@ -364,10 +299,7 @@
               </div>
               <div class="setting-save-row">
                 <button class="settings-save-btn" id="save-ap-btn">
-                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" width="14" height="14">
-                    <path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/>
-                    <polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/>
-                  </svg>
+                  <span class="icon icon-sm gw-ap-save-btn-icon"></span>
                   Save AP Config
                 </button>
                 <span class="setting-save-note" id="ap-save-note"></span>
@@ -389,10 +321,7 @@
                   </div>
                 </div>
                 <button class="settings-portal-btn" id="wifi-portal-btn">
-                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" width="14" height="14">
-                    <path d="M5 12.55a11 11 0 0 1 14.08 0"/><path d="M1.42 9a16 16 0 0 1 21.16 0"/>
-                    <path d="M8.53 16.11a6 6 0 0 1 6.95 0"/><circle cx="12" cy="20" r="1" fill="currentColor"/>
-                  </svg>
+                  <span class="icon icon-sm settings-portal-btn-icon"></span>
                   Change Network
                 </button>
               </div>
@@ -427,7 +356,10 @@
                   <input type="password" class="setting-input" placeholder="optional" disabled>
                 </div>
               </div>
-              <p class="setting-note">⚠ MQTT support will be added in a future firmware update.</p>
+              <div class="setting-warn-box">
+                <span class="icon setting-warn-box-icon"></span>
+                <span>MQTT support will be added in a future firmware update.</span>
+              </div>
             </div>
 
           </div>
@@ -464,7 +396,9 @@
   <!-- ── Confirm Modal (for destructive / irreversible actions) ─ -->
   <div class="confirm-overlay" id="confirm-overlay" style="display:none" role="dialog" aria-modal="true">
     <div class="confirm-modal" id="confirm-modal">
-      <div class="confirm-icon" id="confirm-icon">⚠️</div>
+      <div class="confirm-icon" id="confirm-icon">
+        <span class="icon setting-warn-box-icon"></span>
+      </div>
       <div class="confirm-title" id="confirm-title">Are you sure?</div>
       <div class="confirm-body" id="confirm-body"></div>
       <div class="confirm-actions">

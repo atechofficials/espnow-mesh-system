@@ -1,5 +1,5 @@
 /**
- * ESP32 Mesh Gateway Web Interface Client v3.3
+ * ESP32 Mesh Gateway Web Interface Client v3.4
  *
  * WS Inbound:  { type:"meta"|"update"|"discovered"|"pair_timeout"|"ap_config_ack"|
  *                     "gw_portal_starting"|"gw_factory_reset"|"gw_rebooting"|
@@ -191,12 +191,7 @@ async function doLogin() {
     setLoginError("Connection error. Please try again.");
   } finally {
     btn.disabled = false;
-    btn.innerHTML = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"
-        stroke-linecap="round" stroke-linejoin="round" width="16" height="16">
-      <path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4"/>
-      <polyline points="10 17 15 12 10 7"/>
-      <line x1="15" y1="12" x2="3" y2="12"/>
-    </svg> Sign In`;
+    btn.innerHTML = `<span class="icon login-btn-icon"></span> Sign In`;
   }
 }
 
@@ -421,7 +416,7 @@ function setWs(state) {
   $wsPill.className = "ws-pill " + state;
   $wsLabel.textContent =
     state === "live"       ? "Live" :
-    state === "error"      ? "Reconnecting…" : "Connecting";
+    state === "error"      ? "Reconnecting..." : "Connecting";
 }
 
 // ── Meta ──────────────────────────────────────────────────────────────────────
@@ -525,7 +520,7 @@ function buildCard(n) {
       <span class="card-dot ${online ? "online" : "offline"}"></span>
       <span class="card-name">${esc(n.name || `Node #${n.id}`)}</span>
       <span class="card-badge ${typeCls}">${typeLbl}</span>
-      <button class="card-info-btn" data-node-id="${n.id}" title="Node info">ⓘ</button>
+      <button class="card-info-btn" data-node-id="${n.id}" title="Node info"><span class="icon icon-sm card-info-btn-icon"></span></button>
     </div>
     <div class="card-rows">${body}</div>
   </div>`;
@@ -662,16 +657,13 @@ function buildRow(n) {
     <td class="row-since" data-since="${n.last_seen || 0}">${fmtSince(n.last_seen || 0)}</td>
     <td>
       <div class="tbl-actions">
-        <button class="tbl-btn info"     data-node-id="${n.id}" title="Node info">ⓘ Info</button>
+        <button class="tbl-btn info"     data-node-id="${n.id}" title="Node info"><span class="icon icon-sm tbl-btn-info-icon"></span> Info</button>
         <button class="tbl-btn reboot"   data-node-id="${n.id}"
                 title="${online ? "Reboot node" : "Node is offline"}"
-                ${online ? "" : "disabled"}>↺ Reboot</button>
+                ${online ? "" : "disabled"}><span class="icon icon-sm tbl-btn-reboot-icon"></span> Reboot</button>
         <button class="tbl-btn settings" data-node-id="${n.id}" title="Node settings">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" width="11" height="11" style="display:inline-block;vertical-align:middle;margin-right:2px">
-            <circle cx="12" cy="12" r="3"/>
-            <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>
-          </svg>Settings</button>
-        <button class="tbl-btn disc"     data-node-id="${n.id}" title="Disconnect">✕ Disc.</button>
+          <span class="icon icon-sm tbl-btn-settings-icon"></span> Settings</button>
+        <button class="tbl-btn disc"     data-node-id="${n.id}" title="Disconnect"><span class="icon icon-sm tbl-btn-disc-icon"></span> Disconnect</button>
       </div>
     </td>
   </tr>`;
@@ -719,7 +711,7 @@ function renderAvailable() {
       const btn = existing.querySelector(".connect-btn");
       if (btn) {
         const pending = pendingMacs.has(n.mac);
-        btn.textContent = pending ? "Connecting…" : "Connect";
+        btn.textContent = pending ? "Connecting..." : "Connect";
         btn.classList.toggle("pending", pending);
       }
     }
@@ -744,7 +736,7 @@ function buildAvailCard(n) {
     </div>
     <button class="connect-btn ${pending ? "pending" : ""}"
             data-mac="${esc(n.mac)}">
-      ${pending ? "Connecting…" : "Connect"}
+      ${pending ? "Connecting..." : "Connect"}
     </button>
   </div>`;
 }
@@ -835,7 +827,7 @@ function sendUnpairCmd(nodeId) {
 function sendGatewayReboot() {
   if (!confirm("Reboot the ESP32-S3 Gateway?\nThe dashboard will reconnect automatically.")) return;
   send({ type: "reboot_gw" });
-  showToast("↺ Gateway rebooting — reconnecting…", "warn");
+  showToast("Gateway rebooting — reconnecting...", "warn");
   // Disable the button briefly so it can't be clicked again mid-reboot
   $gwReboot.disabled = true;
   setTimeout(() => { $gwReboot.disabled = false; }, 12000);
@@ -847,7 +839,7 @@ function sendNodeReboot(nodeId) {
   const label = n.name || `Node #${nodeId}`;
   if (!confirm(`Reboot "${label}"?\nThe node will reconnect automatically.`)) return;
   send({ type: "reboot_node", node_id: nodeId });
-  showToast(`↺ Node "${label}" rebooting…`, "warn");
+  showToast(`Node "${label}" rebooting...`, "warn");
 }
 
 // ── Relay ─────────────────────────────────────────────────────────────────────
@@ -984,7 +976,7 @@ $wifiPortalBtn.addEventListener("click", triggerWifiPortal);
 function factoryReset() {
   showConfirm({
     title: "Factory Reset Gateway?",
-    body: `<strong>⚠ This action is irreversible.</strong><br><br>
+    body: `<strong>This action is irreversible.</strong><br><br>
            The following will be permanently erased:
            <ul class="confirm-list">
              <li>Saved Wi-Fi / router credentials</li>

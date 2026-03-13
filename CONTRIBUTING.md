@@ -42,9 +42,9 @@ espnow-mesh-system/
 │       ├── src/main.cpp               ← gateway firmware (v1.8.0)
 │       ├── include/mesh_protocol.h    ← shared protocol definitions (v3.0)
 │       ├── data/                      ← LittleFS web assets
-│       │   ├── index.html             ← web interface HTML (v3.3)
-│       │   ├── js/app.js              ← web interface JavaScript (v3.3)
-│       │   └── css/style.css          ← web interface CSS (v3.2)
+│       │   ├── index.html             ← web interface HTML (v3.4)
+│       │   ├── js/app.js              ← web interface JavaScript (v3.4)
+│       │   └── css/style.css          ← web interface CSS (v3.3)
 │       ├── platformio.ini
 │       └── README.md                  ← build & flash instructions
 └── esp32-nodes/
