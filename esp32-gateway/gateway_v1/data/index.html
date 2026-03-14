@@ -1,4 +1,4 @@
-<!-- ESP32 Mesh Gateway Web Interface v3.4 -->
+<!-- ESP32 Mesh Gateway Web Interface v3.5 -->
 <!DOCTYPE html>
 <html lang="en" data-theme="dark">
 <head>
@@ -94,6 +94,7 @@
         </button>
       </nav>
 
+      <!-- Footer Section -->
       <footer class="sb-footer">
         <div class="sb-footer-row">
           <span class="sb-fw" id="sb-fw">Firmware v—</span>
@@ -101,7 +102,7 @@
         <div class="sb-footer-row">
           <span class="sb-dev">Developed by A-Tech Officials</span>
         </div>
-        <a class="sb-gh" href="https://github.com/atechofficials" target="_blank" rel="noopener" title="GitHub">
+        <a class="sb-gh" href="https://github.com/atechofficials/espnow-mesh-system" target="_blank" rel="noopener" title="GitHub">
           <span class="icon icon-sm sb-gh-icon"></span>
           GitHub
         </a>
@@ -325,6 +326,27 @@
                   Change Network
                 </button>
               </div>
+            </div>
+
+            <!-- ── Gateway Hardware ───────────────────────── -->
+            <div class="settings-card">
+              <div class="settings-card-hdr">Gateway Hardware</div>
+
+              <p class="settings-subsec-desc">
+                Control the ESP32-S3 gateway built-in ARGB status LED.
+              </p>
+
+              <div class="setting-row">
+                <div class="setting-field">
+                  <label>Status LED</label>
+                  <label class="ns-toggle">
+                    <input type="checkbox" id="gw-led-toggle">
+                    <span class="ns-toggle-track"></span>
+                    <span class="ns-toggle-thumb"></span>
+                  </label>
+                </div>
+              </div>
+
             </div>
 
             <div class="settings-card">

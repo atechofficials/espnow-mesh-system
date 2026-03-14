@@ -1,6 +1,6 @@
 # Gateway v1 — Build & Flash Guide
 
-Firmware version: **1.8.0**
+Firmware version: **1.8.1**
 Target board: `esp32-s3-devkitc1-n8r8`
 
 ---

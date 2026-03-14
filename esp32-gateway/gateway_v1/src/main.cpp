@@ -10,7 +10,7 @@
  * ║  Hold BOOT (GPIO0) at reset to wipe saved WiFi credentials.             ║
  * ╚══════════════════════════════════════════════════════════════════════════╝
  */
-#define FW_VERSION "1.8.0"
+#define FW_VERSION "1.8.1"
 
 #include <Arduino.h>
 #include <WiFi.h>
@@ -111,6 +111,7 @@ static uint32_t  bootMs      = 0;
 static Adafruit_NeoPixel gwLed(1, GW_LED_PIN, NEO_GRB + NEO_KHZ800);
 static uint32_t          gwLedCurrent   = 0xDEADBEEF;
 static unsigned long     gwLedFlashUntil = 0;
+bool gwLedEnabled = true;
 
 static void setGwLed(uint32_t color) {
     if (color == gwLedCurrent) return;
@@ -126,8 +127,31 @@ static void flashGwLed(uint32_t color, uint32_t durationMs) {
 }
 
 static void updateGwLed() {
+    if (!gwLedEnabled) return;
     if (millis() < gwLedFlashUntil) return;
     setGwLed(gwLed.Color(0, 0, 32));  // dim blue = operational
+}
+
+static void saveGwLedState(bool enabled) {
+    Preferences prefs;
+    prefs.begin("gwconfig", false);  // read-write
+    prefs.putBool("led_enabled", enabled);
+    prefs.end();
+    gwLedEnabled = enabled;
+    if (!enabled) {
+        setGwLed(0);  // turn off immediately
+    }
+}
+
+static void loadGwLedState() {
+    Preferences prefs;
+    prefs.begin("gwconfig", true);  // read-only
+    gwLedEnabled = prefs.getBool("led_enabled", true);
+    prefs.end();
+    Serial.printf("[CFG]  Gateway LED is %s\n", gwLedEnabled ? "enabled" : "disabled");
+    if (!gwLedEnabled) {
+        setGwLed(0);
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -562,7 +586,12 @@ static void disconnectNode(uint8_t nodeId) {
     }
 
     if (esp_now_is_peer_exist(mac)) esp_now_del_peer(mac);
-    flashGwLed(gwLed.Color(255, 80, 0), 200);  // orange pulse
+    if(gwLedEnabled) {
+        flashGwLed(gwLed.Color(255, 80, 0), 200);  // orange pulse
+    }
+    else {    
+        setGwLed(0); // turn off immediately
+    }
     Serial.printf("[MESH] Node #%d disconnected\n", nodeId);
     saveNodesToNvs();  // persist the freed slot so it doesn't reappear after reboot
     wsBroadcast(buildNodesJson());  // forward declaration — defined below
@@ -624,6 +653,7 @@ static String buildMetaJson() {
     doc["channel"]         = wifiChannel;
     doc["uptime"]          = (millis() - bootMs) / 1000;
     doc["fw_version"]      = FW_VERSION;
+    doc["gw_led_enabled"] = gwLedEnabled;
     doc["ap_ssid"]         = gwApSsid;
     doc["credentials_set"] = credentialsSet();
     String out;
@@ -746,7 +776,12 @@ static void processRxQueue() {
                 bool isNew = updateDiscovered(pkt.mac, b->name,
                                               b->hdr.node_type, b->tx_channel);
                 if (isNew) {
-                    flashGwLed(gwLed.Color(255, 255, 255), 150);  // white pulse
+                    if (gwLedEnabled) {
+                        flashGwLed(gwLed.Color(255, 255, 255), 150);  // white pulse
+                    }
+                    else {
+                        setGwLed(255); // turn on solid white
+                    }
                     wsBroadcast(buildDiscoveredJson());
                 }
                 break;
@@ -789,7 +824,12 @@ static void processRxQueue() {
                     memcmp(pendingPair.mac, pkt.mac, 6) == 0) {
                     pendingPair.active = false;
                     Serial.println("[PAIR]  Pair confirmed.");
-                    flashGwLed(gwLed.Color(0, 255, 0), 300);  // green pulse
+                    if (gwLedEnabled) {
+                        flashGwLed(gwLed.Color(0, 255, 0), 300);  // green pulse
+                    }
+                    else {
+                        setGwLed(0); // turn off immediately
+                    }
                 }
 
                 // Remove from discovered list if it was there
@@ -927,7 +967,12 @@ static void processRxQueue() {
                 }
 
                 Serial.printf("[CFG]  Node #%d: %d settings received\n", id, cnt);
-                flashGwLed(gwLed.Color(0, 0, 255), 100);  // brief blue = config rx
+                if (gwLedEnabled) {
+                    flashGwLed(gwLed.Color(0, 0, 255), 100);  // brief blue = config rx
+                }
+                 else {
+                    setGwLed(0); // turn off immediately
+                }
                 // Push updated settings to authenticated WS clients
                 wsBroadcast(buildNodeSettingsJson(id));
                 // Also push nodes update so settings_ready flag refreshes in the table
@@ -967,8 +1012,13 @@ static void processRxQueue() {
                     Serial.printf("  [%d]\"%s\"(%s)", ss->sensors[i].id,
                                   ss->sensors[i].label, ss->sensors[i].unit);
                 Serial.println();
-
-                flashGwLed(gwLed.Color(0, 80, 255), 100);   // brief blue = schema rx
+                
+                if (gwLedEnabled) {
+                    flashGwLed(gwLed.Color(0, 80, 255), 100);  // brief blue = schema rx
+                }
+                 else {
+                    setGwLed(0); // turn off immediately
+                }
                 // Push updated schema to connected WS clients
                 wsBroadcast(buildNodeSensorSchemaJson(id));
                 // Also push nodes update so sensor_schema_ready flag refreshes
@@ -1109,8 +1159,22 @@ static void onWsEvent(AsyncWebSocket*, AsyncWebSocketClient* client,
                     wsBroadcast(buildNodesJson());
                 }
 
+            }
+            // ── Toggle gateway LED (used for pairing feedback and other status) ──
+            else if (strcmp(msgType, "gw_led_toggle") == 0) {
+
+                bool state = doc["state"] | 0;
+
+                if (state) {
+                    setGwLed(gwLed.Color(0, 255, 120));   // normal status color
+                    saveGwLedState(true);
+                } else {
+                    setGwLed(0); // OFF
+                    saveGwLedState(false);
+                }
+            }
             // ── Unpair command (user clicked "Disconnect") ────────────────
-            } else if (strcmp(msgType, "unpair_cmd") == 0) {
+            else if (strcmp(msgType, "unpair_cmd") == 0) {
                 uint8_t nodeId = doc["node_id"] | 0;
                 if (nodeId == 0 || nodeId >= nextId) break;
                 if (nodes[nodeId].mac[0] == 0) break;
@@ -1128,7 +1192,12 @@ static void onWsEvent(AsyncWebSocket*, AsyncWebSocketClient* client,
 
                 sendRebootCmd(nodes[nodeId].mac, nodeId);
                 Serial.printf("[MESH] Reboot command sent to node #%d\n", nodeId);
-                flashGwLed(gwLed.Color(255, 165, 0), 200);  // orange pulse
+                if (gwLedEnabled) {
+                    flashGwLed(gwLed.Color(255, 165, 0), 200);  // orange pulse
+                }
+                else {
+                    setGwLed(0); // turn off immediately
+                }
 
             // ── Reboot the gateway itself ─────────────────────────────────
             } else if (strcmp(msgType, "reboot_gw") == 0) {
@@ -1461,7 +1530,12 @@ void setup() {
     // ── Gateway LED ───────────────────────────────────────────────────────────
     gwLed.begin();
     gwLed.setBrightness(60);
-    setGwLed(gwLed.Color(255, 255, 255));  // white at boot
+    loadGwLedState();
+    if (gwLedEnabled) {
+        setGwLed(gwLed.Color(255, 255, 255));   // white at boot
+    } else {
+        setGwLed(0); // OFF
+    }
     delay(300);
 
     // ── RTOS objects ──────────────────────────────────────────────────────────
@@ -1532,8 +1606,13 @@ void setup() {
     setupRoutes();
     server.begin();
     Serial.printf("[HTTP]  Dashboard → http://%s/\n", WiFi.localIP().toString().c_str());
-
-    setGwLed(gwLed.Color(0, 0, 32));  // settle to dim blue
+    
+    if (gwLedEnabled) {
+        setGwLed(gwLed.Color(0, 0, 32));  // settle to dim blue
+    }
+    else {
+        setGwLed(0); // OFF
+    }
     Serial.println("[BOOT] Setup complete.\n");
 }
 

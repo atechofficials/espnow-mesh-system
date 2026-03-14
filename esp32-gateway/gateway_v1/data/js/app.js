@@ -1,5 +1,5 @@
 /**
- * ESP32 Mesh Gateway Web Interface Client v3.4
+ * ESP32 Mesh Gateway Web Interface Client v3.5
  *
  * WS Inbound:  { type:"meta"|"update"|"discovered"|"pair_timeout"|"ap_config_ack"|
  *                     "gw_portal_starting"|"gw_factory_reset"|"gw_rebooting"|
@@ -50,6 +50,7 @@ const $themeBtn = $("theme-btn");
 const $toast    = $("toast");
 const $gwReboot  = $("gw-reboot-btn");
 const $gwFactory = $("gw-factory-btn");
+const $gwLedToggle = $("gw-led-toggle");
 const $logoutBtn = $("logout-btn");
 
 // ── Node Settings Modal ────────────────────────────────────────────────────────
@@ -439,6 +440,11 @@ function applyMeta(m) {
   // Populate AP SSID field only when user isn't actively editing it
   if (m.ap_ssid && document.activeElement !== $apSsidInput) {
     $apSsidInput.value = m.ap_ssid;
+  }
+  // Sync gateway LED toggle state
+  if ($gwLedToggle && m.gw_led_enabled !== undefined) {
+    // $gwLedToggle.checked = m.gw_led_enabled;
+    $gwLedToggle.checked = !!m.gw_led_enabled;
   }
 }
 
@@ -1271,6 +1277,20 @@ document.addEventListener("change", e => {
     return;
   }
 });
+
+// Gateway Status LED toggle functionality
+if ($gwLedToggle) {
+  $gwLedToggle.addEventListener("change", () => {
+
+    const enabled = $gwLedToggle.checked;
+
+    send({
+      type: "gw_led_toggle",
+      state: enabled ? 1 : 0
+    });
+
+  });
+}
 
 // ── Timers ────────────────────────────────────────────────────────────────────
 // Gateway uptime interpolation
