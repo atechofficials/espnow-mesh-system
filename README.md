@@ -64,7 +64,11 @@ Open the gateway's IP address in any browser on your local network. You'll see l
 
 | Node | Measures | Firmware |
 |------|---------|---------|
-| Envo Mini V1 | Temperature · Atmospheric Pressure · Humidity · Ambient Light | v2.0.0 |
+| Envo Mini v1 | Temperature · Atmospheric Pressure · Humidity · Ambient Light | v2.0.1 |
+
+## Available Actuator Nodes
+| Node | Actuators | Firmware |
+| ESP32 Relay Node v1 | 4-Relays | v1.0.1 |
 
 ---
 

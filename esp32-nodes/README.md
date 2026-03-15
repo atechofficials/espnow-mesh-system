@@ -14,11 +14,17 @@ Currently implemented:
 
 | Node | Sensors | Firmware |
 |------|---------|----------|
-| Envo Mini V1 Node | Bosch BMP280 (temperature + pressure) + DHT22 (humidity) + TEMT6000 (ambient light) | v2.0.0 |
+| Envo Mini V1 Node | Bosch BMP280 (temperature + pressure) + DHT22 (humidity) + TEMT6000 (ambient light) | v2.0.1 |
 
 ### Actuator Nodes (`actuator_nodes/`)
 
 Actuator nodes receive relay-toggle commands from the gateway and report their current state back. Planned for a future release.
+
+Currently implemented:
+
+| Node | Actuator | Firmware |
+|------|---------|----------|
+| ESP32 Relay Node v1 | 4-Relays | v1.0.1 |
 
 ---
 

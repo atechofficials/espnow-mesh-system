@@ -1,234 +1,407 @@
 # Contributing to ESPNow Mesh System
 
-Thank you for your interest in contributing. This document covers everything you need to build, modify, and extend the project — from setting up a development environment to opening a pull request.
+Thank you for contributing to the ESPNow Mesh System.
+
+This project is an ESP32-based mesh platform built around an ESP32-S3 gateway, schema-driven sensor nodes, and actuator nodes such as relay controllers. Contributions are welcome across firmware, protocol design, dashboard UX, documentation, and hardware support.
 
 ---
 
 ## Table of Contents
 
-- [Development Environment](#development-environment)
+- [Project Status](#project-status)
 - [Repository Structure](#repository-structure)
-- [Architecture Overview](#architecture-overview)
-- [How to Contribute](#how-to-contribute)
-- [Adding a New Sensor Node](#adding-a-new-sensor-node)
-- [Extending the Protocol](#extending-the-protocol)
+- [Development Environment](#development-environment)
+- [Build and Flash Basics](#build-and-flash-basics)
+- [Architecture Guidelines](#architecture-guidelines)
+- [Ways to Contribute](#ways-to-contribute)
 - [Working on the Gateway Firmware](#working-on-the-gateway-firmware)
-- [Working on the Web Dashboard](#working-on-the-web-dashboard)
-- [Pull Request Workflow](#pull-request-workflow)
+- [Working on the Web Interface](#working-on-the-web-interface)
+- [Working on Sensor Nodes](#working-on-sensor-nodes)
+- [Working on Actuator Nodes](#working-on-actuator-nodes)
+- [Changing mesh_protocol.h](#changing-mesh_protocolh)
+- [Versioning Guidelines](#versioning-guidelines)
+- [Pull Request Checklist](#pull-request-checklist)
 - [Ground Rules](#ground-rules)
-- [Built With](#built-with)
 
 ---
 
-## Development Environment
+## Project Status
 
-**Requirements:**
-- [PlatformIO Core](https://docs.platformio.org/en/latest/core/installation/index.html) or the PlatformIO IDE extension for VS Code
-- A USB cable per device for flashing and serial monitoring
+Current file versions:
 
-No additional toolchain installation is needed — PlatformIO manages the ESP32 toolchain, framework, and all library dependencies automatically.
+| Component | Current Version |
+|----------|-----------------|
+| ESP32-S3 Gateway firmware `main.cpp` | `v1.8.2` |
+| ESP32 Sensor Node firmware `main.cpp` | `v2.0.1` |
+| ESP32 Actuator Relay Node firmware `main.cpp` | `v1.0.1` |
+| `mesh_protocol.h` | `v3.1.0` |
+| `index.html` | `v3.5` |
+| `app.js` | `v3.6` |
+| `style.css` | `v3.3` |
+
+Current supported node categories:
+- Sensor nodes
+- Actuator nodes
+- Hybrid nodes are reserved in the protocol for future development
 
 ---
 
 ## Repository Structure
 
-```
+```text
 espnow-mesh-system/
 ├── README.md
-├── CONTRIBUTING.md                    ← you are here
+├── CONTRIBUTING.md
 ├── esp32-gateway/
-│   ├── README.md                      ← gateway overview & hardware setup
+│   ├── README.md
 │   └── gateway_v1/
-│       ├── src/main.cpp               ← gateway firmware (v1.8.1)
-│       ├── include/mesh_protocol.h    ← shared protocol definitions (v3.0)
-│       ├── data/                      ← LittleFS web assets
-│       │   ├── index.html             ← web interface HTML (v3.5)
-│       │   ├── js/app.js              ← web interface JavaScript (v3.5)
-│       │   └── css/style.css          ← web interface CSS (v3.3)
+│       ├── src/main.cpp
+│       ├── include/mesh_protocol.h
+│       ├── data/
+│       │   ├── index.html
+│       │   ├── js/app.js
+│       │   └── css/style.css
 │       ├── platformio.ini
-│       └── README.md                  ← build & flash instructions
+│       └── README.md
 └── esp32-nodes/
-    ├── README.md                      ← node overview & pairing guide
+    ├── README.md
     ├── sensor_nodes/
-    │   ├── envo_mini_v1/
-    │   │   ├── src/main.cpp           ← node firmware (v2.0.0)
-    │   │   ├── include/mesh_protocol.h
-    │   │   ├── platformio.ini
-    │   │   └── README.md
-    │   └── README.md
+    │   ├── README.md
+    │   └── envo_mini_v1/
+    │       ├── src/main.cpp
+    │       ├── include/mesh_protocol.h
+    │       ├── platformio.ini
+    │       └── README.md
     └── actuator_nodes/
-        └── README.md                  ← placeholder for future relay/actuator nodes
+        ├── README.md
+        └── esp32_relay_node_v1/
+            ├── src/main.cpp
+            ├── include/mesh_protocol.h
+            ├── platformio.ini
+            └── README.md
 ```
 
 ---
 
-## Architecture Overview
+## Development Environment
 
-```
-  ┌─────────────────────────────────────────────────────┐
-  │                 Your Wi-Fi Network                  │
-  │                                                     │
-  │   Browser ◄──── WebSocket (HTTP/WS) ────► Gateway  │
-  └─────────────────────────────────────────────────────┘
-                                  │
-                            ESP-NOW (2.4 GHz)
-                                  │
-              ┌───────────────────┼───────────────────┐
-              │                   │                   │
-         Sensor Node 1      Sensor Node 2      Actuator Node
-       (Envo Mini V1)        (SCD41 CO2)           (Relay)
-     Temp · Pressure       CO2 · Temp · RH        (planned)
-     Humidity · Light
-```
+Requirements:
 
-**Key design principles:**
+- PlatformIO Core or the PlatformIO IDE extension for VS Code
+- One USB data cable per ESP32 device being flashed or monitored
+- Real hardware for validation
 
-- **Schema-driven sensors** — nodes self-describe their sensors to the gateway via `MSG_SENSOR_SCHEMA` at pair time (labels, units, precision). The gateway and dashboard have zero hardcoded sensor knowledge. Adding sensors to a node requires only node firmware changes.
-- **Schema-driven settings** — nodes self-describe their configurable parameters via `MSG_SETTINGS_SCHEMA`. The gateway relays the schema to the browser, which renders the settings panel dynamically. Adding a setting to a node requires only node firmware changes.
-- **Binary ESP-NOW frames** — all node↔gateway communication uses packed C structs defined in `mesh_protocol.h`. Keep this file identical across gateway and node projects.
-- **AsyncWebServer + WebSocket** — the dashboard is served from LittleFS and communicates with the gateway over a single persistent WebSocket connection.
+PlatformIO manages:
+- ESP32 toolchains
+- framework packages
+- library dependencies
+- board configuration
+
+No manual toolchain setup should be required beyond installing PlatformIO.
 
 ---
 
-## How to Contribute
+## Build and Flash Basics
 
-Good starting points for contributions:
+### Gateway
 
-| Area | Ideas |
-|------|-------|
-| **New sensor node** | CO₂ (SCD41), soil moisture, PIR motion, door/window contact |
-| **Actuator node** | 4-channel relay board — gateway protocol stubs already exist |
-| **Gateway firmware** | OTA update support, multi-channel mesh, improved NVS error handling |
-| **Web dashboard** | Sensor history charts, mobile layout improvements, dark/light theme toggle |
-| **Tooling** | Web-based flasher using ESP Web Tools, GitHub Actions CI for PlatformIO builds |
-| **Hardware** | Custom gateway PCB, custom sensor node PCB |
-
----
-
-## Adding a New Sensor Node
-
-The schema-driven protocol means new sensor nodes require **no changes to the gateway or dashboard**. The steps are:
-
-1. Copy an existing node directory (e.g. `envo_mini_v1/`) as a starting point
-2. Add your sensor driver and initialisation in `setup()`
-3. Add a `SensorDef` entry for each measurement in `getSensorDefs()`:
-   ```cpp
-   out[i].id        = 4;           // unique sensor ID for this node
-   out[i].precision = 1;           // decimal places shown in dashboard
-   strncpy(out[i].label, "CO2",  SENSOR_LABEL_LEN - 1);
-   strncpy(out[i].unit,  "ppm",  SENSOR_UNIT_LEN  - 1);
-   i++;
-   ```
-4. Add the corresponding reading in `sendSensorData()` using the same `id`:
-   ```cpp
-   sd.readings[sd.count++] = { .id = 4, .value = co2ppm };
-   ```
-5. Add per-node settings in `loadSettings()` / `saveSettings()` / `getSettingsDefs()` if needed
-6. Update `NODE_NAME` and the `README.md` for the new node directory
-7. Add the node to the table in `esp32-nodes/sensor_nodes/README.md`
-
-See [`esp32-nodes/sensor_nodes/README.md`](esp32-nodes/sensor_nodes/README.md) for a more detailed guide.
-
----
-
-## Extending the Protocol
-
-`mesh_protocol.h` is the contract between the gateway and all nodes. Before modifying it:
-
-- **Any struct size change is a breaking change** — bump the major version (`v3.0` → `v4.0`) and document the change
-- **The file must be kept identical** across `esp32-gateway/gateway_v1/include/` and every node's `include/` directory — a mismatch causes silent communication failures
-- **Adding a new message type** is non-breaking as long as existing struct sizes are unchanged — bump the minor version only
-- Document every new message type and struct field with a comment in the header
-
-Current version: **v3.0**
-
----
-
-## Working on the Gateway Firmware
-
-Build and flash from `esp32-gateway/gateway_v1/`:
+From `esp32-gateway/gateway_v1/`:
 
 ```bash
-# First time — erase flash for a clean start
+# Optional clean erase
 pio run --target erase
 
-# Upload web assets to LittleFS (only needed when data/ files change)
+# Upload web assets when anything inside data/ changes
 pio run --target uploadfs
 
-# Compile and upload firmware
+# Build and flash firmware
 pio run --target upload
 
 # Serial monitor
 pio device monitor
 ```
 
-Key files:
-- `src/main.cpp` — all gateway logic; tuneable constants at the top
-- `include/mesh_protocol.h` — shared binary frame definitions
-- `data/` — web dashboard assets served from LittleFS
+### Sensor node
 
-Log prefixes for serial debugging:
-
-| Prefix | Meaning |
-|--------|---------|
-| `[BOOT]` | Startup sequence |
-| `[FS]` | LittleFS mount / file listing |
-| `[WiFi]` | Wi-Fi connection events |
-| `[ESP-NOW]` | ESP-NOW init and TX callbacks |
-| `[DISC]` | Node discovery (beacon detected) |
-| `[PAIR]` | Pairing handshake steps |
-| `[MESH]` | Node registration |
-| `[SENS]` | Sensor schema registration and incoming readings |
-| `[CFG]` | Node settings get / set |
-| `[WS]` | WebSocket client connect / disconnect |
-
----
-
-## Working on the Web Dashboard
-
-The dashboard is a single-page vanilla JS + CSS application served from LittleFS. There is no build step — edit the files in `data/` and upload them with:
+From the specific sensor node directory:
 
 ```bash
-pio run --target uploadfs
+pio run --target erase
+pio run --target upload
+pio device monitor
 ```
 
-Key files:
-- `data/index.html` — page structure and all HTML
-- `data/js/app.js` — WebSocket handling, DOM rendering, all UI logic
-- `data/css/style.css` — all styling
+### Actuator node
 
-The dashboard communicates with the gateway over a WebSocket at `ws://<ip>/ws`. See the WebSocket message reference in [`esp32-gateway/gateway_v1/README.md`](esp32-gateway/gateway_v1/README.md) for the full list of message types in both directions.
+From the specific actuator node directory:
 
-The sensor and settings panels are fully schema-driven — `app.js` has no hardcoded sensor or setting names. When working on the dashboard, keep this property intact.
+```bash
+pio run --target erase
+pio run --target upload
+pio device monitor
+```
 
 ---
 
-## Pull Request Workflow
+## Architecture Guidelines
 
-1. Fork the repository
-2. Create a branch: `git checkout -b feat/your-feature-name`
-3. Make your changes — keep gateway, node, and web interface changes in separate commits where possible
-4. **Test on real hardware** before opening a PR — serial monitor logs from both gateway and node are helpful to include in the PR description
-5. Update the relevant `README.md` files if you add a new node type, new settings, or new WebSocket messages
-6. Open a pull request with a clear description of what changed and why
+This project is built around a few important design principles.
+
+### 1. Shared binary protocol
+
+All node-to-gateway ESP-NOW communication uses packed C structs defined in `mesh_protocol.h`.
+
+This file is the protocol contract and must remain identical across:
+- gateway firmware
+- sensor node firmware
+- actuator node firmware
+
+### 2. Schema-driven system design
+
+Sensor nodes describe themselves dynamically through protocol messages. The gateway and dashboard should not rely on hardcoded sensor names.
+
+Actuator nodes should also report current actuator state so the gateway and Web Interface remain synchronized across:
+- manual control
+- reboot
+- reconnect
+- persistence restore
+
+### 3. Clear separation of responsibilities
+
+- Node firmware owns hardware interaction
+- Gateway firmware owns pairing, routing, NVS tracking, and browser communication
+- Web assets own rendering and user interaction only
+
+### 4. Backward-aware protocol evolution
+
+Protocol changes should be deliberate, documented, and versioned. Silent mismatches between different copies of `mesh_protocol.h` are one of the easiest ways to break the system.
+
+---
+
+## Ways to Contribute
+
+Useful contribution areas include:
+
+| Area | Examples |
+|------|----------|
+| Gateway firmware | pairing reliability, actuator support, reconnect logic, NVS robustness, diagnostics |
+| Web Interface | mobile improvements, cleaner UX, node status views, settings UX, better actuator controls |
+| Sensor nodes | new hardware integrations, better power handling, more schema-driven readings |
+| Actuator nodes | relay boards, dimmers, motor control, valve control, hybrid nodes |
+| Protocol | new messages, future hybrid support, compatibility improvements |
+| Documentation | setup guides, flash instructions, version notes, troubleshooting |
+| Tooling | CI builds, release packaging, flashing helpers |
+
+---
+
+## Working on the Gateway Firmware
+
+Main file:
+- `esp32-gateway/gateway_v1/src/main.cpp`
+
+Shared protocol:
+- `esp32-gateway/gateway_v1/include/mesh_protocol.h`
+
+Things typically handled in the gateway:
+- Wi-Fi and captive portal setup
+- ESP-NOW peer management
+- node registration and re-registration
+- settings routing
+- sensor data handling
+- actuator state caching
+- WebSocket communication
+- HTTP API endpoints
+- persistence of gateway-side state
+
+Before changing gateway logic:
+- confirm whether the change belongs in the gateway or the node
+- keep settings and sensor handling schema-driven
+- do not hardcode node-specific behavior unless it is truly gateway-specific
+
+---
+
+## Working on the Web Interface
+
+Main files:
+- `esp32-gateway/gateway_v1/data/index.html`
+- `esp32-gateway/gateway_v1/data/js/app.js`
+- `esp32-gateway/gateway_v1/data/css/style.css`
+
+There is no separate web build system. The dashboard is served directly from LittleFS.
+
+Important notes:
+- if you change anything inside `data/`, you must upload LittleFS again
+- UI state should reflect the gateway's live state, not invent its own source of truth
+- actuator buttons, settings panels, and node status should stay in sync with WebSocket updates
+- preserve schema-driven rendering wherever possible
+
+When modifying the dashboard:
+- keep `index.html`, `app.js`, and `style.css` version notes aligned
+- test reconnect behavior
+- test live update behavior
+- test node reboot scenarios
+- test settings changes from the browser
+
+---
+
+## Working on Sensor Nodes
+
+Sensor nodes should remain as self-describing as possible.
+
+Typical work:
+- initialize sensor hardware
+- define sensor schema
+- send sensor readings
+- define per-node settings if needed
+- handle gateway settings changes
+- keep units, labels, and precision inside node firmware
+
+When adding a new sensor node:
+1. Duplicate a similar existing node directory
+2. Update `NODE_NAME`
+3. Add sensor initialization in `setup()`
+4. Extend the sensor schema definition
+5. Extend sensor data sending logic
+6. Add settings only if needed
+7. Update the node README
+8. Update `esp32-nodes/sensor_nodes/README.md`
+
+Goal:
+A new sensor node should ideally require no gateway code changes if it follows the current schema-driven model.
+
+---
+
+## Working on Actuator Nodes
+
+Actuator nodes are first-class citizens in the current version of the system.
+
+Typical actuator-node responsibilities:
+- receive `MSG_ACTUATOR_SET`
+- apply actuator output to hardware
+- send `MSG_ACTUATOR_STATE`
+- expose configurable settings where useful
+- restore saved state when persistence is enabled
+- resynchronize actuator state after reconnect or reboot
+
+Current example:
+- `esp32-nodes/actuator_nodes/esp32_relay_node_v1/`
+
+When adding or extending an actuator node:
+1. Start from an existing actuator-node implementation if possible
+2. Keep actuator state reporting reliable
+3. Test persistence behavior carefully
+4. Test reboot and reconnect state sync
+5. Document every exposed setting in that node's README
+6. Update `esp32-nodes/actuator_nodes/README.md`
+
+Important:
+Actuator nodes should never assume the Web Interface can guess real hardware state. The node must report it.
+
+---
+
+## Changing mesh_protocol.h
+
+Current version: `v3.1.0`
+
+File locations must stay synchronized:
+- `esp32-gateway/gateway_v1/include/mesh_protocol.h`
+- every node project's `include/mesh_protocol.h`
+
+When changing the protocol:
+- document every added message type clearly
+- document every struct field clearly
+- keep packing assumptions consistent
+- update all copies immediately
+- validate both gateway and node builds after the change
+
+Use these versioning rules:
+- patch bump for comments or non-functional cleanup
+- minor bump for additive, backward-compatible protocol extensions
+- major bump for breaking struct layout or incompatible behavior changes
+
+Examples of changes that likely require a major bump:
+- changing struct sizes
+- changing field order
+- changing meanings of existing message IDs
+- removing or repurposing existing node/message types
+
+---
+
+## Versioning Guidelines
+
+Keep version notes consistent across the project.
+
+### Gateway firmware
+Bump when gateway logic changes in a meaningful way:
+- pairing behavior
+- routing logic
+- settings handling
+- actuator support
+- state sync
+- HTTP/WebSocket behavior
+
+### Node firmware
+Bump when node behavior changes:
+- hardware handling
+- settings
+- state persistence
+- reconnect behavior
+- schema definitions
+- message handling
+
+### Web assets
+Bump file versions when behavior or layout changes:
+- `index.html`
+- `app.js`
+- `style.css`
+
+### Protocol
+Bump `mesh_protocol.h` only when the communication contract changes.
+
+If a release spans multiple components, update changelog entries in the affected README files as well.
+
+---
+
+## Pull Request Checklist
+
+Before opening a PR:
+
+- build the affected project successfully
+- flash and test on real hardware when behavior changes
+- test serial monitor logs
+- update the correct README files
+- keep version references current
+- keep `mesh_protocol.h` synchronized everywhere
+- mention any required flash steps such as `uploadfs`
+- describe whether the change affects:
+  - gateway firmware
+  - web assets
+  - sensor nodes
+  - actuator nodes
+  - protocol compatibility
+
+Recommended PR structure:
+- summary of what changed
+- why it changed
+- files/components affected
+- hardware tested
+- logs or screenshots if useful
+- any protocol/version bump notes
 
 ---
 
 ## Ground Rules
 
-- **Keep `mesh_protocol.h` in sync** — the copy in `esp32-gateway/` and the copy in each node directory must always be identical.
-- **New sensor nodes should not require gateway changes** — the schema handshake exists precisely to avoid this. If your sensor contribution requires gateway firmware changes, reconsider the design.
-- **Prefer small, focused PRs** — a new sensor node in one PR, a dashboard fix in another. Mixed-scope PRs are harder to review and harder to revert if something breaks.
-- **No hardcoded sensor names in the gateway or dashboard** — all sensor knowledge belongs in the node firmware via the schema.
+- Do not let copies of `mesh_protocol.h` drift apart
+- Prefer schema-driven design over hardcoded gateway/dashboard assumptions
+- Keep contributions focused and easy to review
+- Test actuator-state sync after reboot and reconnect whenever actuator logic changes
+- Test NVS-backed settings and persistence whenever settings logic changes
+- If you change `data/`, remember `uploadfs`
+- Update documentation when user-visible behavior changes
+- Do not merge protocol changes without checking all firmware targets
 
 ---
 
-## Built With
-
-- [Arduino framework for ESP32](https://github.com/espressif/arduino-esp32) via PlatformIO
-- [WiFiManager](https://github.com/tzapu/WiFiManager) — captive-portal Wi-Fi configuration
-- [ESPAsyncWebServer](https://github.com/ESP32Async/ESPAsyncWebServer) — non-blocking HTTP + WebSocket server
-- [ArduinoJson](https://arduinojson.org/) — JSON serialisation for WebSocket messages
-- [Adafruit BMP280 Library](https://github.com/adafruit/Adafruit_BMP280_Library) — temperature & pressure sensor driver
-- [DHT sensor library](https://github.com/adafruit/DHT-sensor-library) — DHT22 humidity sensor driver
-- [Adafruit NeoPixel](https://github.com/adafruit/Adafruit_NeoPixel) — WS2812B RGB status LED
+Thank you for helping improve the ESPNow Mesh System.
+```

@@ -1,9 +1,15 @@
 # Envo Mini V1 Node
 
-Firmware version: **2.0.0**
+Firmware version: **2.0.1**
 Target board: `dfrobot_firebeetle2_esp32e`
 
 Reads temperature and barometric pressure from a **Bosch BMP280**, humidity from a **DHT22**, and ambient light level from a **TEMT6000** phototransistor. Transmits all readings to the gateway over ESP-NOW at a configurable interval using the v3.0 schema-driven sensor protocol — the node self-describes its sensors to the gateway at pair time, so no gateway changes are needed when sensors are added or removed.
+
+## Firmware Changelog
+| Version | Notes |
+|---------|-------|
+| v2.0.0 | Added two more sensors: DHT22 for Relative Humidity and TEMT6000 for Ambient Light |
+| v2.0.1 | Added a bunch of Debugging Messages (Serial Monitor) |
 
 ---
 

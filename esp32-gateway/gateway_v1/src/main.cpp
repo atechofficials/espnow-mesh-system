@@ -1,16 +1,10 @@
 /**
- * ╔══════════════════════════════════════════════════════════════════════════╗
- * ║        ESP32 MESH GATEWAY  —  Master Device (ESP32-S3 N8R8)             ║
- * ╠══════════════════════════════════════════════════════════════════════════╣
- * ║  Static web assets (HTML / CSS / JS) are served from LittleFS.          ║
- * ║  Flash the filesystem ONCE with:  pio run --target uploadfs              ║
- * ║  Then flash firmware normally:    pio run --target upload                ║
- * ║                                                                          ║
- * ║  First boot  → opens AP "ESP32-Mesh-Setup" (captive portal).            ║
- * ║  Hold BOOT (GPIO0) at reset to wipe saved WiFi credentials.             ║
- * ╚══════════════════════════════════════════════════════════════════════════╝
+    * @file [main.cpp]
+    * @brief Main source file for the ESP32 Mesh Gateway firmware
+    * @version 1.8.2
+    * @author Mrinal (@atechofficials)
  */
-#define FW_VERSION "1.8.1"
+#define FW_VERSION "1.8.2"
 
 #include <Arduino.h>
 #include <WiFi.h>
@@ -26,18 +20,18 @@
 #include "mbedtls/sha256.h"
 #include <set>
 
-// ─── Configuration ────────────────────────────────────────────────────────────
+// Configuration
 #define RESET_BTN_PIN    0
-#define AP_SSID_DEFAULT  "ESP32-Mesh-Setup"
+#define AP_SSID_DEFAULT  "ESP32-Mesh-Gateway"
 #define AP_PASS_DEFAULT  "meshsetup"
 #define WEB_PORT         80
 
-// Runtime AP credentials — loaded from NVS on boot, fall back to compile-time defaults.
+// Runtime AP credentials - loaded from NVS on boot, fall back to compile-time defaults.
 // These are the SSID / password the WiFiManager captive portal AP will use.
 static char gwApSsid[33]     = AP_SSID_DEFAULT;
 static char gwApPassword[64] = AP_PASS_DEFAULT;
 
-// ─── Web Interface Auth ────────────────────────────────────────────────────────
+// Web Interface Auth
 static char webUsername[33]   = "";   // max 32 chars
 static char webPassHash[65]   = "";   // SHA-256 hex of password
 static char sessionToken[65]  = "";   // generated at login, lives in RAM only
@@ -50,7 +44,7 @@ static std::set<uint32_t> authWsClients;  // authenticated WS client IDs
 #define GW_LED_PIN       38
 #define MAX_DISCOVERED   10
 
-// ─── Node Registry ────────────────────────────────────────────────────────────
+// Node Registry
 struct NodeRecord {
     uint8_t       mac[6];
     NodeType      type;
@@ -59,11 +53,11 @@ struct NodeRecord {
     unsigned long lastSeen;
     bool          online;
     uint32_t      uptime;
-    uint8_t       relayMask;
-    // ── Per-node dynamic settings schema (populated by MSG_SETTINGS_DATA) ──────
+    uint8_t actuatorMask;
+    // Per-node dynamic settings schema (populated by MSG_SETTINGS_DATA)
     uint8_t       settingsCount;                     // 0 = not yet received
     SettingDef    settings[NODE_MAX_SETTINGS];        // schema + current values
-    // ── Per-node dynamic sensor schema (populated by MSG_SENSOR_SCHEMA) ────────
+    // Per-node dynamic sensor schema (populated by MSG_SENSOR_SCHEMA)
     // Indexed by position; sensorSchema[j] and sensorValues[j] are always parallel.
     // sensorCount == 0 means schema has not yet been received from this node.
     uint8_t       sensorCount;                       // 0 = schema not yet received
@@ -73,7 +67,7 @@ struct NodeRecord {
 static NodeRecord nodes[MESH_MAX_NODES + 1];
 static uint8_t    nextId = 1;
 
-// ─── Discovered (beaconing) nodes — not yet paired ───────────────────────────
+// Discovered (beaconing) nodes - not yet paired
 struct DiscoveredNode {
     uint8_t       mac[6];
     char          name[16];
@@ -84,7 +78,7 @@ struct DiscoveredNode {
 };
 static DiscoveredNode discovered[MAX_DISCOVERED];
 
-// ─── Pending pair — gateway retries PAIR_CMD until MSG_REGISTER arrives ──────
+// Pending pair - gateway retries PAIR_CMD until MSG_REGISTER arrives
 struct PendingPair {
     uint8_t       mac[6];
     bool          active;
@@ -93,26 +87,29 @@ struct PendingPair {
 };
 static PendingPair pendingPair = {};
 
-// ─── RTOS ─────────────────────────────────────────────────────────────────────
+// RTOS
 static SemaphoreHandle_t nodesMutex;
 
 struct RxPacket { uint8_t mac[6]; uint8_t data[250]; int len; };
 static QueueHandle_t rxQueue;
 
-// ─── Web Server ───────────────────────────────────────────────────────────────
+// Web Server
 static AsyncWebServer server(WEB_PORT);
 static AsyncWebSocket ws("/ws");
 
-// ─── State ────────────────────────────────────────────────────────────────────
+// State
 static uint8_t   wifiChannel = 1;
 static uint32_t  bootMs      = 0;
 
-// ─── Gateway LED ──────────────────────────────────────────────────────────────
+// Gateway Status LED
 static Adafruit_NeoPixel gwLed(1, GW_LED_PIN, NEO_GRB + NEO_KHZ800);
 static uint32_t          gwLedCurrent   = 0xDEADBEEF;
 static unsigned long     gwLedFlashUntil = 0;
 bool gwLedEnabled = true;
 
+// *****************************************************************************
+// Gateway Status LED Helpers
+// *****************************************************************************
 static void setGwLed(uint32_t color) {
     if (color == gwLedCurrent) return;
     gwLedCurrent = color;
@@ -154,9 +151,9 @@ static void loadGwLedState() {
     }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
+// *****************************************************************************
 //  Helpers
-// ─────────────────────────────────────────────────────────────────────────────
+// *****************************************************************************
 static String macToStr(const uint8_t* mac) {
     char buf[18];
     snprintf(buf, sizeof(buf), "%02X:%02X:%02X:%02X:%02X:%02X",
@@ -186,9 +183,9 @@ static uint8_t findFreeSlot() {
     return nextId++;
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
+// *****************************************************************************
 //  Web Auth helpers
-// ─────────────────────────────────────────────────────────────────────────────
+// *****************************************************************************
 static bool credentialsSet() {
     return webUsername[0] != '\0' && webPassHash[0] != '\0';
 }
@@ -267,20 +264,36 @@ static String getCookieValue(AsyncWebServerRequest* req, const char* name) {
         if (semi < 0) break;
         start = semi + 1;
     }
+    // For Debugging: print the cookie parsing attempt to the Serial console
+    Serial.printf("[AUTH]  Cookie \"%s\" not found in header: %s\n", name, raw.c_str());
     return String();
 }
 
 // Returns true if the HTTP request carries a valid session or remember cookie.
 static bool isHttpAuthenticated(AsyncWebServerRequest* req) {
-    if (!credentialsSet()) return true;
+    if (!credentialsSet()) {
+        // For Debugging: print the authentication attempt to the Serial console
+        Serial.printf("[AUTH]  HTTP auth not required for request to %s\n", req->url().c_str());
+        return true;
+    }
     if (strlen(sessionToken) > 0) {
         String v = getCookieValue(req, "gwsession");
-        if (v.length() > 0 && v.equals(sessionToken)) return true;
+        if (v.length() > 0 && v.equals(sessionToken)) {
+            // For Debugging: print the authentication attempt to the Serial console
+            Serial.printf("[AUTH]  HTTP auth OK for request to %s\n", req->url().c_str());
+            return true;
+        }
     }
     if (strlen(rememberToken) > 0) {
         String v = getCookieValue(req, "gwremember");
-        if (v.length() > 0 && v.equals(rememberToken)) return true;
+        if (v.length() > 0 && v.equals(rememberToken)) {
+            // For Debugging: print the authentication attempt to the Serial console
+            Serial.printf("[AUTH]  HTTP auth OK for request to %s\n", req->url().c_str());
+            return true;
+        }
     }
+    // For Debugging: print the authentication attempt to the Serial console
+    Serial.printf("[AUTH]  HTTP auth failed for request to %s\n", req->url().c_str());
     return false;
 }
 
@@ -291,12 +304,14 @@ static void wsBroadcast(const String& msg) {
     for (uint32_t id : authWsClients) {
         AsyncWebSocketClient* c = ws.client(id);
         if (c && c->canSend()) c->text(msg);
+        // For Debugging: print the message being sent to the Serial console
+        Serial.printf("[WS]    Sent message to client %d: %s\n", id, msg.c_str());
     }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
+// *****************************************************************************
 //  NVS — Gateway config (AP name / password)
-// ─────────────────────────────────────────────────────────────────────────────
+// *****************************************************************************
 static void loadApConfig() {
     Preferences prefs;
     prefs.begin("gwconfig", true);  // read-only
@@ -319,12 +334,12 @@ static void saveApConfig(const char* ssid, const char* pass) {
     Serial.printf("[CFG]  AP config saved: SSID=\"%s\"\n", gwApSsid);
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
+// *****************************************************************************
 //  NVS — Paired node registry
 //  Only the static identity fields are persisted; volatile runtime fields
-//  (lastSeen, online, temperature, pressure, uptime, relay, settings)
+//  (lastSeen, online, temperature, pressure, uptime, actuators [relays], settings)
 //  are repopulated naturally when the node sends its first message.
-// ─────────────────────────────────────────────────────────────────────────────
+// *****************************************************************************
 // Forward declarations needed by loadNodesFromNvs (defined further below)
 static bool addPeer(const uint8_t* mac, uint8_t channel = 0);
 static void sendSettingsGet(const uint8_t* mac, uint8_t nodeId, NodeType nodeType);
@@ -344,7 +359,7 @@ static void saveNodesToNvs() {
         char key[5];
         snprintf(key, sizeof(key), "n%d", i);
         if (nodes[i].mac[0] == 0 && nodes[i].mac[1] == 0) {
-            prefs.remove(key);  // slot was freed — remove stale entry
+            prefs.remove(key);  // slot was freed - remove stale entry
             continue;
         }
         NodeNvsRecord rec;
@@ -355,6 +370,8 @@ static void saveNodesToNvs() {
         prefs.putBytes(key, &rec, sizeof(rec));
     }
     prefs.end();
+    // For Debugging: print the saved nodes to the Serial console
+    Serial.printf("[MESH] Saved %d nodes to NVS. nextId=%d\n", nextId - 1, nextId);
 }
 
 // Called once from setup(), after ESP-NOW is initialised so addPeer() works.
@@ -378,6 +395,7 @@ static void loadNodesFromNvs() {
         memcpy(nodes[i].fw_version, rec.fw_version, 8);
         nodes[i].lastSeen      = millis();  // avoid instant NODE_TIMEOUT
         nodes[i].online        = false;     // marked offline until first message
+        nodes[i].actuatorMask = 0;
         nodes[i].settingsCount = 0;         // re-fetched when node responds
 
         addPeer(rec.mac);  // re-register ESP-NOW peer
@@ -400,9 +418,9 @@ static void loadNodesFromNvs() {
     }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-//  LittleFS
-// ─────────────────────────────────────────────────────────────────────────────
+// *****************************************************************************
+//  LittleFS Helpers
+// *****************************************************************************
 static void mountFilesystem() {
     if (!LittleFS.begin(false, "/littlefs", 10, "spiffs")) {
         Serial.println("[FS]  CRITICAL: LittleFS mount failed!");
@@ -419,15 +437,18 @@ static void mountFilesystem() {
     }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
+// *****************************************************************************
 //  ESP-NOW helpers
-// ─────────────────────────────────────────────────────────────────────────────
+// *****************************************************************************
 static bool addPeer(const uint8_t* mac, uint8_t channel) {
     if (esp_now_is_peer_exist(mac)) return true;
     esp_now_peer_info_t p{};
     memcpy(p.peer_addr, mac, 6);
     p.channel = channel;
     p.encrypt = false;
+
+    // For Debugging: print the peer being added to the Serial console
+    Serial.printf("[MESH] Adding ESP-NOW peer: %s on channel %d... ", macToStr(mac).c_str(), channel);
     return esp_now_add_peer(&p) == ESP_OK;
 }
 
@@ -438,6 +459,10 @@ static void sendRegisterAck(const uint8_t* mac, uint8_t assignedId, NodeType nod
     ack.hdr.node_type = nodeType;
     ack.assigned_id   = assignedId;
     ack.channel       = wifiChannel;
+
+    // For Debugging: print the ACK being sent to the Serial console
+    Serial.printf("[MESH] Sending registration ACK to %s: assigned ID #%d on channel %d\n",
+                  macToStr(mac).c_str(), assignedId, wifiChannel);
     esp_now_send(mac, (uint8_t*)&ack, sizeof(ack));
 }
 
@@ -447,6 +472,10 @@ static void sendPairCmd(const uint8_t* mac) {
     cmd.hdr.node_id   = 0;
     cmd.hdr.node_type = NODE_SENSOR;
     cmd.channel       = wifiChannel;
+
+    // For Debugging: print the command being sent to the Serial console
+    Serial.printf("[MESH] Sending pair command to %s on channel %d\n",
+                  macToStr(mac).c_str(), wifiChannel);
     esp_now_send(mac, (uint8_t*)&cmd, sizeof(cmd));
 }
 
@@ -455,6 +484,10 @@ static void sendUnpairCmd(const uint8_t* mac, uint8_t nodeId) {
     cmd.hdr.type      = MSG_UNPAIR_CMD;
     cmd.hdr.node_id   = nodeId;
     cmd.hdr.node_type = NODE_SENSOR;
+
+    // For Debugging: print the command being sent to the Serial console
+    Serial.printf("[MESH] Sending UNPAIR command to node #%d (%s)\n",
+                  nodeId, macToStr(mac).c_str());
     esp_now_send(mac, (uint8_t*)&cmd, sizeof(cmd));
 }
 
@@ -463,6 +496,10 @@ static void sendRebootCmd(const uint8_t* mac, uint8_t nodeId) {
     cmd.hdr.type      = MSG_REBOOT_CMD;
     cmd.hdr.node_id   = nodeId;
     cmd.hdr.node_type = NODE_SENSOR;  // node ignores this field on reboot
+
+    // For Debugging: print the command being sent to the Serial console
+    Serial.printf("[MESH] Sending reboot command to node #%d (%s)\n",
+                  nodeId, macToStr(mac).c_str());
     esp_now_send(mac, (uint8_t*)&cmd, sizeof(cmd));
 }
 
@@ -471,6 +508,10 @@ static void sendSettingsGet(const uint8_t* mac, uint8_t nodeId, NodeType nodeTyp
     msg.hdr.type      = MSG_SETTINGS_GET;
     msg.hdr.node_id   = nodeId;
     msg.hdr.node_type = nodeType;
+
+    // For Debugging: print the request being sent to the Serial console
+    Serial.printf("[MESH] Requesting settings from node #%d (%s)\n",
+                  nodeId, macToStr(mac).c_str());
     esp_now_send(mac, (uint8_t*)&msg, sizeof(msg));
 }
 
@@ -479,35 +520,60 @@ static void sendSensorSchemaGet(const uint8_t* mac, uint8_t nodeId, NodeType nod
     msg.hdr.type      = MSG_SENSOR_SCHEMA_GET;
     msg.hdr.node_id   = nodeId;
     msg.hdr.node_type = nodeType;
+
+    // For Debugging: print the request being sent to the Serial console
+    Serial.printf("[MESH] Requesting sensor schema from node #%d (%s)\n",
+                  nodeId, macToStr(mac).c_str());
     esp_now_send(mac, (uint8_t*)&msg, sizeof(msg));
 }
 
 static void sendSettingsSet(const uint8_t* mac, uint8_t nodeId, NodeType nodeType,
                             uint8_t settingId, int16_t value) {
+    
+    if (nodeId == 0 || nodeId >= nextId) return;
+    
     MsgSettingsSet msg;
     msg.hdr.type      = MSG_SETTINGS_SET;
     msg.hdr.node_id   = nodeId;
     msg.hdr.node_type = nodeType;
     msg.id            = settingId;
     msg.value         = value;
+    
+    // For Debugging: print the settings update being sent to the Serial console
+    Serial.printf("[MESH] Sending settings update to node #%d: setting_id=%d value=%d\n",
+                  nodeId, settingId, value);
     esp_now_send(mac, (uint8_t*)&msg, sizeof(msg));
 }
 
-static bool sendRelayCmd(uint8_t nodeId, uint8_t relayIndex, uint8_t state) {
+static bool sendActuatorCmd(uint8_t nodeId, uint8_t actuatorId, uint8_t state)
+{
     if (nodeId == 0 || nodeId >= nextId) return false;
-    if (!nodes[nodeId].online)           return false;
-    MsgRelayCmd cmd;
-    cmd.hdr.type      = MSG_RELAY_CMD;
+
+    MsgActuatorSet cmd;
+
+    cmd.hdr.type      = MSG_ACTUATOR_SET;
     cmd.hdr.node_id   = nodeId;
-    cmd.hdr.node_type = NODE_RELAY;
-    cmd.relay_index   = relayIndex;
-    cmd.state         = state;
-    return esp_now_send(nodes[nodeId].mac, (uint8_t*)&cmd, sizeof(cmd)) == ESP_OK;
+    cmd.hdr.node_type = NODE_ACTUATOR;
+
+    cmd.actuator_id = actuatorId;
+    cmd.state       = state;
+
+    // For Debugging: print the command being sent to the Serial console
+    Serial.printf("[MESH] Sending actuator cmd to node #%d: actuator_id=%d state=%d\n",
+                  nodeId, actuatorId, state);
+
+    esp_err_t r = esp_now_send(nodes[nodeId].mac, (uint8_t*)&cmd, sizeof(cmd));
+    if (r != ESP_OK) {
+        Serial.printf("[MESH] Failed to send actuator cmd to node #%d: error\n", nodeId);
+        return false;
+    }
+    Serial.printf("[MESH] Actuator cmd sent to node #%d successfully\n", nodeId);
+    return true;
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
+// *****************************************************************************
 //  ESP-NOW callbacks
-// ─────────────────────────────────────────────────────────────────────────────
+// *****************************************************************************
 static void onDataRecv(const esp_now_recv_info_t* info,
                        const uint8_t* data, int len) {
     RxPacket pkt;
@@ -520,9 +586,9 @@ static void onDataRecv(const esp_now_recv_info_t* info,
 
 static void onDataSent(const wifi_tx_info_t*, esp_now_send_status_t) {}
 
-// ─────────────────────────────────────────────────────────────────────────────
+// *****************************************************************************
 //  Discovered list management
-// ─────────────────────────────────────────────────────────────────────────────
+// *****************************************************************************
 // Returns true if the discovered list had a visible change (new node appeared).
 static bool updateDiscovered(const uint8_t* mac, const char* name,
                               NodeType type, uint8_t txChannel) {
@@ -536,7 +602,7 @@ static bool updateDiscovered(const uint8_t* mac, const char* name,
         }
     }
 
-    // New entry — find a free or expired slot
+    // New entry - find a free or expired slot
     for (uint8_t i = 0; i < MAX_DISCOVERED; i++) {
         if (!discovered[i].active ||
             (now - discovered[i].lastSeen > DISCOVERED_TIMEOUT_MS)) {
@@ -570,9 +636,9 @@ static bool cleanupDiscovered() {
     return changed;
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
+// *****************************************************************************
 //  Disconnect a paired node
-// ─────────────────────────────────────────────────────────────────────────────
+// *****************************************************************************
 static String buildNodesJson();  // forward declaration
 static void disconnectNode(uint8_t nodeId) {
     if (nodeId == 0 || nodeId >= nextId) return;
@@ -594,12 +660,12 @@ static void disconnectNode(uint8_t nodeId) {
     }
     Serial.printf("[MESH] Node #%d disconnected\n", nodeId);
     saveNodesToNvs();  // persist the freed slot so it doesn't reappear after reboot
-    wsBroadcast(buildNodesJson());  // forward declaration — defined below
+    wsBroadcast(buildNodesJson());  // forward declaration - defined below
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
+// *****************************************************************************
 //  JSON builders
-// ─────────────────────────────────────────────────────────────────────────────
+// *****************************************************************************
 static String buildNodesJson() {
     JsonDocument doc;
     doc["type"] = "update";
@@ -633,7 +699,8 @@ static String buildNodesJson() {
                     r["value"] = nodes[i].sensorValues[j];
                 }
             } else {
-                n["relay_mask"] = nodes[i].relayMask;
+                n["actuator_mask"] = nodes[i].actuatorMask;
+                n["relay_mask"]    = nodes[i].actuatorMask;  // backward-compatible alias for older UI code
             }
             n["settings_ready"] = (nodes[i].settingsCount > 0);
         }
@@ -754,9 +821,9 @@ static String buildDiscoveredJson() {
     return out;
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
+// *****************************************************************************
 //  Process RX queue — called from loop()
-// ─────────────────────────────────────────────────────────────────────────────
+// *****************************************************************************
 static void processRxQueue() {
     RxPacket pkt;
     while (xQueueReceive(rxQueue, &pkt, 0) == pdTRUE) {
@@ -765,7 +832,7 @@ static void processRxQueue() {
 
         switch (hdr->type) {
 
-            // ── Beacon from node in pairing mode ──────────────────────────
+            // Beacon from node in pairing mode
             case MSG_BEACON: {
                 if (pkt.len < (int)sizeof(MsgBeacon)) break;
                 auto* b = (MsgBeacon*)pkt.data;
@@ -787,7 +854,7 @@ static void processRxQueue() {
                 break;
             }
 
-            // ── Registration (paired reboot reconnect OR post-PAIR_CMD confirm)
+            // Registration (paired reboot reconnect OR post-PAIR_CMD confirm)
             case MSG_REGISTER: {
                 if (pkt.len < (int)sizeof(MsgRegister)) break;
                 auto* reg = (MsgRegister*)pkt.data;
@@ -898,20 +965,47 @@ static void processRxQueue() {
                 break;
             }
 
-            case MSG_RELAY_STATE: {
-                if (pkt.len < (int)sizeof(MsgRelayState)) break;
-                auto* rs  = (MsgRelayState*)pkt.data;
+            case MSG_ACTUATOR_STATE: {
+                if (pkt.len < (int)sizeof(MeshHeader) + 1) break;
+
+                auto* rs = (MsgActuatorState*)pkt.data;
                 uint8_t id = hdr->node_id;
+
                 if (id == 0 || id >= nextId) break;
+                
+                uint8_t count = rs->count;
+                if (count > NODE_MAX_ACTUATORS) count = NODE_MAX_ACTUATORS;
+
+                size_t expected =
+                    sizeof(MeshHeader) +
+                    1 +
+                    count * sizeof(ActuatorState);
+
+                if (pkt.len < expected) break;
+
+                uint8_t mask = 0;
+
+                // Build bitmask from actuator states
+                for (uint8_t i = 0; i < rs->count; i++) {
+                    uint8_t actuatorId = rs->states[i].id;
+                    uint8_t state      = rs->states[i].state;
+
+                    if (actuatorId < 8 && state) {
+                        mask |= (1 << actuatorId);
+                    }
+                }
 
                 if (xSemaphoreTake(nodesMutex, pdMS_TO_TICKS(50)) == pdTRUE) {
-                    nodes[id].relayMask = rs->relay_mask;
-                    nodes[id].lastSeen  = millis();
-                    nodes[id].online    = true;
+                    nodes[id].actuatorMask = mask;
+                    nodes[id].lastSeen = millis();
+                    nodes[id].online   = true;
                     xSemaphoreGive(nodesMutex);
                 }
+
                 wsBroadcast(buildNodesJson());
-                Serial.printf("[MESH] Node #%d relay mask: 0x%02X\n", id, rs->relay_mask);
+
+                Serial.printf("[MESH] Node #%d actuator mask: 0x%02X\n", id, mask);
+
                 break;
             }
 
@@ -930,7 +1024,7 @@ static void processRxQueue() {
                 break;
             }
 
-            // ── Node-initiated disconnect (button held 5 s on node) ───────
+            // Node-initiated disconnect (Pairing Button held 5-seconds on node)
             case MSG_UNPAIR_CMD: {
                 uint8_t id = findNodeByMac(pkt.mac);
                 if (id == 0) break;
@@ -939,7 +1033,7 @@ static void processRxQueue() {
                 break;
             }
 
-            // ── Settings schema received from node ────────────────────────
+            // Settings schema received from node
             case MSG_SETTINGS_DATA: {
                 // Minimum: header(3) + count(1) = 4 bytes
                 if (pkt.len < 4) break;
@@ -980,7 +1074,7 @@ static void processRxQueue() {
                 break;
             }
 
-            // ── Sensor schema received from node ──────────────────────────
+            // Sensor schema received from node
             case MSG_SENSOR_SCHEMA: {
                 // Minimum: header(3) + count(1) = 4 bytes
                 if (pkt.len < 4) break;
@@ -1031,9 +1125,9 @@ static void processRxQueue() {
     }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
+// *****************************************************************************
 //  WebSocket event handler
-// ─────────────────────────────────────────────────────────────────────────────
+// *****************************************************************************
 static void onWsEvent(AsyncWebSocket*, AsyncWebSocketClient* client,
                       AwsEventType type, void* arg,
                       uint8_t* data, size_t len) {
@@ -1042,13 +1136,13 @@ static void onWsEvent(AsyncWebSocket*, AsyncWebSocketClient* client,
             Serial.printf("[WS]  Client #%u  %s\n",
                           client->id(), client->remoteIP().toString().c_str());
             if (!credentialsSet()) {
-                // Open access — auto-authenticate and send initial data
+                // Open access - auto-authenticate and send initial data
                 authWsClients.insert(client->id());
                 client->text(buildMetaJson());
                 client->text(buildNodesJson());
                 client->text(buildDiscoveredJson());
             } else {
-                // Credentials are set — client must authenticate first
+                // Credentials are set - client must authenticate first
                 client->text("{\"type\":\"auth_required\"}");
             }
             break;
@@ -1069,7 +1163,7 @@ static void onWsEvent(AsyncWebSocket*, AsyncWebSocketClient* client,
 
             const char* msgType = doc["type"] | "";
 
-            // ── Auth message — must be processed before the auth guard ────
+            // Auth message - must be processed before the auth guard
             if (strcmp(msgType, "auth") == 0) {
                 if (!credentialsSet()) {
                     authWsClients.insert(client->id());
@@ -1097,34 +1191,38 @@ static void onWsEvent(AsyncWebSocket*, AsyncWebSocketClient* client,
                 break;
             }
 
-            // ── Guard: reject unauthenticated commands ────────────────────
+            // Guard: reject unauthenticated commands
             if (!isWsAuthenticated(client->id())) {
                 client->text("{\"type\":\"auth_required\"}");
                 break;
             }
 
-            // ── Relay command ─────────────────────────────────────────────
-            if (strcmp(msgType, "relay_cmd") == 0) {
+            // Actuator command
+            if (strcmp(msgType, "actuator_cmd") == 0) {
                 uint8_t nodeId     = doc["node_id"]     | 0;
-                uint8_t relayIndex = doc["relay_index"] | 0;
+                uint8_t actuatorId = doc["actuator_id"] | 0;
                 uint8_t state      = doc["state"]       | 0;
-                bool ok = sendRelayCmd(nodeId, relayIndex, state);
+                bool ok = sendActuatorCmd(nodeId, actuatorId, state);
                 if (ok) {
                     if (xSemaphoreTake(nodesMutex, pdMS_TO_TICKS(50)) == pdTRUE) {
-                        if (state) nodes[nodeId].relayMask |=  (1u << relayIndex);
-                        else        nodes[nodeId].relayMask &= ~(1u << relayIndex);
+                        if (state) nodes[nodeId].actuatorMask |= (1u << actuatorId);
+                        else        nodes[nodeId].actuatorMask &= ~(1u << actuatorId);
                         xSemaphoreGive(nodesMutex);
                     }
                     wsBroadcast(buildNodesJson());
                 }
 
-            // ── Pair command (user clicked "Connect") ─────────────────────
+            // Pair command (user clicked "Connect")
             } else if (strcmp(msgType, "pair_cmd") == 0) {
                 const char* macStr = doc["mac"] | "";
                 uint8_t mac[6];
                 if (!parseMac(macStr, mac)) break;
 
-                // Already paired?
+                // Already paired? Don't start the pairing process if the MAC 
+                // is already registered to avoid confusion from multiple nodes 
+                // with the same MAC in pairing mode, which can happen if you 
+                // have multiple nodes in pairing mode at once or if a node fails 
+                // to clean up its peer entry on the gateway after a disconnect.
                 if (findNodeByMac(mac) != 0) break;
 
                 // Always register peer with channel=0 (= gateway's current WiFi
@@ -1143,7 +1241,7 @@ static void onWsEvent(AsyncWebSocket*, AsyncWebSocketClient* client,
 
                 Serial.printf("[PAIR]  Initiating pair with %s\n", macStr);
 
-            // ── Rename node ───────────────────────────────────────────────
+            // Rename node
             } else if (strcmp(msgType, "rename_node") == 0) {
                 uint8_t nodeId = doc["node_id"] | 0;
                 const char* newName = doc["name"] | "";
@@ -1160,7 +1258,7 @@ static void onWsEvent(AsyncWebSocket*, AsyncWebSocketClient* client,
                 }
 
             }
-            // ── Toggle gateway LED (used for pairing feedback and other status) ──
+            // Toggle gateway LED (used for pairing feedback and other status)
             else if (strcmp(msgType, "gw_led_toggle") == 0) {
 
                 bool state = doc["state"] | 0;
@@ -1173,7 +1271,7 @@ static void onWsEvent(AsyncWebSocket*, AsyncWebSocketClient* client,
                     saveGwLedState(false);
                 }
             }
-            // ── Unpair command (user clicked "Disconnect") ────────────────
+            // Unpair command (user clicked "Disconnect")
             else if (strcmp(msgType, "unpair_cmd") == 0) {
                 uint8_t nodeId = doc["node_id"] | 0;
                 if (nodeId == 0 || nodeId >= nextId) break;
@@ -1183,7 +1281,7 @@ static void onWsEvent(AsyncWebSocket*, AsyncWebSocketClient* client,
                 delay(80);  // brief wait for send before removing peer
                 disconnectNode(nodeId);
             }
-            // ── Reboot a specific node ────────────────────────────────────
+            // Reboot a specific node (from dashboard command)
             else if (strcmp(msgType, "reboot_node") == 0) {
                 uint8_t nodeId = doc["node_id"] | 0;
                 if (nodeId == 0 || nodeId >= nextId) break;
@@ -1199,7 +1297,7 @@ static void onWsEvent(AsyncWebSocket*, AsyncWebSocketClient* client,
                     setGwLed(0); // turn off immediately
                 }
 
-            // ── Reboot the gateway itself ─────────────────────────────────
+            // Reboot the gateway itself
             } else if (strcmp(msgType, "reboot_gw") == 0) {
                 Serial.println("[GW]  Reboot requested via dashboard.");
                 ws.textAll("{\"type\":\"gw_rebooting\"}");  // notify all clients
@@ -1207,7 +1305,7 @@ static void onWsEvent(AsyncWebSocket*, AsyncWebSocketClient* client,
                 delay(150);  // allow WS frame to flush before restart
                 ESP.restart();
 
-            // ── Update AP SSID / password ─────────────────────────────────
+            // Update AP SSID / password
             } else if (strcmp(msgType, "set_ap_config") == 0) {
                 const char* newSsid = doc["ssid"]     | "";
                 const char* newPass = doc["password"] | "";
@@ -1227,7 +1325,7 @@ static void onWsEvent(AsyncWebSocket*, AsyncWebSocketClient* client,
                 saveApConfig(newSsid, newPass);
                 client->text("{\"type\":\"ap_config_ack\",\"ok\":true}");
 
-            // ── Set web interface login credentials ───────────────────────
+            // Set web interface login credentials
             } else if (strcmp(msgType, "set_web_credentials") == 0) {
                 const char* newUser = doc["username"] | "";
                 const char* newPass = doc["password"] | "";
@@ -1258,7 +1356,7 @@ static void onWsEvent(AsyncWebSocket*, AsyncWebSocketClient* client,
                 delay(60);
                 ws.textAll("{\"type\":\"session_expired\"}");
 
-            // ── Trigger WiFiManager portal (change home-router network) ───
+            // Trigger WiFiManager portal (change home-router network)
             } else if (strcmp(msgType, "start_wifi_portal") == 0) {
                 Serial.println("[GW]  WiFi portal requested via dashboard.");
                 ws.textAll("{\"type\":\"gw_portal_starting\"}");
@@ -1266,19 +1364,19 @@ static void onWsEvent(AsyncWebSocket*, AsyncWebSocketClient* client,
                 delay(200);
                 {
                     WiFiManager wm;
-                    wm.resetSettings();  // wipe saved STA credentials → portal opens on boot
+                    wm.resetSettings();  // wipe saved STA credentials -> portal opens on boot
                 }
                 delay(100);
                 ESP.restart();
 
-            // ── Node settings: request current schema from node ────────────
+            // Node settings: request current schema from node
             } else if (strcmp(msgType, "node_settings_get") == 0) {
                 uint8_t nodeId = doc["node_id"] | 0;
                 if (nodeId == 0 || nodeId >= nextId) break;
                 if (nodes[nodeId].mac[0] == 0) break;
 
                 if (nodes[nodeId].settingsCount > 0) {
-                    // Already have schema — respond immediately to this client only
+                    // Already have schema - respond immediately to this client only
                     client->text(buildNodeSettingsJson(nodeId));
                 } else {
                     // Re-request from node
@@ -1288,17 +1386,17 @@ static void onWsEvent(AsyncWebSocket*, AsyncWebSocketClient* client,
                     client->text(buildNodeSettingsJson(nodeId));
                 }
 
-            // ── Sensor schema: request current schema from node ───────────
+            // Sensor schema: request current schema from node
             } else if (strcmp(msgType, "node_sensor_schema_get") == 0) {
                 uint8_t nodeId = doc["node_id"] | 0;
                 if (nodeId == 0 || nodeId >= nextId) break;
                 if (nodes[nodeId].mac[0] == 0) break;
 
                 if (nodes[nodeId].sensorCount > 0) {
-                    // Already cached — serve immediately from RAM
+                    // Already cached - serve immediately from RAM
                     client->text(buildNodeSensorSchemaJson(nodeId));
                 } else {
-                    // Not yet received — re-request from node if it is online
+                    // Not yet received - re-request from node if it is online
                     if (nodes[nodeId].online)
                         sendSensorSchemaGet(nodes[nodeId].mac, nodeId, nodes[nodeId].type);
                     // Respond with empty schema for now; MSG_SENSOR_SCHEMA handler
@@ -1306,7 +1404,7 @@ static void onWsEvent(AsyncWebSocket*, AsyncWebSocketClient* client,
                     client->text(buildNodeSensorSchemaJson(nodeId));
                 }
 
-            // ── Node settings: apply a single setting change ──────────────
+            // Node settings: apply a single setting change
             } else if (strcmp(msgType, "node_settings_set") == 0) {
                 uint8_t nodeId    = doc["node_id"]    | 0;
                 uint8_t settingId = doc["setting_id"] | 0;
@@ -1328,10 +1426,10 @@ static void onWsEvent(AsyncWebSocket*, AsyncWebSocketClient* client,
                 }
                 sendSettingsSet(nodes[nodeId].mac, nodeId, nodes[nodeId].type,
                                 settingId, value);
-                Serial.printf("[CFG]  Node #%d setting %d → %d\n", nodeId, settingId, value);
+                Serial.printf("[CFG]  Node #%d setting %d -> %d\n", nodeId, settingId, value);
                 wsBroadcast(buildNodeSettingsJson(nodeId));
 
-            // ── Factory reset ─────────────────────────────────────────────
+            // Factory reset: wipe ALL config and paired nodes, then reboot
             } else if (strcmp(msgType, "factory_reset") == 0) {
                 Serial.println("[GW]  Factory reset requested via dashboard.");
                 ws.textAll("{\"type\":\"gw_factory_reset\"}");
@@ -1378,19 +1476,20 @@ static void onWsEvent(AsyncWebSocket*, AsyncWebSocketClient* client,
     }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
+// *****************************************************************************
 //  Web server routes
-// ─────────────────────────────────────────────────────────────────────────────
+// *****************************************************************************
 static void setupRoutes() {
     ws.onEvent(onWsEvent);
     server.addHandler(&ws);
 
-    // Static files served without auth — the JS login overlay handles access control.
+    // Static files served without auth - the JS login overlay handles access control.
     server.serveStatic("/", LittleFS, "/")
           .setDefaultFile("index.html")
           .setCacheControl("max-age=3600");
 
-    // ── /api/auth_check ───────────────────────────────────────────────────────
+    // /api/auth_check - used by the client on initial page load to determine if credentials are set
+    // and if the user is already authenticated (e.g. via remember me)
     server.on("/api/auth_check", HTTP_GET, [](AsyncWebServerRequest* req) {
         bool authed   = isHttpAuthenticated(req);
         bool credsSet = credentialsSet();
@@ -1399,7 +1498,7 @@ static void setupRoutes() {
         req->send(200, "application/json", body);
     });
 
-    // ── /api/login ────────────────────────────────────────────────────────────
+    // /api/login - accepts username/password, returns session token (and remember token if requested)
     server.on("/api/login", HTTP_POST,
         [](AsyncWebServerRequest*) {},
         nullptr,
@@ -1414,7 +1513,7 @@ static void setupRoutes() {
             bool        remem = doc["remember"] | false;
 
             if (!credentialsSet()) {
-                // No credentials configured — open access
+                // No credentials configured - open access
                 req->send(200, "application/json", R"({"ok":true,"token":"open"})");
                 return;
             }
@@ -1432,7 +1531,7 @@ static void setupRoutes() {
             // Generate a fresh in-memory session token
             generateHexToken(sessionToken, 32);
 
-            // Build JSON — always return session token for WS auth; include
+            // Build JSON - always return session token for WS auth; include
             // the NVS remember token too when "remember me" was checked.
             String body = String("{\"ok\":true,\"token\":\"") + sessionToken + "\"";
             if (remem) body += String(",\"remember_token\":\"") + rememberToken + "\"";
@@ -1456,7 +1555,7 @@ static void setupRoutes() {
         }
     );
 
-    // ── /api/logout ───────────────────────────────────────────────────────────
+    // /api/logout - clears session and remember tokens, forces logout on all clients
     server.on("/api/logout", HTTP_POST, [](AsyncWebServerRequest* req) {
         memset(sessionToken, 0, sizeof(sessionToken));
         authWsClients.clear();
@@ -1471,7 +1570,7 @@ static void setupRoutes() {
         ws.textAll("{\"type\":\"session_expired\"}");
     });
 
-    // ── Protected API routes ──────────────────────────────────────────────────
+    // Protected API routes - require valid session or remember token
     server.on("/api/nodes", HTTP_GET, [](AsyncWebServerRequest* req) {
         if (!isHttpAuthenticated(req)) {
             req->send(401, "application/json", R"({"error":"unauthorized"})"); return;
@@ -1490,7 +1589,7 @@ static void setupRoutes() {
         }
         req->send(200, "application/json", buildDiscoveredJson());
     });
-    server.on("/api/relay", HTTP_POST,
+    server.on("/api/actuator", HTTP_POST,
         [](AsyncWebServerRequest* req) {
             if (!isHttpAuthenticated(req)) {
                 req->send(401, "application/json", R"({"error":"unauthorized"})");
@@ -1505,9 +1604,9 @@ static void setupRoutes() {
                 req->send(400, "application/json", R"({"error":"invalid JSON"})");
                 return;
             }
-            bool ok = sendRelayCmd(
+            bool ok = sendActuatorCmd(
                 (uint8_t)(doc["node_id"]     | 0),
-                (uint8_t)(doc["relay_index"] | 0),
+                (uint8_t)(doc["actuator_id"] | 0),
                 (uint8_t)(doc["state"]       | 0));
             req->send(200, "application/json", ok ? R"({"ok":true})" : R"({"ok":false})");
         }
@@ -1518,16 +1617,16 @@ static void setupRoutes() {
     });
 }
 
-// ═════════════════════════════════════════════════════════════════════════════
+// *****************************************************************************
 //  SETUP
-// ═════════════════════════════════════════════════════════════════════════════
+// *****************************************************************************
 void setup() {
     Serial.begin(115200);
     delay(200);
     Serial.println("\n\n[BOOT] ESP32 Mesh Gateway");
     bootMs = millis();
 
-    // ── Gateway LED ───────────────────────────────────────────────────────────
+    // Gateway Status LED Setup
     gwLed.begin();
     gwLed.setBrightness(60);
     loadGwLedState();
@@ -1538,39 +1637,39 @@ void setup() {
     }
     delay(300);
 
-    // ── RTOS objects ──────────────────────────────────────────────────────────
+    // RTOS objects
     nodesMutex = xSemaphoreCreateMutex();
     rxQueue    = xQueueCreate(RX_QUEUE_SIZE, sizeof(RxPacket));
     memset(nodes,      0, sizeof(nodes));
     memset(discovered, 0, sizeof(discovered));
 
-    // ── LittleFS ──────────────────────────────────────────────────────────────
+    // LittleFS
     mountFilesystem();
 
-    // ── WiFi credentials reset ────────────────────────────────────────────────
+    // WiFi credentials reset
     pinMode(RESET_BTN_PIN, INPUT_PULLUP);
     if (digitalRead(RESET_BTN_PIN) == LOW) {
-        Serial.println("[WiFi] Clearing credentials…");
+        Serial.println("[WiFi] Clearing credentials...");
         WiFiManager wm;
         wm.resetSettings();
         delay(500);
     }
 
-    // ── Load gateway config (AP name / password) from NVS ─────────────────────
+    // Load gateway config (AP name / password) from NVS
     loadApConfig();
 
-    // ── Load web interface credentials from NVS ───────────────────────────────
+    // Load web interface credentials from NVS
     loadWebCredentials();
 
-    // ── WiFiManager ───────────────────────────────────────────────────────────
+    // WiFiManager
     {
         WiFiManager wm;
         wm.setTitle("ESP32 Mesh Gateway Setup");
         wm.setConfigPortalTimeout(180);
         wm.setHttpPort(8080);  // use port 8080 so WiFiManager never conflicts with AsyncWebServer on port 80
-        Serial.println("[WiFi] Connecting (portal if needed)…");
+        Serial.println("[WiFi] Connecting (portal if needed)...");
         if (!wm.autoConnect(gwApSsid, gwApPassword)) {
-            Serial.println("[WiFi] Failed — rebooting");
+            Serial.println("[WiFi] Failed - rebooting");
             delay(1000);
             ESP.restart();
         }
@@ -1582,9 +1681,9 @@ void setup() {
     WiFi.mode(WIFI_STA);
     delay(1000);
 
-    // ── ESP-NOW ───────────────────────────────────────────────────────────────
+    // ESP-NOW
     if (esp_now_init() != ESP_OK) {
-        Serial.println("[ESP-NOW] Init failed — rebooting");
+        Serial.println("[ESP-NOW] Init failed - rebooting");
         delay(1000);
         ESP.restart();
     }
@@ -1595,17 +1694,17 @@ void setup() {
     uint8_t broadcast[6] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
     addPeer(broadcast);
 
-    // Restore paired nodes from NVS — must happen after ESP-NOW init so
+    // Restore paired nodes from NVS - must happen after ESP-NOW init so
     // addPeer() calls inside loadNodesFromNvs() succeed.
     loadNodesFromNvs();
 
-    Serial.printf("[ESP-NOW] Ready — MAC: %s  Ch: %d\n",
+    Serial.printf("[ESP-NOW] Ready - MAC: %s  Ch: %d\n",
                   WiFi.macAddress().c_str(), wifiChannel);
 
-    // ── Web server ────────────────────────────────────────────────────────────
+    // Web server
     setupRoutes();
     server.begin();
-    Serial.printf("[HTTP]  Dashboard → http://%s/\n", WiFi.localIP().toString().c_str());
+    Serial.printf("[HTTP]  Dashboard -> http://%s/\n", WiFi.localIP().toString().c_str());
     
     if (gwLedEnabled) {
         setGwLed(gwLed.Color(0, 0, 32));  // settle to dim blue
@@ -1616,9 +1715,9 @@ void setup() {
     Serial.println("[BOOT] Setup complete.\n");
 }
 
-// ═════════════════════════════════════════════════════════════════════════════
+// *****************************************************************************
 //  LOOP
-// ═════════════════════════════════════════════════════════════════════════════
+// *****************************************************************************
 static unsigned long lastNodeBcast = 0;
 static unsigned long lastMetaBcast = 0;
 static unsigned long lastDiscClean = 0;
@@ -1630,22 +1729,22 @@ void loop() {
     processRxQueue();
     updateGwLed();
 
-    // ── Pending pair: retry PAIR_CMD until MSG_REGISTER arrives ──────────────
+    // Pending pair: retry PAIR_CMD until MSG_REGISTER arrives or timeout expires
     if (pendingPair.active) {
         if (now - pendingPair.startedAt > PAIR_CMD_TIMEOUT_MS) {
             pendingPair.active = false;
-            Serial.println("[PAIR]  Timed out — no response from node.");
+            Serial.println("[PAIR]  Timed out - no response from node.");
             wsBroadcast("{\"type\":\"pair_timeout\"}");
         } else if (now - pendingPair.lastAttempt >= PAIR_CMD_RETRY_MS) {
             pendingPair.lastAttempt = now;
             sendPairCmd(pendingPair.mac);
-            Serial.printf("[PAIR]  Sending PAIR_CMD → %02X:%02X:%02X:%02X:%02X:%02X\n",
+            Serial.printf("[PAIR]  Sending PAIR_CMD -> %02X:%02X:%02X:%02X:%02X:%02X\n",
                           pendingPair.mac[0], pendingPair.mac[1], pendingPair.mac[2],
                           pendingPair.mac[3], pendingPair.mac[4], pendingPair.mac[5]);
         }
     }
 
-    // ── Periodic WS pushes ────────────────────────────────────────────────────
+    // Periodic WS pushes
     if (now - lastNodeBcast >= WS_UPDATE_MS) {
         lastNodeBcast = now;
         if (ws.count() > 0) wsBroadcast(buildNodesJson());
@@ -1655,13 +1754,14 @@ void loop() {
         if (ws.count() > 0) wsBroadcast(buildMetaJson());
     }
 
-    // ── Periodic discovered list push (keeps clients in sync) ────────────────
+    // Periodic discovered list push (keeps clients in sync)
     if (now - lastDiscBcast >= WS_UPDATE_MS) {
         lastDiscBcast = now;
         if (ws.count() > 0) wsBroadcast(buildDiscoveredJson());
     }
 
-    // ── Discovered list cleanup ───────────────────────────────────────────────
+    // Periodic discovered list cleanup (removes stale entries 
+    // for nodes that disappeared without cleanly unregistering)
     if (now - lastDiscClean >= 2000) {
         lastDiscClean = now;
         if (cleanupDiscovered() && ws.count() > 0)

@@ -1,11 +1,11 @@
 /**
- * ESP32 Mesh Gateway Web Interface Client v3.5
+ * ESP32 Mesh Gateway Web Interface Client v3.6
  *
  * WS Inbound:  { type:"meta"|"update"|"discovered"|"pair_timeout"|"ap_config_ack"|
  *                     "gw_portal_starting"|"gw_factory_reset"|"gw_rebooting"|
  *                     "auth_required"|"auth_ok"|"auth_fail"|"session_expired"|
  *                     "web_creds_ack"|"node_settings"|"node_sensor_schema" }
- * WS Outbound: { type:"auth"|"relay_cmd"|"pair_cmd"|"unpair_cmd"|"rename_node"|
+ * WS Outbound: { type:"auth"|"actuator_cmd"|"pair_cmd"|"unpair_cmd"|"rename_node"|
  *                     "reboot_gw"|"reboot_node"|"set_ap_config"|"set_web_credentials"|
  *                     "start_wifi_portal"|"factory_reset"|"node_settings_get"|
  *                     "node_settings_set"|"node_sensor_schema_get"|"ping" }
@@ -485,6 +485,10 @@ function esc(str) {
     .replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 }
 
+function getActuatorMask(n) {
+  return Number(n.actuator_mask ?? n.relay_mask ?? 0);
+}
+
 // ── Dashboard ─────────────────────────────────────────────────────────────────
 function renderDashboard() {
   const list = [...nodes.values()];
@@ -581,10 +585,11 @@ function buildSensorRows(n) {
 }
 
 function buildRelayGrid(n) {
+  const mask = getActuatorMask(n);
   const btns = Array.from({ length: 4 }, (_, i) => {
-    const on = !!((n.relay_mask >> i) & 1);
+    const on = !!((mask >> i) & 1);
     return `<button class="relay-btn ${on ? "on" : "off"}"
-      data-node="${n.id}" data-relay="${i}" data-state="${on ? 1 : 0}">
+      data-node="${n.id}" data-relay="${i}" data-state="${on ? "1" : "0"}">
       Relay ${i + 1}<br>${on ? "● ON" : "○ OFF"}</button>`;
   }).join("");
   return `<div class="relay-grid">${btns}</div>`;
@@ -607,9 +612,10 @@ function patchCard(el, n) {
     const rowsEl = el.querySelector(".card-rows");
     if (rowsEl) rowsEl.innerHTML = buildSensorRows(n);
   } else {
+    const mask = getActuatorMask(n);
     el.querySelectorAll(".relay-btn").forEach(btn => {
       const i  = parseInt(btn.dataset.relay, 10);
-      const on = !!((n.relay_mask >> i) & 1);
+      const on = !!((mask >> i) & 1);
       btn.className     = `relay-btn ${on ? "on" : "off"}`;
       btn.dataset.state = on ? "1" : "0";
       btn.innerHTML     = `Relay ${i + 1}<br>${on ? "● ON" : "○ OFF"}`;
@@ -850,13 +856,16 @@ function sendNodeReboot(nodeId) {
 
 // ── Relay ─────────────────────────────────────────────────────────────────────
 function sendRelayCmd(nodeId, relayIndex, currentState) {
+
   const newState = currentState ? 0 : 1;
-  const n = nodes.get(nodeId);
-  if (!n) return;
-  if (newState) n.relay_mask |=  (1 << relayIndex);
-  else          n.relay_mask &= ~(1 << relayIndex);
-  send({ type: "relay_cmd", node_id: nodeId, relay_index: relayIndex, state: newState });
-  renderDashboard();
+
+  send({
+    type: "actuator_cmd",
+    node_id: nodeId,
+    actuator_id: relayIndex,
+    state: newState
+  });
+
 }
 
 // ── Confirm modal (destructive actions) ───────────────────────────────────────

@@ -44,11 +44,11 @@ The gateway is the heart of the ESPNow Mesh System. It runs on an **ESP32-S3** a
 
 | Version | Notes |
 |---------|-------|
-| v1.6.0 | Per-node dynamic settings (schema-on-wire); remote reboot; gateway network config from dashboard; factory reset |
-| v1.7.1 | N/A |
-| v1.8.0 | Schema-driven sensor system (MSG_SENSOR_SCHEMA); generic sensor readings protocol; multi-sensor node support (DHT22, TEMT6000) |
-| v1.8.1 | Added gateway ARGB status LED toggle in Web UI settings (persistent state) |
-
+| v1.6.0 | Added per-node dynamic settings, remote reboot support, gateway network config from dashboard, and factory reset support |
+| v1.7.1 | Maintenance release. Minor bug fixes. |
+| v1.8.0 | Added schema-driven sensor support, generic sensor reading protocol, and multi-sensor node compatibility |
+| v1.8.1 | added gateway status LED toggle support from the Web UI (with persistent state) |
+| v1.8.2 | Added ESP32 actuator-node support, updated gateway logic for actuator pairing/state/settings flows, improved actuator state sync after reconnect/reboot |
 ---
 
 ## Contents

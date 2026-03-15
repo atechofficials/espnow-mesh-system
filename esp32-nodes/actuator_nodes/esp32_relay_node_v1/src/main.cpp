@@ -1,34 +1,40 @@
 /**
     * @file [main.cpp]
-    * @brief Main source file for the ESP32 Mesh Sensor Node firmware
-    * @version 2.0.1
+    * @brief Main source file for the ESP32 Mesh Actuator Node firmware
+    * @details ESP-NOW based mesh relay node for controlling 4 relays and reporting button state, with WS2812B LED status indicator.
+     *        Designed for use with a central gateway node that manages pairing and communication.
+     * 
+     *        Features:
+     *          - C++20 codebase for modern programming features and improved readability.
+     *          - Uses Preferences library for non-volatile storage of pairing information.
+     *          - Implements a simple state machine to manage node states (unpaired, pairing, paired, etc.).
+     *          - Controls 4 relays via GPIO pins and reports their state back to the gateway.
+     *          - Monitors a pairing button with debounce logic and long-press detection for entering pairing mode.
+     *          - Uses a WS2812B LED to indicate node status (e.g., unpaired, paired, error states).
+     * 
+     *        Note: This code is intended as a starting point and may require adjustments based on specific hardware configurations and requirements.
+    * @version 1.0.1
     * @author Mrinal (@atechofficials)
  */
-#define FW_VERSION "2.0.1"
+#define FW_VERSION "1.0.1"
 
 #include <Arduino.h>
 #include <WiFi.h>
 #include <esp_now.h>
 #include <esp_wifi.h>
 #include <Preferences.h>
-#include <Wire.h>
-#include <Adafruit_BMP280.h>
-#include <DHT.h>
 #include <Adafruit_NeoPixel.h>
 #include "mesh_protocol.h"
 
 // User config
-#define NODE_NAME       "BMP280-Node-1"   // change per node (max 15 chars)
-#define BMP_I2C_SDA     21
-#define BMP_I2C_SCL     22
-#define BMP_ADDR_PRIM   0x76
-#define BMP_ADDR_SEC    0x77
-#define DHT_PIN         16    // DHT22 data pin
-#define DHT_TYPE        DHT22
-#define TEMT6000_PIN    36    // TEMT6000 analog output (ADC1_CH0 - input only)
-#define PAIR_BTN_PIN    27    // Pairing button GPIO - active-LOW, uses internal pull-up
+#define NODE_NAME       "Relay-Node-1"   // change per node (max 15 chars)
+#define RELAY1_PIN      26
+#define RELAY2_PIN      27
+#define RELAY3_PIN      32
+#define RELAY4_PIN      33
+#define PAIR_BTN_PIN    16    // Pairing button GPIO pin (active-LOW, uses external pull-up)
 #define LED_PIN         5     // WS2812B data pin
-#define LED_COUNT       1
+#define LED_COUNT       1     
 
 // Node state machine
 enum NodeState { STATE_UNPAIRED, STATE_PAIRING, STATE_PAIRED, STATE_DISC_PEND, STATE_GW_LOST };
@@ -42,15 +48,11 @@ static bool     hasMaster    = false;
 static bool     masterAcked  = false;
 static unsigned long lastReReg = 0;
 
-static Adafruit_BMP280   bmp;
-static DHT               dht(DHT_PIN, DHT_TYPE);
+static bool relayState[NODE_MAX_ACTUATORS] = {0,0,0,0};
+static uint8_t lastRelayState[NODE_MAX_ACTUATORS] = {255,255,255,255};
+
 static Adafruit_NeoPixel led(LED_COUNT, LED_PIN, NEO_GRB + NEO_KHZ800);
 static Preferences       prefs;
-
-// Sensor presence - set during setup(), read-only thereafter
-static bool bmpOk  = false;
-static bool dhtOk  = false;
-static bool temtOk = false;
 
 // LED state
 static uint32_t     ledCurrent    = 0xDEADBEEF;
@@ -66,22 +68,24 @@ static unsigned long pairingStarted  = 0;
 static uint8_t       pairingChannel  = 1;
 static unsigned long lastBeacon      = 0;
 
-// Timing
-static unsigned long lastSensor      = 0;
+// Timing state
 static unsigned long lastHeartbeat   = 0;
 
 // Node Settings
-#define SETTING_ID_TEMP_UNIT   0
-#define SETTING_ID_SEND_INTVL  1
-#define SETTING_ID_LED_EN      2
-#define SETTING_ID_TEMT_SENS   3
+static char relayLabel[4][16] =
+{
+  "Relay 1",
+  "Relay 2",
+  "Relay 3",
+  "Relay 4"
+};
+#define SETTING_ID_RELAY_PERSIST 0
+#define SETTING_ID_LED_EN 1
 
-static uint8_t  sSettingTempUnit  = 0;
-static uint16_t sSettingSendIntvl = SENSOR_INTERVAL / 1000;
-static bool     sSettingLedEn     = true;
-static uint8_t  sSettingTemtSens  = 4;
+static bool sRelayPersist = false;
+static bool sSettingLedEn = true;
 
-// Gateway-loss detection
+// Gateway-loss detection 
 #define GW_LOST_THRESHOLD   3
 static volatile uint8_t txFailCount = 0;
 
@@ -147,6 +151,53 @@ static void updateLed() {
         }
     }
 }
+// *****************************************************************************
+//  Relay helpers
+// *****************************************************************************
+// Saves the state of a relay to NVS for persistence across reboots.
+static void buildRelayStateKey(uint8_t id, char* key, size_t keyLen)
+{
+    snprintf(key, keyLen, "r%u", (unsigned)id);
+}
+
+static void saveRelayState(uint8_t id, bool state)
+{
+    char key[8];
+    buildRelayStateKey(id, key, sizeof(key));
+    prefs.begin("relay", false);
+    prefs.putBool(key, state);
+    prefs.end();
+    // For Debugging: print saved relay state info to Serial Monitor
+    Serial.printf("[NVS]  Saved relay %d state: %s\n", id, state ? "ON" : "OFF");
+}
+
+void setRelay(uint8_t id, bool state, bool persistState = true)
+{
+    if(id > 3) return;
+
+    relayState[id] = state;
+
+    uint8_t pin = RELAY1_PIN; // default to RELAY1_PIN, will be overridden by the switch statement
+
+    switch(id)
+    {
+        case 0: pin = RELAY1_PIN; break;
+        case 1: pin = RELAY2_PIN; break;
+        case 2: pin = RELAY3_PIN; break;
+        case 3: pin = RELAY4_PIN; break;
+        // case 4: sSettingLedEn = state; break;
+    }
+
+    digitalWrite(pin, state ? LOW : HIGH); // active LOW relay
+    if (persistState && sRelayPersist)
+    {
+        // For Debugging: print relay state persistence info to Serial Monitor
+        Serial.printf("[RELAY STATE]  Relay State Peristence Enabled - Saving state of Relay %d: %s\n", id, state ? "ON" : "OFF");
+        saveRelayState(id, state);
+    }
+    // For Debugging: print relay output change info to Serial Monitor
+    Serial.printf("[RELAY STATE]  Set Relay %d to %s\n", id, state ? "ON" : "OFF");
+}
 
 // *****************************************************************************
 //  ESP-NOW callbacks
@@ -188,14 +239,20 @@ static void onDataSent(const wifi_tx_info_t* /*txInfo*/, esp_now_send_status_t s
 //  NVS helpers
 // *****************************************************************************
 static bool loadPreferences() {
-    prefs.begin("mesh", true); // read-only
-    myNodeId  = prefs.getUChar("node_id",  0);
-    myChannel = prefs.getUChar("channel",  0);
-    size_t ml = prefs.getBytes("master_mac", masterMac, 6);
-    prefs.end();
-    // For Debugging: print loaded preferences to Serial Monitor
-    Serial.printf("[NVS] Loaded: id=%d  ch=%d\n", myNodeId, myChannel);
-    return (myNodeId > 0 && myChannel > 0 && ml == 6);
+  prefs.begin("mesh", true); // read-only
+  myNodeId  = prefs.getUChar("node_id",  0);
+  myChannel = prefs.getUChar("channel",  0);
+  size_t ml = prefs.getBytes("master_mac", masterMac, sizeof(masterMac));
+  prefs.end();
+  bool macValid = false;
+  for (int i = 0; i < 6; i++) {
+    if (masterMac[i] != 0) { 
+      macValid = true;
+    }
+  }
+  // For Debugging: print loaded preferences to Serial Monitor
+  Serial.printf("[NVS] Loaded: id=%d  ch=%d\n", myNodeId, myChannel);
+  return (myNodeId > 0 && myChannel > 0 && ml == 6 && macValid);
 }
 
 static void savePreferences() {
@@ -205,7 +262,7 @@ static void savePreferences() {
     prefs.putBytes("master_mac", masterMac, 6);
     prefs.end();
     // For Debugging: print saved preferences to Serial Monitor
-    Serial.printf("[NVS]  Saved: id=%d  ch=%d\n", myNodeId, myChannel);
+    Serial.printf("[NVS] Saved: id=%d  ch=%d\n", myNodeId, myChannel);
 }
 
 static void clearPreferences() {
@@ -213,138 +270,104 @@ static void clearPreferences() {
     prefs.clear();
     prefs.end();
     // For Debugging: print cleared preferences info to Serial Monitor
-    Serial.println("[NVS]  Cleared.");
+    Serial.println("[NVS] Cleared.");
 }
 
 // *****************************************************************************
-//  Settings — NVS load / save and definition helpers
+//  Settings NVS load / save and definition helpers
 // *****************************************************************************
 static void loadSettings() {
     prefs.begin("nodeconf", true);
-    sSettingTempUnit  = prefs.getUChar("temp_unit",   0);
-    sSettingSendIntvl = prefs.getUShort("send_intvl", SENSOR_INTERVAL / 1000);
-    sSettingLedEn     = prefs.getBool("led_en",       true);
-    sSettingTemtSens  = prefs.getUChar("temt_sens",   5);
+
+    sRelayPersist = prefs.getBool("relay_persist", false);
+    sSettingLedEn = prefs.getBool("led_en", true);
+  
     prefs.end();
-    if (sSettingSendIntvl < 5)  sSettingSendIntvl = 5;
-    if (sSettingSendIntvl > 60) sSettingSendIntvl = 60;
-    if (sSettingTemtSens < 1)   sSettingTemtSens = 1;
-    if (sSettingTemtSens > 10)  sSettingTemtSens = 10;
     // For Debugging: print loaded settings to Serial Monitor
-    Serial.printf("[CFG]  Settings Loaded: temp_unit=%d  send_intvl=%ds  led_en=%d  temt_sens=%d\n",
-                  sSettingTempUnit, sSettingSendIntvl, (int)sSettingLedEn, sSettingTemtSens);
+    Serial.printf("[CFG] Settings Loaded: relay_persist=%d led_en=%d\n", 
+                  (int)sRelayPersist, (int)sSettingLedEn);
 }
 
 static void saveSettings() {
     prefs.begin("nodeconf", false);
-    prefs.putUChar("temp_unit",  sSettingTempUnit);
-    prefs.putUShort("send_intvl", sSettingSendIntvl);
-    prefs.putBool("led_en",      sSettingLedEn);
-    prefs.putUChar("temt_sens",  sSettingTemtSens);
+    
+    prefs.putBool("relay_persist", sRelayPersist);
+    prefs.putBool("led_en", sSettingLedEn);
+
     prefs.end();
     // For Debugging: print saved settings to Serial Monitor
-    Serial.printf("[CFG]  Settings saved. Current values: temp_unit=%d  send_intvl=%ds  led_en=%d  temt_sens=%d\n",
-                  sSettingTempUnit, sSettingSendIntvl, (int)sSettingLedEn, sSettingTemtSens);
+    Serial.printf("[CFG] Settings saved. Current values: relay_persist=%d led_en=%d\n", 
+                  (int)sRelayPersist, (int)sSettingLedEn);
 }
 
 static uint8_t getSettingsDefs(SettingDef out[NODE_MAX_SETTINGS]) {
     uint8_t i = 0;
 
-    out[i].id        = SETTING_ID_TEMP_UNIT;
-    out[i].type      = SETTING_ENUM;
-    strncpy(out[i].label, "Temp Unit", SETTING_LABEL_LEN - 1);
+    // Relay State Persistence
+    if (i >= NODE_MAX_SETTINGS) return i;
+    out[i].id = SETTING_ID_RELAY_PERSIST;
+    out[i].type = SETTING_BOOL;
+    strncpy(out[i].label, "StatePersist", SETTING_LABEL_LEN - 1);
     out[i].label[SETTING_LABEL_LEN - 1] = '\0';
-    out[i].current   = (int16_t)sSettingTempUnit;
-    out[i].i_min     = 0; out[i].i_max = 0; out[i].i_step = 0;
-    out[i].opt_count = 2;
-    strncpy(out[i].opts[0], "\xC2\xB0""C", SETTING_OPT_LEN - 1); out[i].opts[0][SETTING_OPT_LEN-1] = '\0';
-    strncpy(out[i].opts[1], "\xC2\xB0""F", SETTING_OPT_LEN - 1); out[i].opts[1][SETTING_OPT_LEN-1] = '\0';
-    i++;
-
-    out[i].id        = SETTING_ID_SEND_INTVL;
-    out[i].type      = SETTING_INT;
-    strncpy(out[i].label, "Send Intvl", SETTING_LABEL_LEN - 1);
-    out[i].label[SETTING_LABEL_LEN - 1] = '\0';
-    out[i].current   = (int16_t)sSettingSendIntvl;
-    out[i].i_min     = 5; out[i].i_max = 60; out[i].i_step = 5;
+    out[i].current = sRelayPersist ? 1 : 0;
+    out[i].i_min = 0;
+    out[i].i_max = 0;
+    out[i].i_step = 0;
     out[i].opt_count = 0;
     memset(out[i].opts, 0, sizeof(out[i].opts));
     i++;
 
-    out[i].id        = SETTING_ID_LED_EN;
-    out[i].type      = SETTING_BOOL;
+    // Node Status LED
+    if (i >= NODE_MAX_SETTINGS) return i;
+    out[i].id = SETTING_ID_LED_EN;
+    out[i].type = SETTING_BOOL;
     strncpy(out[i].label, "Status LED", SETTING_LABEL_LEN - 1);
     out[i].label[SETTING_LABEL_LEN - 1] = '\0';
-    out[i].current   = sSettingLedEn ? 1 : 0;
-    out[i].i_min     = 0; out[i].i_max = 0; out[i].i_step = 0;
+    out[i].current = sSettingLedEn ? 1 : 0;
+    out[i].i_min = 0; 
+    out[i].i_max = 0; 
+    out[i].i_step = 0;
     out[i].opt_count = 0;
     memset(out[i].opts, 0, sizeof(out[i].opts));
     i++;
-
-    if (temtOk) {
-        out[i].id        = SETTING_ID_TEMT_SENS;
-        out[i].type      = SETTING_INT;
-        strncpy(out[i].label, "Light Sens", SETTING_LABEL_LEN - 1);
-        out[i].label[SETTING_LABEL_LEN - 1] = '\0';
-        out[i].current   = (int16_t)sSettingTemtSens;
-        out[i].i_min     = 1; out[i].i_max = 10; out[i].i_step = 1;
-        out[i].opt_count = 0;
-        memset(out[i].opts, 0, sizeof(out[i].opts));
-        i++;
-    }
 
     // For Debugging: print settings definitions to Serial Monitor
     Serial.printf("[CFG] Defined %d settings.\n", i);
     return i;
 }
 
-static uint8_t getSensorDefs(SensorDef out[NODE_MAX_SENSORS]) {
+static uint8_t getActuatorDefs(ActuatorDef out[NODE_MAX_ACTUATORS])
+{
     uint8_t i = 0;
-    const char* tempUnit = (sSettingTempUnit == 1) ? "\xC2\xB0""F" : "\xC2\xB0""C";
 
-    if (bmpOk) {
-        out[i].id        = 0;
-        out[i].precision = 1;
-        strncpy(out[i].label, "Temperature", SENSOR_LABEL_LEN - 1);
-        out[i].label[SENSOR_LABEL_LEN - 1] = '\0';
-        strncpy(out[i].unit, tempUnit, SENSOR_UNIT_LEN - 1);
-        out[i].unit[SENSOR_UNIT_LEN - 1] = '\0';
-        i++;
+    // Relay 1
+    out[i].id = 0;
+    strncpy(out[i].label, relayLabel[0], ACTUATOR_LABEL_LEN - 1);
+    out[i].label[ACTUATOR_LABEL_LEN - 1] = '\0';
+    i++;
 
-        out[i].id        = 1;
-        out[i].precision = 1;
-        strncpy(out[i].label, "Atm.Pressure", SENSOR_LABEL_LEN - 1);
-        out[i].label[SENSOR_LABEL_LEN - 1] = '\0';
-        strncpy(out[i].unit, "hPa", SENSOR_UNIT_LEN - 1);
-        out[i].unit[SENSOR_UNIT_LEN - 1] = '\0';
-        i++;
-    }
+    // Relay 2
+    out[i].id = 1;
+    strncpy(out[i].label, relayLabel[1], ACTUATOR_LABEL_LEN - 1);
+    out[i].label[ACTUATOR_LABEL_LEN - 1] = '\0';
+    i++;
 
-    if (dhtOk) {
-        out[i].id        = 2;
-        out[i].precision = 1;
-        strncpy(out[i].label, "Humidity", SENSOR_LABEL_LEN - 1);
-        out[i].label[SENSOR_LABEL_LEN - 1] = '\0';
-        strncpy(out[i].unit, "%", SENSOR_UNIT_LEN - 1);
-        out[i].unit[SENSOR_UNIT_LEN - 1] = '\0';
-        i++;
-    }
+    // Relay 3
+    out[i].id = 2;
+    strncpy(out[i].label, relayLabel[2], ACTUATOR_LABEL_LEN - 1);
+    out[i].label[ACTUATOR_LABEL_LEN - 1] = '\0';
+    i++;
 
-    if (temtOk) {
-        out[i].id        = 3;
-        out[i].precision = 0;
-        strncpy(out[i].label, "Ambi. Light", SENSOR_LABEL_LEN - 1);
-        out[i].label[SENSOR_LABEL_LEN - 1] = '\0';
-        strncpy(out[i].unit, "%", SENSOR_UNIT_LEN - 1);
-        out[i].unit[SENSOR_UNIT_LEN - 1] = '\0';
-        i++;
-    }
+    // Relay 4
+    out[i].id = 3;
+    strncpy(out[i].label, relayLabel[3], ACTUATOR_LABEL_LEN - 1);
+    out[i].label[ACTUATOR_LABEL_LEN - 1] = '\0';
+    i++;
 
-    // For Debugging: print sensor definitions to Serial Monitor
-    Serial.printf("[SENS] Defined %d sensors.\n", i);
+    // For Debugging: print loaded actuator definitions to Serial Monitor
+    Serial.printf("[ACTUATOR] Defined %d actuators.\n", i);
     return i;
 }
-
 // *****************************************************************************
 //  ESP-NOW peer helpers
 // *****************************************************************************
@@ -379,7 +402,7 @@ static void sendBeacon() {
     MsgBeacon b;
     b.hdr.type      = MSG_BEACON;
     b.hdr.node_id   = 0;
-    b.hdr.node_type = NODE_SENSOR;
+    b.hdr.node_type = NODE_ACTUATOR;
     strncpy(b.name, NODE_NAME, 15);
     b.name[15]      = '\0';
     b.tx_channel    = pairingChannel;
@@ -392,7 +415,7 @@ static void sendRegistration() {
     MsgRegister reg;
     reg.hdr.type      = MSG_REGISTER;
     reg.hdr.node_id   = myNodeId;
-    reg.hdr.node_type = NODE_SENSOR;
+    reg.hdr.node_type = NODE_ACTUATOR;
     strncpy(reg.name, NODE_NAME, 15);
     reg.name[15] = '\0';
     strncpy(reg.fw_version, FW_VERSION, 7);
@@ -402,80 +425,78 @@ static void sendRegistration() {
     Serial.printf("[MSG]  Registration sent to master.\n Waiting for ACK...\n");
 }
 
-static void sendSensorData() {
+static void sendActuatorState()
+{
     if (!hasMaster || myNodeId == 0) return;
 
-    MsgSensorData sd;
-    sd.hdr.type      = MSG_SENSOR_DATA;
-    sd.hdr.node_id   = myNodeId;
-    sd.hdr.node_type = NODE_SENSOR;
-    sd.uptime_sec    = millis() / 1000;
-    sd.count         = 0;
+    const uint8_t count = 4;
 
-    if (bmpOk) {
-        float tempC = bmp.readTemperature();
-        float tempOut = (sSettingTempUnit == 1) ? (tempC * 9.0f / 5.0f + 32.0f) : tempC;
-        sd.readings[sd.count++] = { .id = 0, .value = tempOut };
-        sd.readings[sd.count++] = { .id = 1, .value = bmp.readPressure() / 100.0f };
-    }
+    bool changed = false;
 
-    if (dhtOk) {
-        float h = dht.readHumidity();
-        if (!isnan(h)) {
-            sd.readings[sd.count++] = { .id = 2, .value = h };
+    for (uint8_t i = 0; i < count; i++)
+    {
+        if (relayState[i] != lastRelayState[i])
+        {
+            changed = true;
+            break;
         }
     }
 
-    if (temtOk) {
-        // ESP32 ADC is corrupted by WiFi/ESP-NOW TX bursts, producing spurious
-        // zeros. Simple averaging still returns 0 when most samples land during
-        // a TX window. Fix: collect 64 samples, discard zeros, average the rest.
-        // This isolates only valid ADC conversions regardless of TX timing.
-        const int SAMPLES = 64;
-        long sum = 0;
-        int  valid = 0;
-        for (int s = 0; s < SAMPLES; s++) {
-            int v = analogRead(TEMT6000_PIN);
-            if (v > 0) { sum += v; valid++; }
-        }
-        int raw = (valid > 0) ? (int)(sum / valid) : 0;
-        // Logarithmic scaling: lux is perceptually logarithmic, so a linear
-        // formula maps indoor light to near-zero even though it looks bright.
-        // log10(1+raw)/log10(4096) gives ~40% for typical room light (raw≈30)
-        // and 100% for direct bright light (raw≈4095) at default sensitivity=5.
-        // Sensitivity shifts the entire curve: sens=1 → dim, sens=10 → very sensitive.
-        float normalized = (raw > 0) ? (log10f(1.0f + raw) / log10f(4096.0f)) : 0.0f;
-        float pct = normalized * (sSettingTemtSens / 5.0f) * 100.0f;
-        if (pct > 100.0f) pct = 100.0f;
-        sd.readings[sd.count++] = { .id = 3, .value = pct };
+    if (!changed)
+        return;
+
+    MsgActuatorState msg{};
+
+    msg.hdr.type = MSG_ACTUATOR_STATE;
+    msg.hdr.node_id = myNodeId;
+    msg.hdr.node_type = NODE_ACTUATOR;
+
+    msg.count = count;
+
+    for (uint8_t i = 0; i < count; i++)
+    {
+        msg.states[i].id = i;
+        msg.states[i].state = relayState[i];
+        lastRelayState[i] = relayState[i];
     }
 
-    size_t payloadLen = sizeof(MeshHeader) + sizeof(uint32_t) + 1
-                        + sd.count * sizeof(SensorReading);
-    esp_err_t r = esp_now_send(masterMac, (uint8_t*)&sd, payloadLen);
+    const size_t payloadLen =
+        sizeof(MeshHeader) +
+        sizeof(msg.count) +
+        (count * sizeof(ActuatorState));
+
+    esp_err_t r = esp_now_send(masterMac, (uint8_t*)&msg, payloadLen);
     // Flash LED on successful send only if LED is enabled in Node settings
     if (r == ESP_OK && sSettingLedEn) flashLed();
 
-    Serial.printf("[SENS] Sent %u reading(s) (%u B) ->", sd.count, (unsigned)payloadLen);
-    for (uint8_t i = 0; i < sd.count; i++)
-        Serial.printf("  [%d]=%.2f", sd.readings[i].id, sd.readings[i].value);
+    // For Debugging: print sent actuator state info to Serial Monitor
+    Serial.printf("[ACTUATOR]  Actuator state sent to master. %d relays, (%u B)\n", count, (unsigned)payloadLen);
+    
     Serial.printf("  %s\n", r == ESP_OK ? "ok" : "error");
 }
 
-static void sendSensorSchemaData() {
-    if (!hasMaster || myNodeId == 0) return;
+static void sendActuatorSchemaData()
+{
+    if(!hasMaster || myNodeId == 0) return;
 
-    MsgSensorSchema msg;
-    msg.hdr.type      = MSG_SENSOR_SCHEMA;
-    msg.hdr.node_id   = myNodeId;
-    msg.hdr.node_type = NODE_SENSOR;
-    msg.count         = getSensorDefs(msg.sensors);
+    MsgActuatorSchema msg{};
 
-    size_t payloadLen = sizeof(MeshHeader) + 1 + msg.count * sizeof(SensorDef);
+    msg.hdr.type = MSG_ACTUATOR_SCHEMA;
+    msg.hdr.node_id = myNodeId;
+    msg.hdr.node_type = NODE_ACTUATOR;
+    msg.count = getActuatorDefs(msg.actuators);
+
+    const size_t payloadLen =
+        sizeof(MeshHeader) +
+        sizeof(msg.count) +
+        msg.count * sizeof(ActuatorDef);
+
     esp_err_t r = esp_now_send(masterMac, (uint8_t*)&msg, payloadLen);
-    Serial.printf("[SENS] Sent schema: %d sensor(s) (%u B) -> %s\n",
-                  msg.count, (unsigned)payloadLen,
-                  r == ESP_OK ? "ok" : "error");
+
+    // For Debugging: print sent actuator schema info to Serial Monitor
+    Serial.printf("[ACTUATOR]  Sent actuator schema to master. %d actuator(s), (%u B) ->\n", msg.count, (unsigned)payloadLen);
+
+    Serial.printf("  %s\n", r == ESP_OK ? "ok" : "error");
 }
 
 static void sendHeartbeat() {
@@ -483,13 +504,13 @@ static void sendHeartbeat() {
     MsgHeartbeat hb;
     hb.hdr.type      = MSG_HEARTBEAT;
     hb.hdr.node_id   = myNodeId;
-    hb.hdr.node_type = NODE_SENSOR;
+    hb.hdr.node_type = NODE_ACTUATOR;
     hb.uptime_sec    = millis() / 1000;
     
     esp_err_t r = esp_now_send(masterMac, (uint8_t*)&hb, sizeof(hb));
     // Flash LED on successful send only if LED is enabled in Node settings
     if (r == ESP_OK && sSettingLedEn) flashLed();
-
+    
     // For Debugging: print sent heartbeat info to Serial Monitor
     Serial.printf("[ACTUATOR]  Heartbeat sent to master (uptime: %d sec) ->\n", hb.uptime_sec);
     Serial.printf("  %s\n", r == ESP_OK ? "ok" : "error");
@@ -501,14 +522,13 @@ static void sendSettingsData() {
     MsgSettingsData msg;
     msg.hdr.type      = MSG_SETTINGS_DATA;
     msg.hdr.node_id   = myNodeId;
-    msg.hdr.node_type = NODE_SENSOR;
+    msg.hdr.node_type = NODE_ACTUATOR;
     msg.count         = getSettingsDefs(msg.settings);
 
     size_t payloadLen = sizeof(MeshHeader) + 1 + msg.count * sizeof(SettingDef);
     esp_err_t r = esp_now_send(masterMac, (uint8_t*)&msg, payloadLen);
-    Serial.printf("[CFG]  Sent %d settings (%u B) -> %s\n",
-                  msg.count, (unsigned)payloadLen,
-                  r == ESP_OK ? "ok" : "error");
+    Serial.printf("[CFG]  Sent %d settings (%u B) ->\n", msg.count, (unsigned)payloadLen);
+    Serial.printf("  %s\n", r == ESP_OK ? "ok" : "error");
 }
 
 // *****************************************************************************
@@ -520,7 +540,7 @@ static void doDisconnect() {
         MsgUnpairCmd msg;
         msg.hdr.type      = MSG_UNPAIR_CMD;
         msg.hdr.node_id   = myNodeId;
-        msg.hdr.node_type = NODE_SENSOR;
+        msg.hdr.node_type = NODE_ACTUATOR;
         esp_now_send(masterMac, (uint8_t*)&msg, sizeof(msg));
         delay(80);
         esp_now_del_peer(masterMac);
@@ -633,6 +653,8 @@ static void processRxQueue() {
                 savePreferences();
                 txFailCount = 0;
                 nodeState = STATE_PAIRED;
+                for (uint8_t i = 0; i < NODE_MAX_ACTUATORS; i++) lastRelayState[i] = 255;
+                sendActuatorState();
                 Serial.printf("[PAIR]  Paired!  id=%d  ch=%d  master=%02X:%02X:%02X:%02X:%02X:%02X\n",
                               myNodeId, myChannel,
                               masterMac[0], masterMac[1], masterMac[2],
@@ -667,55 +689,66 @@ static void processRxQueue() {
                 break;
             }
 
-            case MSG_SENSOR_SCHEMA_GET: {
+            case MSG_ACTUATOR_SCHEMA_GET: {
                 if (nodeState != STATE_PAIRED && nodeState != STATE_DISC_PEND) break;
-                Serial.println("[SENS]  Sensor schema GET received - sending schema.");
-                sendSensorSchemaData();
+                Serial.println("[ACTUATOR]  Actuator schema GET received - sending schema.");
+                sendActuatorSchemaData();
+                break;
+            }
+
+            case MSG_ACTUATOR_SET: {
+                if(pkt.len < (int)sizeof(MsgActuatorSet)) break;
+                auto* cmd = (MsgActuatorSet*)pkt.data;
+
+                Serial.printf("[CMD] Actuator %d -> state %d\n",
+                              cmd->actuator_id, cmd->state);
+
+                setRelay(cmd->actuator_id, cmd->state);
+                
+                sendActuatorState();
+
+                Serial.printf("[ACT] Relay %d -> state %d\n", cmd->actuator_id, cmd->state);
+
                 break;
             }
 
             case MSG_SETTINGS_SET: {
+                // Validate packet size before accessing payload
                 if (pkt.len < (int)sizeof(MsgSettingsSet)) break;
                 if (nodeState != STATE_PAIRED && nodeState != STATE_DISC_PEND) break;
+
                 auto* ss = (MsgSettingsSet*)pkt.data;
 
-                bool changed     = false;
-                bool unitChanged = false;
+                bool changed = false;
+
                 switch (ss->id) {
-                    case SETTING_ID_TEMP_UNIT:
-                        if (ss->value == 0 || ss->value == 1) {
-                            sSettingTempUnit = (uint8_t)ss->value;
-                            changed     = true;
-                            unitChanged = true;
-                        }
+
+                    case SETTING_ID_RELAY_PERSIST:
+                        sRelayPersist = (ss->value != 0);
+                        changed = true;
                         break;
-                    case SETTING_ID_SEND_INTVL:
-                        if (ss->value >= 5 && ss->value <= 60) {
-                            sSettingSendIntvl = (uint16_t)ss->value;
-                            changed = true;
-                        }
-                        break;
+
                     case SETTING_ID_LED_EN:
                         sSettingLedEn = (ss->value != 0);
                         changed = true;
                         break;
-                    case SETTING_ID_TEMT_SENS:
-                        if (ss->value >= 1 && ss->value <= 10) {
-                            sSettingTemtSens = (uint8_t)ss->value;
-                            changed = true;
-                        }
-                        break;
+
                     default:
-                        Serial.printf("[CFG]  Unknown setting id %d - ignored\n", ss->id);
+                        Serial.printf("[CFG] Unknown setting id %d - ignored\n", ss->id);
                         break;
                 }
 
                 if (changed) {
                     saveSettings();
-                    Serial.printf("[CFG]  Setting %d set to %d\n", ss->id, ss->value);
+                    if (ss->id == SETTING_ID_RELAY_PERSIST && sRelayPersist) {
+                        for (uint8_t i = 0; i < 4; i++) saveRelayState(i, relayState[i]);
+                    }
+                    updateLed();
+                    Serial.printf("[CFG] Setting %d set to %d\n", ss->id, ss->value);
                     sendSettingsData();
-                    if (unitChanged) sendSensorSchemaData();
+                    sendActuatorSchemaData();   // keeps UI in sync
                 }
+
                 break;
             }
 
@@ -738,38 +771,45 @@ void setup() {
     setLed(led.Color(255, 255, 255));
     delay(300);
 
-    pinMode(PAIR_BTN_PIN, INPUT_PULLUP);
+    pinMode(PAIR_BTN_PIN, INPUT);
+    
+    // Initialize relay pins and set them to OFF (active LOW)
+    pinMode(RELAY1_PIN, OUTPUT); digitalWrite(RELAY1_PIN, HIGH);
+    pinMode(RELAY2_PIN, OUTPUT); digitalWrite(RELAY2_PIN, HIGH);
+    pinMode(RELAY3_PIN, OUTPUT); digitalWrite(RELAY3_PIN, HIGH);
+    pinMode(RELAY4_PIN, OUTPUT); digitalWrite(RELAY4_PIN, HIGH);
 
-    // BMP280
-    Wire.begin(BMP_I2C_SDA, BMP_I2C_SCL);
-    bmpOk = bmp.begin(BMP_ADDR_PRIM);
-    if (!bmpOk) bmpOk = bmp.begin(BMP_ADDR_SEC);
-    if (!bmpOk) {
-        Serial.println("[BMP]  WARNING: sensor not found - check wiring!");
-    } else {
-        bmp.setSampling(Adafruit_BMP280::MODE_NORMAL,
-                        Adafruit_BMP280::SAMPLING_X2,
-                        Adafruit_BMP280::SAMPLING_X16,
-                        Adafruit_BMP280::FILTER_X4,
-                        Adafruit_BMP280::STANDBY_MS_250);
-        Serial.println("[BMP]  Sensor ready.");
-    }
-
-    // DHT22
-    dht.begin();
-    delay(2000);
-    float testH = dht.readHumidity();
-    dhtOk = !isnan(testH);
-    Serial.printf("[DHT]  %s\n", dhtOk ? "Sensor ready." : "WARNING: no valid reading - check wiring!");
-
-    // TEMT6000
-    analogSetAttenuation(ADC_11db);
-    analogRead(TEMT6000_PIN);
-    temtOk = true;
-    Serial.println("[TEMT] TEMT6000 ADC ready.");
+    // Default relay labels
+    strcpy(relayLabel[0], "Relay 1");
+    strcpy(relayLabel[1], "Relay 2");
+    strcpy(relayLabel[2], "Relay 3");
+    strcpy(relayLabel[3], "Relay 4");
 
     // Load settings, init ESP-NOW and attempt to pair with master if preferences are found in NVS
     loadSettings();
+
+    // If relay state persistence is enabled, load the last known states and apply them to the relays
+    if(sRelayPersist)
+    {
+        prefs.begin("relay", true);
+        for(int i=0;i<4;i++)
+        {
+            char key[8];
+            buildRelayStateKey(i, key, sizeof(key));
+            relayState[i] = prefs.getBool(key, false);
+        }
+        prefs.end();
+
+        for(int i=0;i<4;i++)
+        {
+            setRelay(i, relayState[i], false);
+            // For Debugging: print loaded relay states to Serial Monitor
+            Serial.printf("[NVS]  Loaded relay %d state: %s\n", i, relayState[i] ? "ON" : "OFF");
+        }
+        // For Debugging: print loaded relay states to Serial Monitor
+        Serial.println("[NVS]  Loaded relay states from NVS Complete.");
+    }
+
     rxQueue = xQueueCreate(10, sizeof(RxPacket));
     WiFi.mode(WIFI_STA);
     WiFi.disconnect();
@@ -802,7 +842,6 @@ void setup() {
 
     Serial.println("[BOOT] Setup complete.\n");
 }
-
 // *****************************************************************************
 // LOOP
 // *****************************************************************************
@@ -838,10 +877,6 @@ void loop() {
     }
 
     if (nodeState == STATE_PAIRED || nodeState == STATE_DISC_PEND) {
-        if (now - lastSensor >= (unsigned long)sSettingSendIntvl * 1000UL) {
-            lastSensor = now;
-            sendSensorData();
-        }
         if (now - lastHeartbeat >= HEARTBEAT_INTERVAL) {
             lastHeartbeat = now;
             sendHeartbeat();
