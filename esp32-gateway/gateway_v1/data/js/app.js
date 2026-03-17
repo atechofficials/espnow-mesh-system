@@ -1,14 +1,16 @@
 /**
- * ESP32 Mesh Gateway Web Interface Client v3.6
+ * ESP32 Mesh Gateway Web Interface Client v3.7
  *
  * WS Inbound:  { type:"meta"|"update"|"discovered"|"pair_timeout"|"ap_config_ack"|
  *                     "gw_portal_starting"|"gw_factory_reset"|"gw_rebooting"|
  *                     "auth_required"|"auth_ok"|"auth_fail"|"session_expired"|
- *                     "web_creds_ack"|"node_settings"|"node_sensor_schema" }
+ *                     "web_creds_ack"|"node_settings"|"node_sensor_schema"|
+ *                     "relay_labels_ack" }
  * WS Outbound: { type:"auth"|"actuator_cmd"|"pair_cmd"|"unpair_cmd"|"rename_node"|
  *                     "reboot_gw"|"reboot_node"|"set_ap_config"|"set_web_credentials"|
  *                     "start_wifi_portal"|"factory_reset"|"node_settings_get"|
- *                     "node_settings_set"|"node_sensor_schema_get"|"ping" }
+ *                     "node_settings_set"|"node_sensor_schema_get"|
+ *                     "relay_labels_set"|"ping" }
  */
 "use strict";
 
@@ -22,6 +24,7 @@ const nodes      = new Map();   // nodeId → NodeRecord
 const discovered = new Map();   // mac → DiscoveredNode
 const nodeSettings     = new Map(); // nodeId → SettingDef[]   (schema from node)
 const nodeSensorSchemas = new Map(); // nodeId → SensorDef[]   (schema from node)
+const RELAY_CHANNEL_COUNT     = 4;
 let   ws         = null;
 let   serverUptime   = 0;
 let   uptimeSyncedAt = 0;
@@ -59,6 +62,7 @@ const $nsTitle   = $("nsettings-title");
 const $nsBody    = $("nsettings-body");
 let   nsCurrentNodeId = 0;
 let   pendingSettingsFetches = 0; // how many node_settings responses still outstanding
+const relayLabelDrafts = new Map(); // nodeId -> string[]
 
 // ── Settings ──────────────────────────────────────────────────────────────────
 const $apSsidInput  = $("ap-ssid-input");
@@ -353,11 +357,55 @@ function connect() {
         nodeSensorSchemas.set(msg.node_id, msg.sensors || []);
         renderDashboard();
         break;
+      case "relay_labels_ack": {
+        const nodeId = Number(msg.node_id || 0);
+        if (msg.ok) {
+          const labels = setRelayLabelsOnNode(nodeId, msg.labels || []);
+          clearRelayLabelDraft(nodeId);
+          if (labels) {
+            collectRelayLabelInputs(nodeId).forEach((input, index) => {
+              input.value = labels[index];
+            });
+            renderDashboard();
+          }
+          setRelayLabelSaveNote(nodeId, "Saved on gateway.", "ok");
+          const n = nodes.get(nodeId);
+          showToast(`Relay labels saved for ${n?.name || `Node #${nodeId}`}.`, "success");
+        } else {
+          setRelayLabelSaveNote(nodeId, msg.err || "Could not save relay labels.", "err");
+          showToast(msg.err || "Could not save relay labels.", "error");
+        }
+        break;
+      }
       case "update":
-        nodes.clear();
-        (msg.nodes || []).forEach(n => nodes.set(n.id, n));
+        const prevModalNode = nsCurrentNodeId ? nodes.get(nsCurrentNodeId) : null;
+        const nextNodes = msg.nodes || [];
 
-        (msg.nodes || []).forEach(n => {
+        nodes.clear();
+        nextNodes.forEach(n => nodes.set(n.id, n));
+
+        const activeIds = new Set(nextNodes.map(n => n.id));
+        [...nodeSettings.keys()].forEach(id => {
+          if (!activeIds.has(id)) nodeSettings.delete(id);
+        });
+        [...nodeSensorSchemas.keys()].forEach(id => {
+          if (!activeIds.has(id)) nodeSensorSchemas.delete(id);
+        });
+
+        if (nsCurrentNodeId && !nodes.has(nsCurrentNodeId)) {
+          const reboundId = prevModalNode?.mac ? findNodeIdByMac(prevModalNode.mac) : 0;
+          if (reboundId) {
+            const draft = getRelayLabelDraft(nsCurrentNodeId);
+            if (draft) {
+              relayLabelDrafts.set(reboundId, draft);
+              relayLabelDrafts.delete(nsCurrentNodeId);
+            }
+            nsCurrentNodeId = reboundId;
+          }
+          else closeNodeSettings();
+        }
+
+        nextNodes.forEach(n => {
           // Settings schema — fetch if not yet cached (drives the settings panel).
           if (n.settings_ready && !nodeSettings.has(n.id)) {
             pendingSettingsFetches++;
@@ -373,6 +421,10 @@ function connect() {
 
         renderDashboard();
         renderConnectedNodes();
+        if (nsCurrentNodeId && $nsOverlay.style.display !== "none" &&
+            !isEditingRelayLabel(nsCurrentNodeId)) {
+          renderNodeSettings(nsCurrentNodeId);
+        }
         updateBadges();
         break;
       case "meta":
@@ -485,6 +537,66 @@ function esc(str) {
     .replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 }
 
+function normalizeMac(mac) {
+  return String(mac || "").trim().toUpperCase();
+}
+
+function defaultRelayLabel(index) {
+  return `Relay ${index + 1}`;
+}
+
+function sanitizeRelayLabel(label, index) {
+  const compact = String(label || "").trim().replace(/\s+/g, " ");
+  return compact ? compact.slice(0, 24) : defaultRelayLabel(index);
+}
+
+function findNodeIdByMac(mac) {
+  const target = normalizeMac(mac);
+  if (!target) return 0;
+  for (const n of nodes.values()) {
+    if (normalizeMac(n.mac) === target) return n.id;
+  }
+  return 0;
+}
+
+function getRelayLabelsForNode(node) {
+  const labels = Array.isArray(node?.relay_labels) ? node.relay_labels : [];
+  return Array.from({ length: RELAY_CHANNEL_COUNT }, (_, i) => (
+    sanitizeRelayLabel(labels[i], i)
+  ));
+}
+
+function setRelayLabelsOnNode(nodeId, labels) {
+  const n = nodes.get(nodeId);
+  if (!n) return null;
+  const normalized = Array.from({ length: RELAY_CHANNEL_COUNT }, (_, i) => (
+    sanitizeRelayLabel(labels[i], i)
+  ));
+  n.relay_labels = normalized;
+  return normalized;
+}
+
+function getRelayLabelDraft(nodeId) {
+  return relayLabelDrafts.get(nodeId) || null;
+}
+
+function setRelayLabelDraft(nodeId, relayIndex, value) {
+  const draft = relayLabelDrafts.get(nodeId) || getRelayLabelsForNode(nodes.get(nodeId));
+  draft[relayIndex] = value;
+  relayLabelDrafts.set(nodeId, draft);
+}
+
+function replaceRelayLabelDraft(nodeId, labels) {
+  relayLabelDrafts.set(nodeId, Array.from(
+    { length: RELAY_CHANNEL_COUNT },
+    (_, i) => sanitizeRelayLabel(labels[i], i)
+  ));
+}
+
+function clearRelayLabelDraft(nodeId) {
+  relayLabelDrafts.delete(nodeId);
+}
+
 function getActuatorMask(n) {
   return Number(n.actuator_mask ?? n.relay_mask ?? 0);
 }
@@ -586,11 +698,12 @@ function buildSensorRows(n) {
 
 function buildRelayGrid(n) {
   const mask = getActuatorMask(n);
-  const btns = Array.from({ length: 4 }, (_, i) => {
+  const labels = getRelayLabelsForNode(n);
+  const btns = Array.from({ length: RELAY_CHANNEL_COUNT }, (_, i) => {
     const on = !!((mask >> i) & 1);
     return `<button class="relay-btn ${on ? "on" : "off"}"
       data-node="${n.id}" data-relay="${i}" data-state="${on ? "1" : "0"}">
-      Relay ${i + 1}<br>${on ? "● ON" : "○ OFF"}</button>`;
+      ${esc(labels[i])}<br>${on ? "● ON" : "○ OFF"}</button>`;
   }).join("");
   return `<div class="relay-grid">${btns}</div>`;
 }
@@ -613,12 +726,13 @@ function patchCard(el, n) {
     if (rowsEl) rowsEl.innerHTML = buildSensorRows(n);
   } else {
     const mask = getActuatorMask(n);
+    const labels = getRelayLabelsForNode(n);
     el.querySelectorAll(".relay-btn").forEach(btn => {
       const i  = parseInt(btn.dataset.relay, 10);
       const on = !!((mask >> i) & 1);
       btn.className     = `relay-btn ${on ? "on" : "off"}`;
       btn.dataset.state = on ? "1" : "0";
-      btn.innerHTML     = `Relay ${i + 1}<br>${on ? "● ON" : "○ OFF"}`;
+      btn.innerHTML     = `${esc(labels[i])}<br>${on ? "● ON" : "○ OFF"}`;
     });
   }
 }
@@ -1031,7 +1145,22 @@ function openNodeSettings(nodeId) {
   }
 }
 
+function openRelayAwareNodeSettings(nodeId) {
+  const n = nodes.get(nodeId);
+  if (!n) return;
+
+  nsCurrentNodeId = nodeId;
+  $nsTitle.textContent = `${n.name || `Node #${nodeId}`} - Settings`;
+  $nsOverlay.style.display = "flex";
+  renderNodeSettings(nodeId);
+
+  if (!nodeSettings.has(nodeId)) {
+    send({ type: "node_settings_get", node_id: nodeId });
+  }
+}
+
 function closeNodeSettings() {
+  if (nsCurrentNodeId) clearRelayLabelDraft(nsCurrentNodeId);
   $nsOverlay.style.display = "none";
   nsCurrentNodeId = 0;
 }
@@ -1041,32 +1170,93 @@ $nsOverlay.addEventListener("click", e => {
   if (e.target === $nsOverlay) closeNodeSettings();
 });
 
+function captureNodeSettingsFocus(nodeId) {
+  const active = document.activeElement;
+  const relayInput = active?.closest?.(".relay-label-input");
+  if (!relayInput) return null;
+  if (parseInt(relayInput.dataset.node, 10) !== nodeId) return null;
+
+  return {
+    relayIndex: parseInt(relayInput.dataset.relay, 10),
+    selectionStart: relayInput.selectionStart,
+    selectionEnd: relayInput.selectionEnd
+  };
+}
+
+function restoreNodeSettingsFocus(nodeId, snapshot) {
+  if (!snapshot) return;
+  const input = $nsBody.querySelector(
+    `.relay-label-input[data-node="${nodeId}"][data-relay="${snapshot.relayIndex}"]`
+  );
+  if (!input) return;
+
+  input.focus({ preventScroll: true });
+  if (typeof snapshot.selectionStart === "number" && typeof input.setSelectionRange === "function") {
+    input.setSelectionRange(snapshot.selectionStart, snapshot.selectionEnd ?? snapshot.selectionStart);
+  }
+}
+
+function isEditingRelayLabel(nodeId) {
+  const active = document.activeElement;
+  const relayInput = active?.closest?.(".relay-label-input");
+  if (!relayInput) return false;
+  return parseInt(relayInput.dataset.node, 10) === nodeId;
+}
+
 function renderNodeSettings(nodeId) {
   const n      = nodes.get(nodeId);
   const schema = nodeSettings.get(nodeId);
 
   if (!n) { closeNodeSettings(); return; }
 
+  const focusSnapshot = captureNodeSettingsFocus(nodeId);
+  const prevScrollTop = $nsBody.scrollTop;
+
   // Update title in case node was renamed
   $nsTitle.textContent = `${esc(n.name || `Node #${nodeId}`)} — Settings`;
-
-  if (!schema || schema.length === 0) {
-    $nsBody.innerHTML = `<div class="nsettings-empty">
-      ${!schema
-        ? `<div class="nsettings-spinner"><span class="spin-ring"></span>Waiting for node…</div>`
-        : "This node has no configurable settings."}
-    </div>`;
-    return;
-  }
 
   // Offline notice (non-blocking — user can still see current values)
   const offlineHtml = n.online ? "" : `
     <div class="nsettings-offline">
-      ⚠ Node is offline — changes will be applied when it reconnects.
+      ⚠ Node is offline — firmware setting changes will apply after it reconnects.
     </div>`;
 
-  const rows = schema.map(s => buildSettingRow(s, nodeId, n.online)).join("");
-  $nsBody.innerHTML = offlineHtml + rows;
+  const sections = [];
+
+  if (n.type !== 1) sections.push(buildRelayLabelSection(n));
+
+  if (!schema) {
+    sections.push(`
+      <div class="nsettings-section">
+        <div class="nsettings-section-hdr">Node Settings</div>
+        <div class="nsettings-empty">
+          <div class="nsettings-spinner"><span class="spin-ring"></span>Waiting for node…</div>
+        </div>
+      </div>`);
+  } else if (schema.length > 0) {
+    const rows = schema.map(s => buildSettingRow(s, nodeId, n.online)).join("");
+    sections.push(`
+      <div class="nsettings-section">
+        <div class="nsettings-section-hdr">Node Settings</div>
+        ${rows}
+      </div>`);
+  } else if (n.type === 1) {
+    sections.push(`
+      <div class="nsettings-section">
+        <div class="nsettings-section-hdr">Node Settings</div>
+        <div class="nsettings-empty">This node has no configurable settings.</div>
+      </div>`);
+  } else {
+    sections.push(`
+      <div class="nsettings-section">
+        <div class="nsettings-section-hdr">Node Settings</div>
+        <div class="nsettings-empty">This relay node does not expose any firmware settings.</div>
+      </div>`);
+  }
+
+  $nsBody.innerHTML = offlineHtml + sections.join("");
+  $nsBody.scrollTop = prevScrollTop;
+  restoreNodeSettingsFocus(nodeId, focusSnapshot);
 }
 
 function buildSettingRow(s, nodeId, online) {
@@ -1114,6 +1304,82 @@ function buildSettingRow(s, nodeId, online) {
       </div>
       ${control}
     </div>`;
+}
+
+function buildRelayLabelSection(n) {
+  const labels = getRelayLabelDraft(n.id) || getRelayLabelsForNode(n);
+  const rows = labels.map((label, i) => `
+    <div class="nsetting-row relay-label-row">
+      <div class="nsetting-info">
+        <div class="nsetting-label">Relay ${i + 1} Label</div>
+        <div class="nsetting-type">Stored on gateway for MAC ${esc(n.mac || "—")}</div>
+      </div>
+      <input type="text"
+             class="setting-input relay-label-input"
+             data-node="${n.id}"
+             data-relay="${i}"
+             value="${esc(label)}"
+             maxlength="24"
+             placeholder="${defaultRelayLabel(i)}">
+    </div>`).join("");
+
+  return `
+    <div class="nsettings-section">
+      <div class="nsettings-section-hdr">Relay Labels</div>
+      <div class="nsettings-section-desc">
+        These labels are stored in the gateway and pinned to this node's MAC address, so they stay
+        with the correct relay node after reboots and reconnects.
+      </div>
+      ${rows}
+      <div class="setting-save-row relay-label-actions">
+        <button class="settings-save-btn relay-label-save-btn" data-node-id="${n.id}" type="button">
+          Save Labels
+        </button>
+        <button class="tbl-btn relay-label-reset-btn" data-node-id="${n.id}" type="button">
+          Reset Defaults
+        </button>
+        <span class="setting-save-note" id="relay-label-note-${n.id}"></span>
+      </div>
+    </div>`;
+}
+
+function setRelayLabelSaveNote(nodeId, msg, type = "") {
+  const el = document.getElementById(`relay-label-note-${nodeId}`);
+  if (!el) return;
+  el.textContent = msg;
+  el.className = "setting-save-note" + (type ? " " + type : "");
+}
+
+function collectRelayLabelInputs(nodeId) {
+  return [...document.querySelectorAll(`.relay-label-input[data-node="${nodeId}"]`)];
+}
+
+function saveRelayLabels(nodeId) {
+  const n = nodes.get(nodeId);
+  if (!n || n.type === 1) return;
+
+  const inputs = collectRelayLabelInputs(nodeId);
+  if (inputs.length === 0) return;
+
+  const labels = inputs.map((input, index) => sanitizeRelayLabel(input.value, index));
+  replaceRelayLabelDraft(nodeId, labels);
+  inputs.forEach((input, index) => { input.value = labels[index]; });
+  setRelayLabelSaveNote(nodeId, "Saving to gateway...", "");
+  send({ type: "relay_labels_set", node_id: nodeId, labels });
+}
+
+function resetRelayLabels(nodeId) {
+  const n = nodes.get(nodeId);
+  if (!n || n.type === 1) return;
+
+  const defaults = Array.from({ length: RELAY_CHANNEL_COUNT }, (_, i) => defaultRelayLabel(i));
+  replaceRelayLabelDraft(nodeId, defaults);
+
+  collectRelayLabelInputs(nodeId).forEach((input, index) => {
+    input.value = defaults[index];
+  });
+  setRelayLabelSaveNote(nodeId, "Saving default labels to gateway...", "");
+  send({ type: "relay_labels_set", node_id: nodeId, labels: defaults });
 }
 
 // ── Toast ─────────────────────────────────────────────────────────────────────
@@ -1187,6 +1453,18 @@ document.addEventListener("click", e => {
     return;
   }
 
+  const relaySaveBtn = e.target.closest(".relay-label-save-btn");
+  if (relaySaveBtn) {
+    saveRelayLabels(parseInt(relaySaveBtn.dataset.nodeId, 10));
+    return;
+  }
+
+  const relayResetBtn = e.target.closest(".relay-label-reset-btn");
+  if (relayResetBtn) {
+    resetRelayLabels(parseInt(relayResetBtn.dataset.nodeId, 10));
+    return;
+  }
+
   // Card info button
   const cardInfo = e.target.closest(".card-info-btn");
   if (cardInfo) {
@@ -1204,7 +1482,7 @@ document.addEventListener("click", e => {
   // Table: settings button
   const tblSettings = e.target.closest(".tbl-btn.settings");
   if (tblSettings) {
-    openNodeSettings(parseInt(tblSettings.dataset.nodeId, 10));
+    openRelayAwareNodeSettings(parseInt(tblSettings.dataset.nodeId, 10));
     return;
   }
 
@@ -1240,6 +1518,13 @@ document.addEventListener("click", e => {
 
 // Enter key in rename input
 document.addEventListener("keydown", e => {
+  const relayInput = e.target.closest(".relay-label-input");
+  if (e.key === "Enter" && relayInput) {
+    e.preventDefault();
+    saveRelayLabels(parseInt(relayInput.dataset.node, 10));
+    return;
+  }
+
   if (e.key === "Enter") {
     const inp = $("rename-input");
     const sav = $("rename-save");
@@ -1285,6 +1570,17 @@ document.addEventListener("change", e => {
     send({ type: "node_settings_set", node_id: nodeId, setting_id: sid, value: newVal });
     return;
   }
+});
+
+document.addEventListener("input", e => {
+  const relayInput = e.target.closest(".relay-label-input");
+  if (!relayInput) return;
+  setRelayLabelDraft(
+    parseInt(relayInput.dataset.node, 10),
+    parseInt(relayInput.dataset.relay, 10),
+    relayInput.value
+  );
+  setRelayLabelSaveNote(parseInt(relayInput.dataset.node, 10), "");
 });
 
 // Gateway Status LED toggle functionality

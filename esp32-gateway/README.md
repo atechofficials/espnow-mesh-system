@@ -49,6 +49,7 @@ The gateway is the heart of the ESPNow Mesh System. It runs on an **ESP32-S3** a
 | v1.8.0 | Added schema-driven sensor support, generic sensor reading protocol, and multi-sensor node compatibility |
 | v1.8.1 | added gateway status LED toggle support from the Web UI (with persistent state) |
 | v1.8.2 | Added ESP32 actuator-node support, updated gateway logic for actuator pairing/state/settings flows, improved actuator state sync after reconnect/reboot |
+| v1.8.3 | Added support for Per Relay Label Set functionality via Web Interface for ESP32 Relay Node |
 ---
 
 ## Contents

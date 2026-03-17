@@ -76,6 +76,7 @@ Main capabilities:
 - supports relay state persistence across reboot
 - supports Status LED enable/disable setting
 - exposes settings in the gateway Web Interface for easier control
+- supports per relay lable set from Web Interface
 
 ---
 

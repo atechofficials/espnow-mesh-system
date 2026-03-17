@@ -1,10 +1,10 @@
 /**
     * @file [main.cpp]
     * @brief Main source file for the ESP32 Mesh Gateway firmware
-    * @version 1.8.2
+    * @version 1.8.3
     * @author Mrinal (@atechofficials)
  */
-#define FW_VERSION "1.8.2"
+#define FW_VERSION "1.8.3"
 
 #include <Arduino.h>
 #include <WiFi.h>
@@ -25,6 +25,7 @@
 #define AP_SSID_DEFAULT  "ESP32-Mesh-Gateway"
 #define AP_PASS_DEFAULT  "meshsetup"
 #define WEB_PORT         80
+#define RELAY_LABEL_MAX_LEN 25
 
 // Runtime AP credentials - loaded from NVS on boot, fall back to compile-time defaults.
 // These are the SSID / password the WiFiManager captive portal AP will use.
@@ -63,6 +64,7 @@ struct NodeRecord {
     uint8_t       sensorCount;                       // 0 = schema not yet received
     SensorDef     sensorSchema[NODE_MAX_SENSORS];    // descriptor for each sensor channel
     float         sensorValues[NODE_MAX_SENSORS];    // last received value per channel
+    char          relayLabels[NODE_MAX_ACTUATORS][RELAY_LABEL_MAX_LEN];
 };
 static NodeRecord nodes[MESH_MAX_NODES + 1];
 static uint8_t    nextId = 1;
@@ -164,6 +166,88 @@ static String macToStr(const uint8_t* mac) {
 static bool parseMac(const char* str, uint8_t* mac) {
     return sscanf(str, "%hhx:%hhx:%hhx:%hhx:%hhx:%hhx",
                   &mac[0], &mac[1], &mac[2], &mac[3], &mac[4], &mac[5]) == 6;
+}
+
+static void defaultRelayLabel(uint8_t relayIdx, char* out, size_t outSize) {
+    snprintf(out, outSize, "Relay %u", relayIdx + 1);
+}
+
+static void resetRelayLabels(char labels[NODE_MAX_ACTUATORS][RELAY_LABEL_MAX_LEN]) {
+    for (uint8_t i = 0; i < NODE_MAX_ACTUATORS; i++) {
+        defaultRelayLabel(i, labels[i], RELAY_LABEL_MAX_LEN);
+    }
+}
+
+static void sanitizeRelayLabel(const char* input, uint8_t relayIdx,
+                               char* out, size_t outSize) {
+    String label = input ? String(input) : String();
+    label.trim();
+    if (label.length() == 0) {
+        defaultRelayLabel(relayIdx, out, outSize);
+        return;
+    }
+    label.replace("\r", " ");
+    label.replace("\n", " ");
+    while (label.indexOf("  ") >= 0) label.replace("  ", " ");
+    strncpy(out, label.c_str(), outSize - 1);
+    out[outSize - 1] = '\0';
+}
+
+static void buildRelayLabelPrefKey(const uint8_t* mac, char* key, size_t keySize) {
+    snprintf(key, keySize, "%02X%02X%02X%02X%02X%02X",
+             mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+}
+
+struct RelayLabelRecord {
+    char labels[NODE_MAX_ACTUATORS][RELAY_LABEL_MAX_LEN];
+};
+
+static void loadRelayLabelsForNode(uint8_t nodeId) {
+    if (nodeId == 0 || nodeId > MESH_MAX_NODES) return;
+    resetRelayLabels(nodes[nodeId].relayLabels);
+    if (nodes[nodeId].mac[0] == 0 && nodes[nodeId].mac[1] == 0) return;
+
+    RelayLabelRecord rec{};
+    char key[13];
+    buildRelayLabelPrefKey(nodes[nodeId].mac, key, sizeof(key));
+
+    Preferences prefs;
+    prefs.begin("gwrelay", true);
+    size_t got = prefs.getBytes(key, &rec, sizeof(rec));
+    prefs.end();
+
+    if (got != sizeof(rec)) return;
+
+    for (uint8_t i = 0; i < NODE_MAX_ACTUATORS; i++) {
+        sanitizeRelayLabel(rec.labels[i], i, nodes[nodeId].relayLabels[i], RELAY_LABEL_MAX_LEN);
+    }
+}
+
+static void saveRelayLabelsForNode(uint8_t nodeId) {
+    if (nodeId == 0 || nodeId > MESH_MAX_NODES) return;
+    if (nodes[nodeId].mac[0] == 0 && nodes[nodeId].mac[1] == 0) return;
+
+    RelayLabelRecord rec{};
+    for (uint8_t i = 0; i < NODE_MAX_ACTUATORS; i++) {
+        sanitizeRelayLabel(nodes[nodeId].relayLabels[i], i, rec.labels[i], RELAY_LABEL_MAX_LEN);
+    }
+
+    char key[13];
+    buildRelayLabelPrefKey(nodes[nodeId].mac, key, sizeof(key));
+
+    Preferences prefs;
+    prefs.begin("gwrelay", false);
+    prefs.putBytes(key, &rec, sizeof(rec));
+    prefs.end();
+}
+
+static void removeRelayLabelsForMac(const uint8_t* mac) {
+    char key[13];
+    buildRelayLabelPrefKey(mac, key, sizeof(key));
+    Preferences prefs;
+    prefs.begin("gwrelay", false);
+    prefs.remove(key);
+    prefs.end();
 }
 
 static uint8_t findNodeByMac(const uint8_t* mac) {
@@ -408,6 +492,11 @@ static void loadNodesFromNvs() {
 
     if (restored == 0) return;
     Serial.printf("[MESH] %d node(s) restored from NVS. nextId=%d\n", restored, nextId);
+
+    for (uint8_t i = 1; i < nextId; i++) {
+        if (nodes[i].mac[0] == 0 && nodes[i].mac[1] == 0) continue;
+        loadRelayLabelsForNode(i);
+    }
 
     // Proactively request both the settings and sensor schema from every restored
     // node so the dashboard and settings panel repopulate as soon as each node replies.
@@ -659,6 +748,7 @@ static void disconnectNode(uint8_t nodeId) {
         setGwLed(0); // turn off immediately
     }
     Serial.printf("[MESH] Node #%d disconnected\n", nodeId);
+    removeRelayLabelsForMac(mac);
     saveNodesToNvs();  // persist the freed slot so it doesn't reappear after reboot
     wsBroadcast(buildNodesJson());  // forward declaration - defined below
 }
@@ -701,6 +791,12 @@ static String buildNodesJson() {
             } else {
                 n["actuator_mask"] = nodes[i].actuatorMask;
                 n["relay_mask"]    = nodes[i].actuatorMask;  // backward-compatible alias for older UI code
+                JsonArray labels = n["relay_labels"].to<JsonArray>();
+                for (uint8_t j = 0; j < NODE_MAX_ACTUATORS; j++) {
+                    labels.add(nodes[i].relayLabels[j][0]
+                        ? nodes[i].relayLabels[j]
+                        : String("Relay ") + String(j + 1));
+                }
             }
             n["settings_ready"] = (nodes[i].settingsCount > 0);
         }
@@ -723,6 +819,28 @@ static String buildMetaJson() {
     doc["gw_led_enabled"] = gwLedEnabled;
     doc["ap_ssid"]         = gwApSsid;
     doc["credentials_set"] = credentialsSet();
+    String out;
+    serializeJson(doc, out);
+    return out;
+}
+
+static String buildRelayLabelsAckJson(uint8_t nodeId, bool ok, const char* err = nullptr) {
+    JsonDocument doc;
+    doc["type"] = "relay_labels_ack";
+    doc["ok"] = ok;
+    doc["node_id"] = nodeId;
+    if (!ok && err) doc["err"] = err;
+
+    if (ok && nodeId > 0 && nodeId < nextId) {
+        JsonArray labels = doc["labels"].to<JsonArray>();
+        if (xSemaphoreTake(nodesMutex, pdMS_TO_TICKS(100)) == pdTRUE) {
+            for (uint8_t i = 0; i < NODE_MAX_ACTUATORS; i++) {
+                labels.add(nodes[nodeId].relayLabels[i]);
+            }
+            xSemaphoreGive(nodesMutex);
+        }
+    }
+
     String out;
     serializeJson(doc, out);
     return out;
@@ -880,6 +998,10 @@ static void processRxQueue() {
                     nodes[assignId].online   = true;
                     if (isNew) nodes[assignId].settingsCount = 0;  // clear stale schema on fresh slot
                     xSemaphoreGive(nodesMutex);
+                }
+
+                if (isNew) {
+                    loadRelayLabelsForNode(assignId);
                 }
 
                 Serial.printf("[MESH] %s node #%d \"%s\"  %s\n",
@@ -1429,6 +1551,34 @@ static void onWsEvent(AsyncWebSocket*, AsyncWebSocketClient* client,
                 Serial.printf("[CFG]  Node #%d setting %d -> %d\n", nodeId, settingId, value);
                 wsBroadcast(buildNodeSettingsJson(nodeId));
 
+            } else if (strcmp(msgType, "relay_labels_set") == 0) {
+                uint8_t nodeId = doc["node_id"] | 0;
+                if (nodeId == 0 || nodeId >= nextId) {
+                    client->text(buildRelayLabelsAckJson(nodeId, false, "Invalid node"));
+                    break;
+                }
+                if (nodes[nodeId].mac[0] == 0) {
+                    client->text(buildRelayLabelsAckJson(nodeId, false, "Node not found"));
+                    break;
+                }
+                if (nodes[nodeId].type != NODE_ACTUATOR) {
+                    client->text(buildRelayLabelsAckJson(nodeId, false, "Relay labels only apply to actuator nodes"));
+                    break;
+                }
+
+                JsonArrayConst labels = doc["labels"].as<JsonArrayConst>();
+                if (xSemaphoreTake(nodesMutex, pdMS_TO_TICKS(50)) == pdTRUE) {
+                    for (uint8_t i = 0; i < NODE_MAX_ACTUATORS; i++) {
+                        const char* raw = labels.isNull() ? "" : (labels[i] | "");
+                        sanitizeRelayLabel(raw, i, nodes[nodeId].relayLabels[i], RELAY_LABEL_MAX_LEN);
+                    }
+                    xSemaphoreGive(nodesMutex);
+                }
+
+                saveRelayLabelsForNode(nodeId);
+                wsBroadcast(buildNodesJson());
+                client->text(buildRelayLabelsAckJson(nodeId, true));
+
             // Factory reset: wipe ALL config and paired nodes, then reboot
             } else if (strcmp(msgType, "factory_reset") == 0) {
                 Serial.println("[GW]  Factory reset requested via dashboard.");
@@ -1460,6 +1610,12 @@ static void onWsEvent(AsyncWebSocket*, AsyncWebSocketClient* client,
                     Preferences prefs;
                     prefs.begin("gwnodes", false);
                     prefs.clear();        // wipe paired node registry
+                    prefs.end();
+                }
+                {
+                    Preferences prefs;
+                    prefs.begin("gwrelay", false);
+                    prefs.clear();        // wipe saved relay label assignments
                     prefs.end();
                 }
                 delay(100);

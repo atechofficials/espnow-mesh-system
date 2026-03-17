@@ -31,13 +31,13 @@ Current file versions:
 
 | Component | Current Version |
 |----------|-----------------|
-| ESP32-S3 Gateway firmware `main.cpp` | `v1.8.2` |
+| ESP32-S3 Gateway firmware `main.cpp` | `v1.8.3` |
 | ESP32 Sensor Node firmware `main.cpp` | `v2.0.1` |
 | ESP32 Actuator Relay Node firmware `main.cpp` | `v1.0.1` |
 | `mesh_protocol.h` | `v3.1.0` |
 | `index.html` | `v3.5` |
-| `app.js` | `v3.6` |
-| `style.css` | `v3.3` |
+| `app.js` | `v3.7` |
+| `style.css` | `v3.4` |
 
 Current supported node categories:
 - Sensor nodes

@@ -1,5 +1,5 @@
 /* ═══════════════════════════════════════════════════════════════════
-   ESP32 Mesh Gateway Web Interface Stylesheet v3.3
+   ESP32 Mesh Gateway Web Interface Stylesheet v3.4
    ═══════════════════════════════════════════════════════════════════ */
 
 /* ── Local Fonts ───────────────────────────────────────────── */
@@ -656,6 +656,9 @@ svg { display: block; }
   font-weight: 700;
   line-height: 1.35;
   text-align: center;
+  white-space: normal;
+  word-break: break-word;
+  min-height: 72px;
   border: 1px solid transparent;
   transition: filter .15s, transform .1s;
   cursor: pointer;
@@ -1474,9 +1477,33 @@ svg { display: block; }
   overflow-y: auto;
 }
 
+.nsettings-section {
+  display: flex;
+  flex-direction: column;
+  gap: .85rem;
+  padding: .95rem 1rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+}
+
+.nsettings-section-hdr {
+  font-size: .78rem;
+  font-weight: 700;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+.nsettings-section-desc {
+  font-size: .78rem;
+  line-height: 1.5;
+  color: var(--text-muted);
+}
+
 .nsettings-empty {
   text-align: center;
-  padding: 2rem 1rem;
+  padding: 1.1rem .8rem;
   color: var(--text-muted);
   font-size: .85rem;
 }
@@ -1522,6 +1549,19 @@ svg { display: block; }
 .nsetting-info {
   flex: 1;
   min-width: 0;
+}
+
+.relay-label-row {
+  align-items: flex-start;
+}
+
+.relay-label-input {
+  width: 180px;
+  max-width: 48%;
+}
+
+.relay-label-actions {
+  margin-top: -.1rem;
 }
 
 .nsetting-label {
@@ -1651,6 +1691,18 @@ svg { display: block; }
 }
 
 /* ── Login Overlay ──────────────────────────────────────────────── */
+@media (max-width: 560px) {
+  .relay-label-row {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .relay-label-input {
+    width: 100%;
+    max-width: none;
+  }
+}
+
 .login-overlay {
   position: fixed;
   inset: 0;

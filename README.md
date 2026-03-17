@@ -1,127 +1,273 @@
 # ESPNow Mesh System
 
-A wireless smart-home sensor network that runs entirely on your local network — no cloud, no subscription, no internet connection required. An ESP32-S3 gateway connects to your Wi-Fi and talks to a fleet of sensor nodes around your home, then serves a live dashboard you can open in any browser.
+A local-first ESP32 smart-home system for **wireless sensing and control**.
+
+This project lets you build a small home mesh using **ESP32-based nodes** and a central **ESP32-S3 gateway**.  
+The gateway connects to your Wi-Fi, hosts a browser-based dashboard, and communicates with nearby nodes over **ESP-NOW**.
+
+That means you can:
+
+- monitor room conditions like temperature, humidity, pressure, and light
+- control actuator devices like relays from a web dashboard
+- pair nodes without entering Wi-Fi credentials on each node
+- keep everything running on your own local network
+
+No cloud account. No subscription. No internet dependency for normal use.
 
 ---
 
-## ✨ What It Does
+## What This Project Can Do
 
-- **Live sensor dashboard** — open the gateway's IP address in any browser to see real-time readings from all your nodes: temperature, humidity, pressure, light level, and more
-- **Wireless sensor nodes** — place nodes anywhere in range; they communicate directly with the gateway over ESP-NOW (no Wi-Fi credentials needed on the nodes)
-- **Button-press pairing** — hold the pairing button on a node for 3 seconds; the gateway discovers and registers it automatically
-- **Remote management** — reboot nodes, rename them, adjust their settings, and control the gateway — all from the dashboard
-- **No cloud, no account** — everything runs on your local network; your sensor data never leaves your home
-- **Self-healing mesh** — if the gateway reboots, nodes detect this and reconnect automatically; no manual intervention needed
+### Live monitoring
+Open the gateway's IP address in your browser to view live sensor readings from all paired nodes.
 
----
+### Local control
+Turn relays on and off directly from the dashboard.
 
-## 🔌 What You Need
+### Easy pairing
+Put a node into pairing mode and the gateway can discover and register it automatically.
 
-| Item | Details |
-|------|---------|
-| **Gateway** | ESP32-S3-DevKitC-1-N8R8 (1×) |
-| **Sensor node** | DFRobot Firebeetle 2 ESP32-E (1× per node) |
-| **Sensors (per node)** | Bosch BMP280 · DHT22 · TEMT6000 |
-| **USB cables** | One per device for flashing |
-| **Power** | USB 5V for gateway; USB or battery for nodes |
+### Node settings from the browser
+Change node settings such as:
+- Status LED enable/disable
+- Relay state persistence
+- Sensor-specific options
 
-> **Coming soon:** pre-assembled PCBs and a one-click web flasher so no tools or technical knowledge are required.
+### Automatic recovery
+If the gateway or node reboots, the system reconnects automatically and restores state where supported.
 
 ---
 
-## 🚀 Getting Started
+## Current Project Status
 
-### Step 1 — Flash the gateway
+The project already supports both **sensor nodes** and **actuator nodes**.
 
-Follow the instructions in [`esp32-gateway/gateway_v1/README.md`](esp32-gateway/gateway_v1/README.md).
+### Available right now
 
-### Step 2 — Flash a sensor node
+| Type | Device | Status |
+|------|--------|--------|
+| Gateway | ESP32-S3 Gateway | Working |
+| Sensor Node | Envo Mini v1 | Working |
+| Actuator Node | ESP32 Relay Node v1 | Working |
 
-Follow the instructions in [`esp32-nodes/sensor_nodes/envo_mini_v1/README.md`](esp32-nodes/sensor_nodes/envo_mini_v1/README.md).
+### Current node capabilities
 
-### Step 3 — First boot
+**Envo Mini v1**
+- Temperature
+- Atmospheric pressure
+- Humidity
+- Ambient light
 
-1. Power on the gateway
-2. On first boot it creates a Wi-Fi access point called **`ESP32-Mesh-Setup`** (password: `meshsetup`)
-3. Connect to it from your phone or laptop — a setup page opens automatically
-4. Select your home Wi-Fi and enter the password
-5. The gateway connects and its IP address appears in the serial monitor (e.g. `http://192.168.1.141/`)
-
-### Step 4 — Pair a sensor node
-
-1. Power on the sensor node
-2. Hold the **pairing button** for **3 seconds** — the LED turns cyan
-3. The gateway discovers the node and completes the handshake automatically
-4. The LED turns solid green — the node is paired and transmitting
-
-### Step 5 — Open the dashboard
-
-Open the gateway's IP address in any browser on your local network. You'll see live readings from all paired nodes updating every 10 seconds.
+**ESP32 Relay Node v1**
+- 4 independent relay outputs
+- Relay control from dashboard
+- Relay state persistence across reboot
+- Status LED setting from dashboard
 
 ---
 
-## 📡 Available Sensor Nodes
+## Why ESP-NOW?
 
-| Node | Measures | Firmware |
-|------|---------|---------|
-| Envo Mini v1 | Temperature · Atmospheric Pressure · Humidity · Ambient Light | v2.0.1 |
+Most DIY smart-home systems put every device directly on Wi-Fi.
 
-## Available Actuator Nodes
-| Node | Actuators | Firmware |
-| ESP32 Relay Node v1 | 4-Relays | v1.0.1 |
+This project takes a different approach:
+
+- the **gateway** joins your home Wi-Fi
+- the **nodes** talk to the gateway using **ESP-NOW**
+- nodes do not need your Wi-Fi password
+- pairing is simpler for small embedded devices
+- the system stays lightweight and local
+
+This makes the setup especially useful for small ESP32 devices that only need to talk to one central controller.
 
 ---
 
-## 💡 LED Status Guide
+## How It Works
+
+```text
+Browser
+   │
+   │  Dashboard
+   ▼
+ESP32-S3 Gateway
+   │
+   │  ESP-NOW
+   ├── Sensor Nodes
+   └── Actuator Nodes
+```
+
+The gateway acts as the bridge between:
+- your browser over Wi-Fi
+- your ESP32 nodes over ESP-NOW
+
+---
+
+## Hardware Used
 
 ### Gateway
+- ESP32-S3-DevKitC-1-N8R8
 
-| LED | Meaning |
-|-----|---------|
-| Solid white (dim) | Booting |
-| Slow blue pulse | Connecting to Wi-Fi |
-| Solid green | Online, nodes connected |
-| Slow green pulse | Online, no nodes connected |
+### Sensor node reference board
+- DFRobot FireBeetle 2 ESP32-E
 
-### Sensor Nodes
+### Sensor node reference sensors
+- BMP280
+- DHT22
+- TEMT6000
 
-| LED | Meaning |
-|-----|---------|
-| Fast white flash | Booting |
-| Slow cyan pulse | Pairing mode — waiting for gateway |
-| Solid green | Paired and sending data |
-| Slow amber pulse | Gateway lost — trying to reconnect |
+### Actuator node reference board
+- ESP32 Dev Module
 
----
-
-## ❓ Troubleshooting
-
-**Node won't pair**
-- Make sure the gateway is fully booted and online (solid or pulsing green LED) before starting the pairing process
-- Hold the pairing button for a full 3 seconds until the LED turns cyan
-- Keep the node within a few metres of the gateway during pairing
-
-**Dashboard shows a node as offline**
-- Check the node is powered on and its LED is solid green
-- If the gateway was recently rebooted, the node reconnects automatically within about 30 seconds
-
-**Gateway won't connect to Wi-Fi**
-- The captive portal reopens automatically if the saved credentials fail
-- To reset Wi-Fi credentials completely, hold the **BOOT button** on the gateway for 5 seconds — this performs a factory reset
-
-**Sensor readings look wrong**
-- Temperature and pressure come from the BMP280 — make sure it is wired correctly (SDA → GPIO 21, SCL → GPIO 22)
-- Humidity comes from the DHT22 (DATA → GPIO 16) — allow 2–3 minutes after power-on for the sensor to stabilise
-- Light level comes from the TEMT6000 (SIG → GPIO 36) — adjust the Light Sensitivity setting in the node settings panel if readings seem too low or too high
+### Actuator node reference output
+- 4-channel active-LOW relay module
 
 ---
 
-## 🤝 Contributing & Development
+## Quick Start
 
-Interested in adding a new sensor node, improving the dashboard, or building an actuator node? See [CONTRIBUTING.md](CONTRIBUTING.md) for the full development guide.
+### 1. Flash the gateway
+Start with the gateway firmware:
+
+[`esp32-gateway/gateway_v1/README.md`](esp32-gateway/gateway_v1/README.md)
+
+### 2. Flash a node
+Choose one:
+
+Sensor node:
+[`esp32-nodes/sensor_nodes/envo_mini_v1/README.md`](esp32-nodes/sensor_nodes/envo_mini_v1/README.md)
+
+Actuator node:
+[`esp32-nodes/actuator_nodes/esp32_relay_node_v1/README.md`](esp32-nodes/actuator_nodes/esp32_relay_node_v1/README.md)
+
+### 3. Power on the gateway
+On first boot, the gateway helps you connect it to your home Wi-Fi.
+
+### 4. Pair a node
+Put a node into pairing mode and let the gateway detect it.
+
+### 5. Open the dashboard
+Visit the gateway IP in your browser and start using the system.
 
 ---
 
-## 📜 License
+## Web Dashboard Features
 
-MIT — see [LICENSE](LICENSE)
+The current dashboard supports:
+
+- viewing all paired nodes
+- seeing live sensor readings
+- controlling relay outputs
+- opening node settings
+- renaming nodes
+- rebooting nodes remotely
+- disconnecting nodes
+- changing gateway settings
+- launching Wi-Fi setup mode
+- factory reset options
+
+The dashboard is served directly by the gateway itself.
+
+---
+
+## Who This Project Is For
+
+This project is useful if you are:
+
+### A maker or hobbyist
+You want a local smart-home system without cloud dependency.
+
+### A student or learner
+You want to explore ESP32 networking, embedded firmware, and browser-based control panels.
+
+### A developer
+You want a modular ESP32 project with:
+- gateway firmware
+- sensor firmware
+- actuator firmware
+- a shared protocol
+- a live dashboard
+- room for future expansion
+
+---
+
+## For Developers
+
+The project is already structured for further development.
+
+If you want to:
+- add new sensor nodes
+- add new actuator nodes
+- improve the gateway
+- improve the dashboard
+- extend the protocol
+- contribute fixes or new features
+
+start here:
+
+[`CONTRIBUTING.md`](CONTRIBUTING.md)
+
+More detailed documentation is available in the subproject README files.
+
+---
+
+## Repository Layout
+
+```text
+espnow-mesh-system/
+├── README.md
+├── CONTRIBUTING.md
+├── esp32-gateway/
+└── esp32-nodes/
+```
+
+### Main sections
+
+- [`esp32-gateway/`](esp32-gateway/)  
+  Gateway documentation and firmware
+
+- [`esp32-nodes/`](esp32-nodes/)  
+  Sensor and actuator node firmware
+
+---
+
+## Documentation Map
+
+If you're just exploring:
+
+- Gateway overview: [`esp32-gateway/README.md`](esp32-gateway/README.md)
+- Nodes overview: [`esp32-nodes/README.md`](esp32-nodes/README.md)
+
+If you're building hardware:
+
+- Gateway firmware guide: [`esp32-gateway/gateway_v1/README.md`](esp32-gateway/gateway_v1/README.md)
+- Sensor node guide: [`esp32-nodes/sensor_nodes/envo_mini_v1/README.md`](esp32-nodes/sensor_nodes/envo_mini_v1/README.md)
+- Relay node guide: [`esp32-nodes/actuator_nodes/esp32_relay_node_v1/README.md`](esp32-nodes/actuator_nodes/esp32_relay_node_v1/README.md)
+
+If you're contributing code:
+
+- Contribution guide: [`CONTRIBUTING.md`](CONTRIBUTING.md)
+
+---
+
+## Project Direction
+
+The project currently supports:
+- local sensor monitoring
+- local relay control
+- browser-based node management
+
+Planned future growth may include:
+- more sensor node types
+- more actuator node types
+- hybrid sensor + actuator nodes
+- improved dashboard views and charts
+- cleaner onboarding and flashing experience
+
+---
+
+## License
+
+MIT License
+
+See [`LICENSE`](LICENSE)
+```
