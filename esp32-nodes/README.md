@@ -24,7 +24,7 @@ Currently implemented:
 
 | Node | Actuator | Firmware |
 |------|---------|----------|
-| ESP32 Relay Node v1 | 4-Relays | v1.0.1 |
+| ESP32 Relay Node v1 | 4-Relays | v1.0.2 |
 
 ---
 

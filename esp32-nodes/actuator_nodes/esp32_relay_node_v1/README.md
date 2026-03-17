@@ -1,6 +1,6 @@
 # ESP32 Relay Node v1
 
-Firmware version: **1.0.1**
+Firmware version: **1.0.2**
 Target board: `esp32dev`
 
 ## Firmware Changelog
@@ -8,18 +8,17 @@ Target board: `esp32dev`
 |---------|-------|
 | v1.0.0 | Initial relay actuator node release with 4-channel relay control over ESP-NOW mesh |
 | v1.0.1 | Added per-node settings support for Relay State Persistence and Status LED control, added actuator-state sync after reconnect/reboot, and fixed relay-state persistence so all 4 relays restore correctly after reboot |
+| v1.0.2 | Added Capacitive touch sensor support to ESP32 Relay Node to control relays. With Relay State Sync for Web Interface |
 
 ## Hardware
 
 | Item | Detail |
 |------|--------|
 | Board | ESP32-DevKitC (ESP-WROOM-32E) |
-| Actuator 1 | 5V Active-Low Relay-1 |
-| Actuator 2 | 5V Active-Low Relay-2 |
-| Actuator 3 | 5V Active-Low Relay-3 |
-| Actuator 4 | 5V Active-Low Relay-4 |
+| Relay Module | 4-Way 5V 10A Active-Low Relay Module |
 | Status LED | WS2812B on GPIO 5 |
 | Pairing button | GPIO 16 (active-LOW, external pull-up) |
+| Touch Sensor | TTP224 4-Way Capacitive Touch Sensor Module |
 
 ### Wiring
 
@@ -46,6 +45,16 @@ Target board: `esp32dev`
 | DATA-IN | GPIO 5 |
 | DATA-OUT | Not Connected |
 
+**Capactive Touch Sensor Module → ESP32-DevKitC**
+| TTP224 Pin | ESP32-DevKitC Pin |
+|-----------|-----------------|
+| VCC | 3.3V |
+| GND | GND |
+| OUT1 | GPIO 25 (Relay 1 Control) |
+| OUT2 | GPIO 4 (Relay 2 Control) |
+| OUT3 | GPIO 13 (Relay 3 Control) |
+| OUT4 | GPIO 14 (Relay 4 Control) |
+
 ---
 
 ## Dependencies
@@ -71,6 +80,11 @@ Change these defines before flashing:
 | `RELAY4_PIN` | `33` | Relay-4 Control GPIO |
 | `PAIR_BTN_PIN` | `16` | Pairing button GPIO (active-LOW) |
 | `LED_PIN` | `5` | WS2812B data GPIO |
+| `TOUCH1_PIN` | `25` | TTP224 Capacitive Touch Sensor 1 |
+| `TOUCH2_PIN` | `4` | TTP224 Capacitive Touch Sensor 2 |
+| `TOUCH3_PIN` | `13` | TTP224 Capacitive Touch Sensor 3 |
+| `TOUCH4_PIN` | `14` | TTP224 Capacitive Touch Sensor 4 |
+| `relay_active_high` | `false` | For Active High Relay Support |
 
 When deploying multiple nodes, give each a unique `NODE_NAME`.
 

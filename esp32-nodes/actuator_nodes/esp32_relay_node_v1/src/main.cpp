@@ -11,12 +11,13 @@
      *          - Controls 4 relays via GPIO pins and reports their state back to the gateway.
      *          - Monitors a pairing button with debounce logic and long-press detection for entering pairing mode.
      *          - Uses a WS2812B LED to indicate node status (e.g., unpaired, paired, error states).
+     *          - Implements a simple touch input handling for toggling relays, with debounce logic.
      * 
      *        Note: This code is intended as a starting point and may require adjustments based on specific hardware configurations and requirements.
-    * @version 1.0.1
+ * @version 1.0.2
     * @author Mrinal (@atechofficials)
  */
-#define FW_VERSION "1.0.1"
+#define FW_VERSION "1.0.2"
 
 #include <Arduino.h>
 #include <WiFi.h>
@@ -28,13 +29,19 @@
 
 // User config
 #define NODE_NAME       "Relay-Node-1"   // change per node (max 15 chars)
-#define RELAY1_PIN      26
+#define RELAY1_PIN      26    // Active LOW relay control pins - adjust as needed for your hardware setup
 #define RELAY2_PIN      27
 #define RELAY3_PIN      32
 #define RELAY4_PIN      33
-#define PAIR_BTN_PIN    16    // Pairing button GPIO pin (active-LOW, uses external pull-up)
+#define TOUCH1_PIN      25    // TTP224 touch sensor 1 (channels 1-4) - active HIGH, with external pull-downs to GND. Adjust pin numbers as needed for your hardware setup.
+#define TOUCH2_PIN      4     // TTP224 touch sensor 2
+#define TOUCH3_PIN      13    // TTP224 touch sensor 3
+#define TOUCH4_PIN      14    // TTP224 touch sensor 4
+#define PAIR_BTN_PIN    16    // Pairing button GPIO pin (active-LOW, uses internal pull-up)
 #define LED_PIN         5     // WS2812B data pin
 #define LED_COUNT       1     
+#define TOUCH_DEBOUNCE_MS 35
+bool relay_active_high = false; // Set to true if your relay module is active HIGH, false if active LOW
 
 // Node state machine
 enum NodeState { STATE_UNPAIRED, STATE_PAIRING, STATE_PAIRED, STATE_DISC_PEND, STATE_GW_LOST };
@@ -50,6 +57,8 @@ static unsigned long lastReReg = 0;
 
 static bool relayState[NODE_MAX_ACTUATORS] = {0,0,0,0};
 static uint8_t lastRelayState[NODE_MAX_ACTUATORS] = {255,255,255,255};
+static const uint8_t relayPins[NODE_MAX_ACTUATORS] = {RELAY1_PIN, RELAY2_PIN, RELAY3_PIN, RELAY4_PIN};
+static const uint8_t touchPins[NODE_MAX_ACTUATORS] = {TOUCH1_PIN, TOUCH2_PIN, TOUCH3_PIN, TOUCH4_PIN};
 
 static Adafruit_NeoPixel led(LED_COUNT, LED_PIN, NEO_GRB + NEO_KHZ800);
 static Preferences       prefs;
@@ -70,6 +79,9 @@ static unsigned long lastBeacon      = 0;
 
 // Timing state
 static unsigned long lastHeartbeat   = 0;
+static bool          touchRawState[NODE_MAX_ACTUATORS] = {0,0,0,0};
+static bool          touchStableState[NODE_MAX_ACTUATORS] = {0,0,0,0};
+static unsigned long touchChangedAt[NODE_MAX_ACTUATORS] = {0,0,0,0};
 
 // Node Settings
 static char relayLabel[4][16] =
@@ -92,6 +104,7 @@ static volatile uint8_t txFailCount = 0;
 // RX queue
 struct RxPacket { uint8_t mac[6]; uint8_t data[250]; int len; };
 static QueueHandle_t rxQueue;
+static void sendActuatorState();
 
 // *****************************************************************************
 //  LED helpers
@@ -173,30 +186,53 @@ static void saveRelayState(uint8_t id, bool state)
 
 void setRelay(uint8_t id, bool state, bool persistState = true)
 {
-    if(id > 3) return;
+    if(id >= NODE_MAX_ACTUATORS) return;
 
     relayState[id] = state;
-
-    uint8_t pin = RELAY1_PIN; // default to RELAY1_PIN, will be overridden by the switch statement
-
-    switch(id)
-    {
-        case 0: pin = RELAY1_PIN; break;
-        case 1: pin = RELAY2_PIN; break;
-        case 2: pin = RELAY3_PIN; break;
-        case 3: pin = RELAY4_PIN; break;
-        // case 4: sSettingLedEn = state; break;
+    const uint8_t pin = relayPins[id];
+    
+    if (relay_active_high) {
+        digitalWrite(pin, state ? HIGH : LOW); // active HIGH relay
+    } 
+    else {
+        digitalWrite(pin, state ? LOW : HIGH); // active LOW relay
     }
 
-    digitalWrite(pin, state ? LOW : HIGH); // active LOW relay
-    if (persistState && sRelayPersist)
-    {
+    if (persistState && sRelayPersist) {
         // For Debugging: print relay state persistence info to Serial Monitor
         Serial.printf("[RELAY STATE]  Relay State Peristence Enabled - Saving state of Relay %d: %s\n", id, state ? "ON" : "OFF");
         saveRelayState(id, state);
     }
     // For Debugging: print relay output change info to Serial Monitor
     Serial.printf("[RELAY STATE]  Set Relay %d to %s\n", id, state ? "ON" : "OFF");
+}
+
+static void handleTouchInputs() {
+    const unsigned long now = millis();
+
+    for (uint8_t i = 0; i < NODE_MAX_ACTUATORS; i++) {
+        const bool rawActive = (digitalRead(touchPins[i]) == HIGH);
+
+        if (rawActive != touchRawState[i]) {
+            touchRawState[i] = rawActive;
+            touchChangedAt[i] = now;
+        }
+
+        if ((now - touchChangedAt[i]) < TOUCH_DEBOUNCE_MS) continue;
+        if (touchStableState[i] == touchRawState[i]) continue;
+
+        touchStableState[i] = touchRawState[i];
+        if (!touchStableState[i]) continue;  // Toggle only on touch press, not release
+
+        const bool newState = !relayState[i];
+        setRelay(i, newState);
+        Serial.printf("[TOUCH]  Touch %d toggled Relay %d -> %s\n",
+                      i + 1, i + 1, newState ? "ON" : "OFF");
+
+        if (nodeState == STATE_PAIRED || nodeState == STATE_DISC_PEND || nodeState == STATE_GW_LOST) {
+            sendActuatorState();
+        }
+    }
 }
 
 // *****************************************************************************
@@ -771,13 +807,34 @@ void setup() {
     setLed(led.Color(255, 255, 255));
     delay(300);
 
-    pinMode(PAIR_BTN_PIN, INPUT);
+    pinMode(PAIR_BTN_PIN, INPUT_PULLUP);
     
-    // Initialize relay pins and set them to OFF (active LOW)
-    pinMode(RELAY1_PIN, OUTPUT); digitalWrite(RELAY1_PIN, HIGH);
-    pinMode(RELAY2_PIN, OUTPUT); digitalWrite(RELAY2_PIN, HIGH);
-    pinMode(RELAY3_PIN, OUTPUT); digitalWrite(RELAY3_PIN, HIGH);
-    pinMode(RELAY4_PIN, OUTPUT); digitalWrite(RELAY4_PIN, HIGH);
+    if (relay_active_high) {
+        // Initialize relay pins and set them to OFF (active HIGH)
+        pinMode(RELAY1_PIN, OUTPUT); digitalWrite(RELAY1_PIN, LOW);
+        pinMode(RELAY2_PIN, OUTPUT); digitalWrite(RELAY2_PIN, LOW);
+        pinMode(RELAY3_PIN, OUTPUT); digitalWrite(RELAY3_PIN, LOW);
+        pinMode(RELAY4_PIN, OUTPUT); digitalWrite(RELAY4_PIN, LOW);
+    } 
+    else {
+        // Initialize relay pins and set them to OFF (active LOW)
+        pinMode(RELAY1_PIN, OUTPUT); digitalWrite(RELAY1_PIN, HIGH);
+        pinMode(RELAY2_PIN, OUTPUT); digitalWrite(RELAY2_PIN, HIGH);
+        pinMode(RELAY3_PIN, OUTPUT); digitalWrite(RELAY3_PIN, HIGH);
+        pinMode(RELAY4_PIN, OUTPUT); digitalWrite(RELAY4_PIN, HIGH);
+    }
+
+    // TTP224 outputs are digital push-pull lines. Treat HIGH as touched.
+    pinMode(TOUCH1_PIN, INPUT);
+    pinMode(TOUCH2_PIN, INPUT);
+    pinMode(TOUCH3_PIN, INPUT);
+    pinMode(TOUCH4_PIN, INPUT);
+    for (uint8_t i = 0; i < NODE_MAX_ACTUATORS; i++) {
+        const bool rawActive = (digitalRead(touchPins[i]) == HIGH);
+        touchRawState[i] = rawActive;
+        touchStableState[i] = rawActive;
+        touchChangedAt[i] = millis();
+    }
 
     // Default relay labels
     strcpy(relayLabel[0], "Relay 1");
@@ -849,6 +906,7 @@ void loop() {
     unsigned long now = millis();
 
     handleButton();
+    handleTouchInputs();
     processRxQueue();
 
     if (nodeState == STATE_PAIRED && txFailCount >= GW_LOST_THRESHOLD) {

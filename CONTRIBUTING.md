@@ -33,7 +33,7 @@ Current file versions:
 |----------|-----------------|
 | ESP32-S3 Gateway firmware `main.cpp` | `v1.8.3` |
 | ESP32 Sensor Node firmware `main.cpp` | `v2.0.1` |
-| ESP32 Actuator Relay Node firmware `main.cpp` | `v1.0.1` |
+| ESP32 Actuator Relay Node firmware `main.cpp` | `v1.0.2` |
 | `mesh_protocol.h` | `v3.1.0` |
 | `index.html` | `v3.5` |
 | `app.js` | `v3.7` |

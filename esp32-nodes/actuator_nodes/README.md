@@ -10,7 +10,7 @@ Actuator nodes receive commands from the gateway and control physical outputs su
 
 | Node | Actuator Type | Description |
 |------|---------------|-------------|
-| `esp32_relay_node_v1/` | 4-channel relay control | Controls up to 4 active-LOW relays independently from the Web Interface |
+| `esp32_relay_node_v1/` | 4-channel relay control + TTP224 Touch Sensor | Controls up to 4 active-LOW relays independently from the Web Interface |
 
 ---
 
