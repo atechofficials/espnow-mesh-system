@@ -1,10 +1,10 @@
 /**
     * @file [main.cpp]
     * @brief Main source file for the ESP32 Mesh Gateway firmware
-    * @version 1.8.3
+ * @version 1.9.0
     * @author Mrinal (@atechofficials)
  */
-#define FW_VERSION "1.8.3"
+#define FW_VERSION "1.9.0"
 
 #include <Arduino.h>
 #include <WiFi.h>
@@ -15,9 +15,13 @@
 #include <ESPAsyncWebServer.h>
 #include <ArduinoJson.h>
 #include <Adafruit_NeoPixel.h>
+#include <Update.h>
+#include <esp_app_format.h>
+#include <esp_ota_ops.h>
 #include "mesh_protocol.h"
 #include <Preferences.h>
 #include "mbedtls/sha256.h"
+#include <algorithm>
 #include <set>
 
 // Configuration
@@ -26,6 +30,10 @@
 #define AP_PASS_DEFAULT  "meshsetup"
 #define WEB_PORT         80
 #define RELAY_LABEL_MAX_LEN 25
+#define OTA_DESC_BUF_LEN (sizeof(esp_image_header_t) + sizeof(esp_image_segment_header_t) + sizeof(esp_app_desc_t))
+#define OTA_FW_MARKER "GWFWVER:"
+#define OTA_FW_MARKER_LEN 8
+#define OTA_FW_VERSION_MAX_LEN 16
 
 // Runtime AP credentials - loaded from NVS on boot, fall back to compile-time defaults.
 // These are the SSID / password the WiFiManager captive portal AP will use.
@@ -108,6 +116,30 @@ static Adafruit_NeoPixel gwLed(1, GW_LED_PIN, NEO_GRB + NEO_KHZ800);
 static uint32_t          gwLedCurrent   = 0xDEADBEEF;
 static unsigned long     gwLedFlashUntil = 0;
 bool gwLedEnabled = true;
+__attribute__((used)) static const char kGatewayFirmwareVersionMarker[] = OTA_FW_MARKER FW_VERSION;
+
+struct GatewayOtaRequestState {
+    bool   started = false;
+    bool   ok = false;
+    bool   updateBegun = false;
+    bool   metadataValidated = false;
+    bool   descFlushed = false;
+    size_t expectedSize = 0;
+    size_t written = 0;
+    char   filename[64] = {0};
+    char   incomingVersion[33] = {0};
+    char   incomingDisplayVersion[OTA_FW_VERSION_MAX_LEN] = {0};
+    char   error[128] = {0};
+    uint8_t descBuf[OTA_DESC_BUF_LEN] = {0};
+    size_t descBytes = 0;
+    uint8_t markerMatchIndex = 0;
+    bool    markerReadingVersion = false;
+    uint8_t markerVersionLen = 0;
+};
+
+static bool          otaUploadBusy    = false;
+static bool          otaRebootPending = false;
+static unsigned long otaRebootAtMs    = 0;
 
 // *****************************************************************************
 // Gateway Status LED Helpers
@@ -353,18 +385,26 @@ static String getCookieValue(AsyncWebServerRequest* req, const char* name) {
     return String();
 }
 
+static bool shouldLogHttpAuthSuccess(AsyncWebServerRequest* req) {
+    return req && req->url() != "/api/gateway/ota";
+}
+
 // Returns true if the HTTP request carries a valid session or remember cookie.
 static bool isHttpAuthenticated(AsyncWebServerRequest* req) {
     if (!credentialsSet()) {
         // For Debugging: print the authentication attempt to the Serial console
-        Serial.printf("[AUTH]  HTTP auth not required for request to %s\n", req->url().c_str());
+        if (shouldLogHttpAuthSuccess(req)) {
+            Serial.printf("[AUTH]  HTTP auth not required for request to %s\n", req->url().c_str());
+        }
         return true;
     }
     if (strlen(sessionToken) > 0) {
         String v = getCookieValue(req, "gwsession");
         if (v.length() > 0 && v.equals(sessionToken)) {
             // For Debugging: print the authentication attempt to the Serial console
-            Serial.printf("[AUTH]  HTTP auth OK for request to %s\n", req->url().c_str());
+            if (shouldLogHttpAuthSuccess(req)) {
+                Serial.printf("[AUTH]  HTTP auth OK for request to %s\n", req->url().c_str());
+            }
             return true;
         }
     }
@@ -372,7 +412,20 @@ static bool isHttpAuthenticated(AsyncWebServerRequest* req) {
         String v = getCookieValue(req, "gwremember");
         if (v.length() > 0 && v.equals(rememberToken)) {
             // For Debugging: print the authentication attempt to the Serial console
-            Serial.printf("[AUTH]  HTTP auth OK for request to %s\n", req->url().c_str());
+            if (shouldLogHttpAuthSuccess(req)) {
+                Serial.printf("[AUTH]  HTTP auth OK for request to %s\n", req->url().c_str());
+            }
+            return true;
+        }
+    }
+    const AsyncWebHeader* tokenHdr = req->getHeader("X-GW-Token");
+    if (tokenHdr) {
+        const String token = tokenHdr->value();
+        if ((strlen(sessionToken) > 0 && token.equals(sessionToken)) ||
+            (strlen(rememberToken) > 0 && token.equals(rememberToken))) {
+            if (shouldLogHttpAuthSuccess(req)) {
+                Serial.printf("[AUTH]  HTTP token auth OK for request to %s\n", req->url().c_str());
+            }
             return true;
         }
     }
@@ -390,6 +443,250 @@ static void wsBroadcast(const String& msg) {
         if (c && c->canSend()) c->text(msg);
         // For Debugging: print the message being sent to the Serial console
         Serial.printf("[WS]    Sent message to client %d: %s\n", id, msg.c_str());
+    }
+}
+
+static size_t getGatewayOtaSlotSize() {
+    const esp_partition_t* part = esp_ota_get_next_update_partition(nullptr);
+    return part ? part->size : 0;
+}
+
+static bool gatewayOtaSupported() {
+    return getGatewayOtaSlotSize() > 0;
+}
+
+static void setOtaError(GatewayOtaRequestState* state, const String& msg) {
+    if (!state || state->error[0] != '\0') return;
+    strncpy(state->error, msg.c_str(), sizeof(state->error) - 1);
+    state->error[sizeof(state->error) - 1] = '\0';
+    Serial.printf("[OTA]  ERROR: %s\n", state->error);
+}
+
+static void scanGatewayFirmwareVersionMarker(GatewayOtaRequestState* state,
+                                             const uint8_t* data,
+                                             size_t len) {
+    if (!state || !data || len == 0 || state->incomingDisplayVersion[0] != '\0') return;
+
+    for (size_t i = 0; i < len; i++) {
+        const char ch = (char)data[i];
+
+        if (state->markerReadingVersion) {
+            if (ch == '\0') {
+                if (state->markerVersionLen > 0) {
+                    state->incomingDisplayVersion[state->markerVersionLen] = '\0';
+                    return;
+                }
+                state->markerReadingVersion = false;
+                state->markerVersionLen = 0;
+                state->markerMatchIndex = 0;
+                continue;
+            }
+
+            if (ch >= 32 && ch <= 126 && state->markerVersionLen < (OTA_FW_VERSION_MAX_LEN - 1)) {
+                state->incomingDisplayVersion[state->markerVersionLen++] = ch;
+                continue;
+            }
+
+            state->markerReadingVersion = false;
+            state->markerVersionLen = 0;
+            state->markerMatchIndex = 0;
+        }
+
+        if (ch == OTA_FW_MARKER[state->markerMatchIndex]) {
+            state->markerMatchIndex++;
+            if (state->markerMatchIndex == OTA_FW_MARKER_LEN) {
+                state->markerReadingVersion = true;
+                state->markerVersionLen = 0;
+                memset(state->incomingDisplayVersion, 0, sizeof(state->incomingDisplayVersion));
+                state->markerMatchIndex = 0;
+            }
+        } else {
+            state->markerMatchIndex = (ch == OTA_FW_MARKER[0]) ? 1 : 0;
+        }
+    }
+}
+
+static const char* getIncomingGatewayFirmwareVersion(const GatewayOtaRequestState* state) {
+    if (!state) return "(unknown)";
+    if (state->incomingDisplayVersion[0] != '\0') return state->incomingDisplayVersion;
+    if (state->incomingVersion[0] != '\0') return state->incomingVersion;
+    return "(unknown)";
+}
+
+static bool validateGatewayFirmwareDescriptor(GatewayOtaRequestState* state) {
+    if (!state) return false;
+    if (state->descBytes < OTA_DESC_BUF_LEN) return false;
+    if (state->metadataValidated) return true;
+
+    const esp_app_desc_t* incoming =
+        reinterpret_cast<const esp_app_desc_t*>(state->descBuf
+            + sizeof(esp_image_header_t)
+            + sizeof(esp_image_segment_header_t));
+    const esp_app_desc_t* running = esp_app_get_description();
+
+    strncpy(state->incomingVersion, incoming->version, sizeof(state->incomingVersion) - 1);
+    state->incomingVersion[sizeof(state->incomingVersion) - 1] = '\0';
+
+    if (running &&
+        running->project_name[0] != '\0' &&
+        incoming->project_name[0] != '\0' &&
+        strncmp(running->project_name, incoming->project_name, sizeof(running->project_name)) != 0) {
+        setOtaError(state, String("Firmware project mismatch: expected \"")
+            + running->project_name + "\", got \"" + incoming->project_name + "\".");
+        return false;
+    }
+
+    state->metadataValidated = true;
+    Serial.printf("[OTA]  Incoming firmware descriptor version: %s\n",
+                  state->incomingVersion[0] ? state->incomingVersion : "(unknown)");
+    return true;
+}
+
+static void handleGatewayOtaUpload(AsyncWebServerRequest* req,
+                                   const String& filename,
+                                   size_t index,
+                                   uint8_t* data,
+                                   size_t len,
+                                   bool final) {
+    if (!isHttpAuthenticated(req)) return;
+
+    auto* state = reinterpret_cast<GatewayOtaRequestState*>(req->_tempObject);
+    if (index == 0) {
+        if (state) {
+            delete state;
+            state = nullptr;
+        }
+        state = new GatewayOtaRequestState();
+        req->_tempObject = state;
+        state->started = true;
+        const AsyncWebHeader* sizeHdr = req->getHeader("X-Firmware-Size");
+        if (sizeHdr) {
+            state->expectedSize = (size_t)strtoull(sizeHdr->value().c_str(), nullptr, 10);
+        }
+        strncpy(state->filename, filename.c_str(), sizeof(state->filename) - 1);
+        state->filename[sizeof(state->filename) - 1] = '\0';
+
+        if (otaUploadBusy) {
+            setOtaError(state, "Another OTA upload is already in progress.");
+        } else if (otaRebootPending) {
+            setOtaError(state, "Gateway reboot pending. Wait for the device to come back online.");
+        } else if (!gatewayOtaSupported()) {
+            setOtaError(state, "This firmware layout does not support OTA updates.");
+        } else {
+            const size_t slotSize = getGatewayOtaSlotSize();
+            if (state->expectedSize > 0 && state->expectedSize > slotSize) {
+                setOtaError(state, String("Firmware image is too large for the OTA slot (")
+                    + state->expectedSize + " > " + slotSize + " bytes).");
+            } else if (!Update.begin(slotSize, U_FLASH)) {
+                setOtaError(state, String("Could not start OTA: ") + Update.errorString());
+            } else {
+                otaUploadBusy = true;
+                state->updateBegun = true;
+                if (state->expectedSize > 0) {
+                    Serial.printf("[OTA]  Upload started: \"%s\" (%u bytes)\n",
+                                  state->filename[0] ? state->filename : "(unnamed)",
+                                  (unsigned)state->expectedSize);
+                } else {
+                    Serial.printf("[OTA]  Upload started: \"%s\" (size unknown)\n",
+                                  state->filename[0] ? state->filename : "(unnamed)");
+                }
+            }
+        }
+    }
+
+    if (!state) return;
+
+    if (state->error[0] != '\0') {
+        if (final && state->updateBegun) {
+            Update.abort();
+            state->updateBegun = false;
+        }
+        return;
+    }
+
+    if (len > 0) {
+        scanGatewayFirmwareVersionMarker(state, data, len);
+
+        if (index == 0 && data[0] != ESP_IMAGE_HEADER_MAGIC) {
+            setOtaError(state, "Uploaded file is not a valid ESP32 application image.");
+        }
+
+        if (state->error[0] == '\0' && !state->metadataValidated) {
+            const size_t copyLen = std::min<size_t>(len, OTA_DESC_BUF_LEN - state->descBytes);
+            memcpy(state->descBuf + state->descBytes, data, copyLen);
+            state->descBytes += copyLen;
+
+            if (state->descBytes >= OTA_DESC_BUF_LEN) {
+                validateGatewayFirmwareDescriptor(state);
+                if (state->error[0] != '\0' && state->updateBegun) {
+                    Update.abort();
+                    state->updateBegun = false;
+                } else if (!state->descFlushed) {
+                    size_t flushed = Update.write(state->descBuf, OTA_DESC_BUF_LEN);
+                    if (flushed != OTA_DESC_BUF_LEN) {
+                        setOtaError(state, String("Write failed: ") + Update.errorString());
+                        if (state->updateBegun) {
+                            Update.abort();
+                            state->updateBegun = false;
+                        }
+                    } else {
+                        state->written += flushed;
+                        state->descFlushed = true;
+                    }
+                }
+            }
+
+            if (state->error[0] == '\0' && state->metadataValidated) {
+                const size_t trailingLen = len - copyLen;
+                if (trailingLen > 0) {
+                    size_t flushed = Update.write(data + copyLen, trailingLen);
+                    if (flushed != trailingLen) {
+                        setOtaError(state, String("Write failed: ") + Update.errorString());
+                        if (state->updateBegun) {
+                            Update.abort();
+                            state->updateBegun = false;
+                        }
+                    } else {
+                        state->written += flushed;
+                    }
+                }
+            }
+        } else if (state->error[0] == '\0') {
+            size_t written = Update.write(data, len);
+            if (written != len) {
+                setOtaError(state, String("Write failed: ") + Update.errorString());
+                if (state->updateBegun) {
+                    Update.abort();
+                    state->updateBegun = false;
+                }
+            } else {
+                state->written += written;
+            }
+        }
+    }
+
+    if (final && state->error[0] == '\0') {
+        if (!state->metadataValidated) {
+            setOtaError(state, "Firmware metadata could not be validated.");
+        } else if (state->expectedSize > 0 && state->written != state->expectedSize) {
+            setOtaError(state, String("Upload size mismatch: wrote ")
+                + state->written + " of " + state->expectedSize + " bytes.");
+        } else if (state->written == 0) {
+            setOtaError(state, "Empty firmware upload received.");
+        } else if (!Update.end(true)) {
+            setOtaError(state, String("Firmware finalization failed: ") + Update.errorString());
+        } else if (!Update.isFinished()) {
+            setOtaError(state, "Firmware upload did not complete.");
+        } else {
+            state->ok = true;
+            Serial.printf("[OTA]  Upload complete. Ready to reboot into version %s.\n",
+                          getIncomingGatewayFirmwareVersion(state));
+        }
+    }
+
+    if (final && !state->ok && state->updateBegun) {
+        Update.abort();
+        state->updateBegun = false;
     }
 }
 
@@ -819,6 +1116,10 @@ static String buildMetaJson() {
     doc["gw_led_enabled"] = gwLedEnabled;
     doc["ap_ssid"]         = gwApSsid;
     doc["credentials_set"] = credentialsSet();
+    doc["ota_supported"]   = gatewayOtaSupported();
+    doc["ota_busy"]        = otaUploadBusy;
+    doc["ota_max_bytes"]   = (uint32_t)getGatewayOtaSlotSize();
+    doc["ota_project"]     = esp_app_get_description()->project_name;
     String out;
     serializeJson(doc, out);
     return out;
@@ -1767,6 +2068,47 @@ static void setupRoutes() {
             req->send(200, "application/json", ok ? R"({"ok":true})" : R"({"ok":false})");
         }
     );
+    server.on("/api/gateway/ota", HTTP_POST,
+        [](AsyncWebServerRequest* req) {
+            if (!isHttpAuthenticated(req)) {
+                req->send(401, "application/json", R"({"ok":false,"error":"unauthorized"})");
+                return;
+            }
+
+            auto* state = reinterpret_cast<GatewayOtaRequestState*>(req->_tempObject);
+            if (!state || !state->started) {
+                req->send(400, "application/json", R"({"ok":false,"error":"No firmware upload received."})");
+            } else if (state->error[0] != '\0') {
+                int status = (strcmp(state->error, "Another OTA upload is already in progress.") == 0) ? 409 : 400;
+                JsonDocument doc;
+                doc["ok"] = false;
+                doc["error"] = state->error;
+                String body;
+                serializeJson(doc, body);
+                req->send(status, "application/json", body);
+            } else if (!state->ok) {
+                req->send(500, "application/json", R"({"ok":false,"error":"Firmware update did not complete."})");
+            } else {
+                otaRebootPending = true;
+                otaRebootAtMs = millis() + 1500;
+                wsBroadcast("{\"type\":\"gw_rebooting\"}");
+
+                JsonDocument doc;
+                doc["ok"] = true;
+                doc["rebooting"] = true;
+                doc["version"] = getIncomingGatewayFirmwareVersion(state);
+                doc["message"] = "Firmware flashed successfully. Gateway is rebooting.";
+                String body;
+                serializeJson(doc, body);
+                req->send(200, "application/json", body);
+            }
+
+            delete state;
+            req->_tempObject = nullptr;
+            otaUploadBusy = false;
+        },
+        handleGatewayOtaUpload
+    );
     server.onNotFound([](AsyncWebServerRequest* req) {
         Serial.printf("[HTTP] 404: %s\n", req->url().c_str());
         req->send(404, "text/plain", "Not found");
@@ -1884,6 +2226,13 @@ void loop() {
 
     processRxQueue();
     updateGwLed();
+
+    if (otaRebootPending && now >= otaRebootAtMs) {
+        otaRebootPending = false;
+        Serial.println("[OTA]  Rebooting into updated gateway firmware.");
+        delay(100);
+        ESP.restart();
+    }
 
     // Pending pair: retry PAIR_CMD until MSG_REGISTER arrives or timeout expires
     if (pendingPair.active) {

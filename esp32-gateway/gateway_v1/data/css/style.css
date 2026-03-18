@@ -1,5 +1,5 @@
 /* ═══════════════════════════════════════════════════════════════════
-   ESP32 Mesh Gateway Web Interface Stylesheet v3.4
+   ESP32 Mesh Gateway Web Interface Stylesheet v3.5
    ═══════════════════════════════════════════════════════════════════ */
 
 /* ── Local Fonts ───────────────────────────────────────────── */
@@ -1130,6 +1130,82 @@ svg { display: block; }
 .setting-save-note.ok  { color: var(--accent); }
 .setting-save-note.err { color: var(--red); }
 
+.ota-meta-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: .7rem;
+  margin-top: .95rem;
+}
+
+.ota-meta-item {
+  display: flex;
+  flex-direction: column;
+  gap: .2rem;
+  padding: .75rem .85rem;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+  background: var(--surface-2);
+}
+
+.ota-meta-label {
+  font-size: .72rem;
+  letter-spacing: .05em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+.ota-meta-value {
+  font-family: "JetBrains Mono", monospace;
+  font-size: .82rem;
+  color: var(--text);
+  word-break: break-word;
+}
+
+.ota-file-input {
+  padding: .55rem .65rem;
+}
+
+.ota-upload-btn {
+  border-color: var(--blue-dim);
+  background: var(--blue-dim);
+  color: var(--blue);
+}
+
+.ota-progress {
+  margin-top: .85rem;
+  padding: .8rem .9rem;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+  background: var(--surface-2);
+}
+
+.ota-progress-bar {
+  width: 100%;
+  height: 10px;
+  border-radius: 999px;
+  overflow: hidden;
+  background: var(--bg);
+  border: 1px solid var(--border);
+}
+
+.ota-progress-fill {
+  width: 0%;
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, var(--blue), var(--accent));
+  transition: width .18s ease;
+}
+
+.ota-progress-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: .75rem;
+  margin-top: .55rem;
+  font-size: .78rem;
+  color: var(--text-muted);
+}
+
 /* ── Settings portal button ──────────────────────────────────── */
 .settings-portal-btn {
   display: inline-flex;
@@ -1428,6 +1504,10 @@ svg { display: block; }
 
 /* ── Responsive ──────────────────────────────────────────────── */
 @media (max-width: 768px) {
+  .ota-meta-grid {
+    grid-template-columns: 1fr;
+  }
+
   .sidebar {
     transform: translateX(-100%);
   }

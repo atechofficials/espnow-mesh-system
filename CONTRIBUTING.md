@@ -31,13 +31,13 @@ Current file versions:
 
 | Component | Current Version |
 |----------|-----------------|
-| ESP32-S3 Gateway firmware `main.cpp` | `v1.8.3` |
+| ESP32-S3 Gateway firmware `main.cpp` | `v1.9.0` |
 | ESP32 Sensor Node firmware `main.cpp` | `v2.0.1` |
 | ESP32 Actuator Relay Node firmware `main.cpp` | `v1.0.2` |
 | `mesh_protocol.h` | `v3.1.0` |
-| `index.html` | `v3.5` |
-| `app.js` | `v3.7` |
-| `style.css` | `v3.4` |
+| `index.html` | `v3.6` |
+| `app.js` | `v3.8` |
+| `style.css` | `v3.5` |
 
 Current supported node categories:
 - Sensor nodes
@@ -61,6 +61,8 @@ espnow-mesh-system/
 │       │   ├── index.html
 │       │   ├── js/app.js
 │       │   └── css/style.css
+│       ├── partitions_8mb_noot.csv
+│       ├── partitions_8mb_ota.csv
 │       ├── platformio.ini
 │       └── README.md
 └── esp32-nodes/

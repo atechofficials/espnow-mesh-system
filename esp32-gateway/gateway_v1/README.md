@@ -1,7 +1,17 @@
-# Gateway v1 — Build & Flash Guide
+# Gateway v1 - Build, Flash, and OTA Guide
 
-Firmware version: **1.8.3**
+Firmware version: **1.9.0**  
 Target board: `esp32-s3-devkitc1-n8r8`
+
+---
+
+## Highlights in v1.9.0
+
+- Added **web-based Gateway OTA firmware updates**
+- Added OTA image validation and automatic reboot after successful flash
+- Added upload progress and OTA status feedback in the web interface
+- Switched the default build to an **OTA-capable 8 MB partition layout**
+- Continued support for gateway web credentials, relay label assignment, gateway LED control, and schema-driven node settings
 
 ---
 
@@ -24,85 +34,169 @@ Managed automatically by PlatformIO via `platformio.ini`:
 | ArduinoJson | 7.4.3 |
 | Adafruit NeoPixel | 1.15.4 |
 
-Framework libraries used directly (no extra install needed): `LittleFS`, `Preferences`, `WiFi`, `esp_now`.
+Framework libraries used directly (no extra install needed): `LittleFS`, `Preferences`, `WiFi`, `esp_now`, `Update`.
 
 ---
 
-## First-Time Flash
+## Partition Layout
 
-Run these commands in order from the `gateway_v1/` directory:
+The project now builds against **`partitions_8mb_ota.csv`**.
+
+| Partition | Size |
+|-----------|------|
+| `nvs` | 20 KB |
+| `otadata` | 8 KB |
+| `app0` | 1792 KB |
+| `app1` | 1792 KB |
+| `LittleFS` | 4544 KB |
+| `coredump` | 64 KB |
+
+This layout is required for the new web-based Gateway OTA update feature.
+
+---
+
+## First-Time Flash / Migration to v1.9.0
+
+If you are coming from an older gateway build that used the non-OTA partition table, the **first upgrade to v1.9.0 must be done over USB**.
+
+Run these commands from the `gateway_v1/` directory:
 
 ```bash
-# 1. Erase the entire flash (recommended for a clean first install)
+# 1. Erase flash for a clean migration
 pio run --target erase
 
-# 2. Upload the web dashboard assets to LittleFS
+# 2. Upload the LittleFS web assets
 pio run --target uploadfs
 
 # 3. Compile and upload the firmware
 pio run --target upload
 ```
 
-For subsequent firmware-only updates (no dashboard changes) you only need step 3.
-For dashboard-only updates (HTML/JS/CSS changes) you only need step 2.
+After this migration, future **gateway firmware** updates can be done from the web interface.
+
+If you change only the dashboard assets later, run:
+
+```bash
+pio run --target uploadfs
+```
+
+If you change only the firmware later and want to use USB instead of OTA, run:
+
+```bash
+pio run --target upload
+```
 
 ---
 
 ## First Boot
 
-1. The gateway opens a Wi-Fi access point: **`ESP32-Mesh-Setup`** / password **`meshsetup`**
-2. Connect to it from any phone or laptop — a captive portal opens automatically
-3. Select your home Wi-Fi network and enter the password
-4. The gateway connects, prints its IP address to the serial monitor, and the dashboard becomes available at `http://<ip>/`
+1. The gateway tries to reconnect to saved Wi-Fi credentials automatically
+2. If no router credentials are stored, WiFiManager opens the setup portal AP:
+   - SSID: **`ESP32-Mesh-Gateway`**
+   - Password: **`meshsetup`**
+3. Connect to that AP from a phone or laptop
+4. Open the captive portal and select your home Wi-Fi network
+5. After connection, the dashboard becomes available at:
 
-Credentials are saved to NVS. On every subsequent boot the gateway reconnects automatically.
+```text
+http://<gateway-ip>/
+```
+
+Wi-Fi credentials, gateway settings, and paired-node records are stored in NVS and survive reboot.
 
 ---
 
-## Updating the AP Credentials
+## Gateway OTA Update from the Web Interface
 
-The captive-portal SSID and password used for initial setup can be changed from the dashboard without reflashing:
+Once v1.9.0 is already installed, the gateway can update its **own firmware** directly from the dashboard.
 
-1. Open the dashboard → **Gateway Settings** card
-2. Enter the new SSID and/or password → **Save**
-3. The gateway restores the new values on every subsequent boot
+### Steps
+
+1. Build a new gateway firmware binary:
+
+```bash
+pio run
+```
+
+2. Open the dashboard in a browser
+3. Go to **Settings -> Gateway Firmware Update**
+4. Select the new `firmware.bin`
+5. Click **Upload Gateway Firmware**
+6. Confirm the update when prompted
+
+### What the gateway does
+
+- validates the uploaded image
+- checks OTA slot size and image type
+- flashes the inactive OTA slot
+- reports progress/errors in the web UI
+- reboots into the new firmware automatically on success
+
+### Notes
+
+- Upload **`firmware.bin`**, not `bootloader.bin`, not `partitions.bin`
+- If the web UI assets were changed, also upload LittleFS via `pio run --target uploadfs`
+- The dashboard firmware version is still taken from `FW_VERSION` in `src/main.cpp`
+
+---
+
+## Updating the Setup Portal AP Credentials
+
+The WiFiManager setup-portal SSID and password can be changed from the dashboard without reflashing:
+
+1. Open **Settings -> Gateway Network**
+2. Edit the setup AP SSID and/or password
+3. Click **Save AP Config**
+
+These values are used the next time the gateway has to open the setup portal.
+
+---
+
+## Web Interface Access Control
+
+The dashboard can be left open or protected with username/password credentials from the web interface.
+
+### Stored in NVS
+
+- web username
+- password hash
+- remember token
+
+If credentials are forgotten, recover access by performing a **factory reset**.
 
 ---
 
 ## Factory Reset
 
-Hold the **BOOT button (GPIO 0)** for **5 seconds** while the gateway is running. This clears all NVS data (Wi-Fi credentials, AP config, paired nodes) and reboots into captive-portal mode.
+Hold the **BOOT button (GPIO 0)** for **5 seconds** while the gateway is running, or trigger **Factory Reset** from the dashboard.
+
+This clears:
+
+- saved Wi-Fi / router credentials
+- custom setup AP credentials
+- web interface credentials
+- paired node registry
+- saved relay label assignments
+
+The gateway then reboots and returns to setup mode.
 
 ---
 
 ## Key Configuration (`src/main.cpp`)
 
-All tuneable constants are at the top of `main.cpp`:
+All main tuneable constants are near the top of `src/main.cpp`.
 
 | Constant | Default | Description |
 |----------|---------|-------------|
-| `AP_SSID_DEFAULT` | `"ESP32-Mesh-Setup"` | Captive-portal SSID (first boot) |
-| `AP_PASS_DEFAULT` | `"meshsetup"` | Captive-portal password |
+| `AP_SSID_DEFAULT` | `"ESP32-Mesh-Gateway"` | WiFiManager setup portal SSID |
+| `AP_PASS_DEFAULT` | `"meshsetup"` | WiFiManager setup portal password |
 | `WEB_PORT` | `80` | HTTP/WebSocket port |
-| `WS_UPDATE_MS` | `2000` | How often the gateway pushes node updates to the browser (ms) |
-| `WS_META_MS` | `10000` | How often the gateway pushes gateway metadata to the browser (ms) |
-| `NODE_TIMEOUT_MS` | `35000` | Time without a message before a node is marked offline (ms) |
+| `WS_UPDATE_MS` | `2000` | Node/discovery push interval to browser |
+| `WS_META_MS` | `10000` | Gateway meta push interval to browser |
 | `RX_QUEUE_SIZE` | `30` | Incoming ESP-NOW packet queue depth |
+| `GW_LED_PIN` | `38` | On-board WS2812B gateway status LED |
 
 Timing constants shared with the nodes live in `include/mesh_protocol.h`.
-
----
-
-## Partition Table
-
-The project uses a custom 8 MB partition table (`partitions_8mb.csv`) that allocates a large LittleFS partition for the web assets:
-
-| Partition | Size |
-|-----------|------|
-| app0 (firmware) | 1.5 MB |
-| app1 (OTA slot) | 1.5 MB |
-| LittleFS | ~4 MB |
-| NVS | 24 KB |
 
 ---
 
@@ -112,7 +206,9 @@ The project uses a custom 8 MB partition table (`partitions_8mb.csv`) that alloc
 pio device monitor
 ```
 
-Default baud rate: **115200**. Log prefixes:
+Default baud rate: **115200**
+
+Useful log prefixes:
 
 | Prefix | Meaning |
 |--------|---------|
@@ -120,46 +216,82 @@ Default baud rate: **115200**. Log prefixes:
 | `[FS]` | LittleFS mount / file listing |
 | `[WiFi]` | Wi-Fi connection events |
 | `[ESP-NOW]` | ESP-NOW init and TX callbacks |
-| `[DISC]` | Node discovery (beacon detected) |
-| `[PAIR]` | Pairing handshake steps |
-| `[MESH]` | Node registration (new or restored from NVS) |
-| `[SENS]` | Sensor schema registration and incoming readings |
-| `[CFG]` | Node settings get / set |
-| `[WS]` | WebSocket client connect / disconnect |
+| `[DISC]` | Node discovery |
+| `[PAIR]` | Pairing handshake |
+| `[MESH]` | Node registration, relay/actuator state, reconnects |
+| `[CFG]` | Gateway or node configuration activity |
+| `[AUTH]` | Web interface authentication |
+| `[WS]` | WebSocket client activity |
+| `[OTA]` | Gateway OTA upload and reboot flow |
 
 ---
 
 ## WebSocket Message Reference
 
-The dashboard communicates with the gateway over a single WebSocket at `ws://<ip>/ws`.
+The dashboard communicates with the gateway over a single WebSocket at:
 
-### Gateway → Browser
+```text
+ws://<gateway-ip>/ws
+```
+
+### Gateway -> Browser
 
 | `type` | Description |
 |--------|-------------|
-| `update` | Full node list with sensor readings (as `sensor_readings[]` id/value array), schema-ready flag, online status, uptime |
-| `meta` | Gateway metadata (firmware version, uptime, IP, AP SSID) |
-| `discovered` | Nodes broadcasting in pairing mode |
+| `update` | Full node list with online state, uptime, sensors, actuator state, and relay labels |
+| `meta` | Gateway metadata such as firmware version, uptime, IP, AP SSID, OTA support |
+| `discovered` | Nodes currently broadcasting in pairing mode |
 | `pair_timeout` | Pairing window expired |
 | `node_settings` | Settings schema + current values for one node |
-| `node_sensor_schema` | Sensor schema (labels, units, precision) for one node |
-| `ap_config_ack` | Confirmation that new AP config was saved |
-| `gw_portal_starting` | Gateway is about to open the captive portal |
+| `node_sensor_schema` | Sensor schema for one node |
+| `relay_labels_ack` | Relay label save/reset acknowledgement |
+| `ap_config_ack` | Setup AP config save acknowledgement |
+| `web_creds_ack` | Web credential save acknowledgement |
+| `gw_portal_starting` | Gateway is restarting into WiFiManager portal mode |
+| `gw_rebooting` | Gateway is about to reboot |
 | `gw_factory_reset` | Factory reset acknowledged |
+| `auth_required` / `auth_ok` / `auth_fail` / `session_expired` | Web interface auth flow |
 
-### Browser → Gateway
+### Browser -> Gateway
 
 | `type` | Description |
 |--------|-------------|
-| `relay_cmd` | Toggle a relay on an actuator node |
-| `pair_cmd` | Initiate pairing with a discovered node |
+| `auth` | Authenticate the WebSocket connection |
+| `actuator_cmd` | Toggle an actuator on a paired actuator node |
+| `pair_cmd` | Pair a discovered node |
 | `unpair_cmd` | Disconnect and forget a paired node |
-| `rename_node` | Change a node's display name |
-| `reboot_node` | Send a reboot command to a specific node |
+| `rename_node` | Change a node display name |
+| `reboot_node` | Reboot a selected node |
 | `reboot_gw` | Reboot the gateway |
-| `set_ap_config` | Update the captive-portal SSID/password |
-| `start_wifi_portal` | Re-open the Wi-Fi captive portal |
-| `factory_reset` | Erase NVS and reboot |
-| `node_settings_get` | Request settings schema for a node |
-| `node_settings_set` | Update one setting value on a node |
-| `node_sensor_schema_get` | Request sensor schema for a node (served from cache or fetched live) |
+| `set_ap_config` | Save setup AP SSID/password |
+| `set_web_credentials` | Save dashboard login credentials |
+| `start_wifi_portal` | Re-open WiFiManager setup portal |
+| `factory_reset` | Clear gateway data and reboot |
+| `gw_led_toggle` | Enable/disable the gateway status LED |
+| `node_settings_get` | Request node settings schema |
+| `node_settings_set` | Update one node setting |
+| `node_sensor_schema_get` | Request node sensor schema |
+| `relay_labels_set` | Save per-relay labels on the gateway |
+| `ping` | Keep-alive |
+
+---
+
+## File Layout
+
+```text
+gateway_v1/
+|-- src/
+|   `-- main.cpp
+|-- include/
+|   `-- mesh_protocol.h
+|-- data/
+|   |-- index.html
+|   |-- js/
+|   |   `-- app.js
+|   `-- css/
+|       `-- style.css
+|-- partitions_8mb_noot.csv
+|-- partitions_8mb_ota.csv
+|-- platformio.ini
+`-- README.md
+```

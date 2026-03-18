@@ -1,5 +1,5 @@
 /**
- * ESP32 Mesh Gateway Web Interface Client v3.7
+ * ESP32 Mesh Gateway Web Interface Client v3.8
  *
  * WS Inbound:  { type:"meta"|"update"|"discovered"|"pair_timeout"|"ap_config_ack"|
  *                     "gw_portal_starting"|"gw_factory_reset"|"gw_rebooting"|
@@ -70,6 +70,15 @@ const $apPassInput  = $("ap-pass-input");
 const $saveApBtn    = $("save-ap-btn");
 const $apSaveNote   = $("ap-save-note");
 const $wifiPortalBtn = $("wifi-portal-btn");
+const $gwOtaFileInput = $("gw-ota-file");
+const $gwOtaBtn = $("gw-ota-btn");
+const $gwOtaNote = $("gw-ota-note");
+const $gwOtaProgress = $("gw-ota-progress");
+const $gwOtaProgressFill = $("gw-ota-progress-fill");
+const $gwOtaProgressText = $("gw-ota-progress-text");
+const $gwOtaCurrent = $("gw-ota-current");
+const $gwOtaSlot = $("gw-ota-slot");
+const $gwOtaProject = $("gw-ota-project");
 
 // ── Confirm modal ─────────────────────────────────────────────────────────────
 const $confirmOverlay  = $("confirm-overlay");
@@ -81,6 +90,11 @@ const $confirmCancelBtn = $("confirm-cancel-btn");
 // ── Theme ─────────────────────────────────────────────────────────────────────
 let theme = localStorage.getItem("gwTheme") || "dark";
 document.documentElement.dataset.theme = theme;
+let gatewayOtaSupported = false;
+let gatewayOtaBusy = false;
+let gatewayOtaMaxBytes = 0;
+let gatewayOtaProject = "";
+let gatewayOtaUploading = false;
 
 $themeBtn.addEventListener("click", () => {
   theme = theme === "dark" ? "light" : "dark";
@@ -454,6 +468,16 @@ function connect() {
       case "gw_portal_starting":
         showToast("📶 Gateway restarting into WiFi setup portal…", "warn");
         break;
+      case "gw_rebooting":
+        if (gatewayOtaUploading || $gwOtaProgress?.style.display !== "none") {
+          gatewayOtaUploading = false;
+          gatewayOtaBusy = true;
+          setGatewayOtaProgress(100, "Gateway rebooting into the updated firmware...");
+          setGatewayOtaNote("Gateway rebooting into the updated firmware...", "ok");
+          refreshGatewayOtaUi();
+        }
+        showToast("Gateway rebooting...", "warn");
+        break;
       case "gw_factory_reset":
         showToast("🗑 Factory reset in progress — gateway restarting…", "warn");
         break;
@@ -498,6 +522,14 @@ function applyMeta(m) {
     // $gwLedToggle.checked = m.gw_led_enabled;
     $gwLedToggle.checked = !!m.gw_led_enabled;
   }
+  gatewayOtaSupported = !!m.ota_supported;
+  gatewayOtaBusy = !!m.ota_busy;
+  gatewayOtaMaxBytes = Number(m.ota_max_bytes || 0);
+  gatewayOtaProject = m.ota_project || "";
+  if (!gatewayOtaUploading && !gatewayOtaBusy) {
+    resetGatewayOtaProgress();
+  }
+  refreshGatewayOtaUi();
 }
 
 // ── Badges ────────────────────────────────────────────────────────────────────
@@ -529,6 +561,14 @@ function fmtSince(s) {
   if (s < 5)  return "just now";
   if (s < 60) return `${s}s ago`;
   return `${Math.floor(s / 60)}m ago`;
+}
+
+function fmtBytes(bytes) {
+  const value = Number(bytes || 0);
+  if (!Number.isFinite(value) || value <= 0) return "-";
+  if (value >= 1024 * 1024) return `${(value / (1024 * 1024)).toFixed(2)} MB`;
+  if (value >= 1024) return `${Math.round(value / 1024)} KB`;
+  return `${value} B`;
 }
 
 function esc(str) {
@@ -1038,6 +1078,180 @@ function saveApConfig() {
 }
 
 $saveApBtn.addEventListener("click", saveApConfig);
+
+function setGatewayOtaNote(msg, type = "") {
+  if (!$gwOtaNote) return;
+  $gwOtaNote.textContent = msg;
+  $gwOtaNote.className = "setting-save-note" + (type ? " " + type : "");
+}
+
+function setGatewayOtaProgress(percent, text) {
+  if (!$gwOtaProgress || !$gwOtaProgressFill || !$gwOtaProgressText) return;
+  $gwOtaProgress.style.display = "";
+  $gwOtaProgressFill.style.width = `${Math.max(0, Math.min(100, percent))}%`;
+  $gwOtaProgressText.textContent = text;
+}
+
+function resetGatewayOtaProgress() {
+  if (!$gwOtaProgress || !$gwOtaProgressFill || !$gwOtaProgressText) return;
+  $gwOtaProgress.style.display = "none";
+  $gwOtaProgressFill.style.width = "0%";
+  $gwOtaProgressText.textContent = "Idle";
+}
+
+function refreshGatewayOtaUi() {
+  if ($gwOtaCurrent) $gwOtaCurrent.textContent = fwVersion && fwVersion !== "—" ? `v${fwVersion}` : "v-";
+  if ($gwOtaSlot) $gwOtaSlot.textContent = gatewayOtaSupported ? fmtBytes(gatewayOtaMaxBytes) : "Not available";
+  if ($gwOtaProject) $gwOtaProject.textContent = gatewayOtaProject || "-";
+
+  if (!$gwOtaBtn || !$gwOtaFileInput) return;
+
+  const hasFile = !!$gwOtaFileInput.files?.length;
+  const disabled = gatewayOtaUploading || gatewayOtaBusy || !gatewayOtaSupported || !hasFile;
+  $gwOtaBtn.disabled = disabled;
+  $gwOtaFileInput.disabled = gatewayOtaUploading || gatewayOtaBusy || !gatewayOtaSupported;
+
+  if (gatewayOtaUploading) {
+    $gwOtaBtn.textContent = "Uploading...";
+    return;
+  }
+
+  $gwOtaBtn.textContent = gatewayOtaBusy ? "OTA Busy" : "Upload Gateway Firmware";
+
+  if (!gatewayOtaSupported) {
+    setGatewayOtaNote("OTA is unavailable until the gateway is flashed with the OTA partition layout.", "err");
+  } else if (gatewayOtaBusy) {
+    setGatewayOtaNote("Another firmware update is already in progress or the gateway is rebooting.", "err");
+  } else if (!hasFile) {
+    setGatewayOtaNote("");
+  }
+}
+
+function uploadGatewayFirmwareNow(file) {
+  const xhr = new XMLHttpRequest();
+  const formData = new FormData();
+  formData.append("firmware", file, file.name);
+
+  gatewayOtaUploading = true;
+  setGatewayOtaNote("Uploading firmware image...", "");
+  setGatewayOtaProgress(0, `Preparing ${file.name} (${fmtBytes(file.size)})`);
+  refreshGatewayOtaUi();
+
+  xhr.open("POST", "/api/gateway/ota", true);
+  xhr.timeout = 180000;
+  if (authToken) xhr.setRequestHeader("X-GW-Token", authToken);
+  xhr.setRequestHeader("X-Firmware-Size", String(file.size));
+
+  xhr.upload.addEventListener("progress", event => {
+    if (!event.lengthComputable) return;
+    const rawPercent = event.total > 0 ? (event.loaded / event.total) : 0;
+    const displayPercent = Math.min(96, Math.round(rawPercent * 96));
+    const text = rawPercent >= 1
+      ? `Upload complete, validating and flashing ${file.name}...`
+      : `Uploading ${file.name}: ${Math.round(rawPercent * 100)}%`;
+    setGatewayOtaProgress(displayPercent, text);
+  });
+
+  xhr.addEventListener("load", () => {
+    let response = xhr.response;
+    if (!response || typeof response !== "object") {
+      try { response = JSON.parse(xhr.responseText || "{}"); } catch { response = {}; }
+    }
+
+    if (xhr.status === 200 && response.ok) {
+      gatewayOtaBusy = true;
+      gatewayOtaUploading = false;
+      const flashedVersion = response.version ? ` v${response.version}` : "";
+      setGatewayOtaProgress(100, response.message || `Firmware${flashedVersion} update complete. Gateway rebooting...`);
+      setGatewayOtaNote(`Firmware${flashedVersion} flashed successfully. Gateway is rebooting...`, "ok");
+      showToast(response.message || `Gateway firmware${flashedVersion} update complete. Rebooting...`, "warn");
+      $gwOtaFileInput.value = "";
+      refreshGatewayOtaUi();
+      return;
+    }
+
+    gatewayOtaUploading = false;
+    const err = response.error || `Upload failed (${xhr.status || "network error"}).`;
+    setGatewayOtaProgress(100, "Firmware update failed.");
+    setGatewayOtaNote(err, "err");
+    showToast(err, "error");
+    if (xhr.status === 401) {
+      authToken = null;
+      showLoginScreen("Session expired. Please log in again.");
+    }
+    refreshGatewayOtaUi();
+  });
+
+  xhr.addEventListener("error", () => {
+    gatewayOtaUploading = false;
+    setGatewayOtaProgress(100, "Firmware upload failed.");
+    setGatewayOtaNote("Network error while uploading firmware.", "err");
+    showToast("Network error while uploading firmware.", "error");
+    refreshGatewayOtaUi();
+  });
+
+  xhr.addEventListener("timeout", () => {
+    gatewayOtaUploading = false;
+    setGatewayOtaProgress(100, "Firmware upload timed out.");
+    setGatewayOtaNote("Upload timed out before the gateway finished flashing.", "err");
+    showToast("Firmware upload timed out.", "error");
+    refreshGatewayOtaUi();
+  });
+
+  xhr.send(formData);
+}
+
+function uploadGatewayFirmware() {
+  if (!$gwOtaFileInput?.files?.length) {
+    setGatewayOtaNote("Select a .bin firmware file first.", "err");
+    return;
+  }
+  if (!gatewayOtaSupported) {
+    setGatewayOtaNote("OTA is not available on the current gateway partition layout.", "err");
+    return;
+  }
+  if (gatewayOtaBusy || gatewayOtaUploading) {
+    setGatewayOtaNote("Gateway OTA is already busy.", "err");
+    return;
+  }
+
+  const file = $gwOtaFileInput.files[0];
+  if (!/\.bin$/i.test(file.name)) {
+    setGatewayOtaNote("Select a compiled .bin firmware file.", "err");
+    return;
+  }
+  if (gatewayOtaMaxBytes > 0 && file.size > gatewayOtaMaxBytes) {
+    setGatewayOtaNote(`Firmware is too large for the OTA slot (${fmtBytes(file.size)} > ${fmtBytes(gatewayOtaMaxBytes)}).`, "err");
+    return;
+  }
+
+  showConfirm({
+    title: "Flash Gateway Firmware?",
+    body: `You are about to flash <strong>${esc(file.name)}</strong> (${fmtBytes(file.size)}).<br><br>
+           The gateway will validate the image, write it to the inactive OTA slot, and then
+           <strong>reboot automatically</strong>. Do not power off the gateway during this process.`,
+    okLabel: "Upload and Flash",
+    okClass: "warn",
+    callback: () => uploadGatewayFirmwareNow(file)
+  });
+}
+
+if ($gwOtaFileInput) {
+  $gwOtaFileInput.addEventListener("change", () => {
+    if ($gwOtaFileInput.files?.length) {
+      const file = $gwOtaFileInput.files[0];
+      setGatewayOtaNote(`Ready: ${file.name} (${fmtBytes(file.size)})`, "");
+    } else {
+      setGatewayOtaNote("");
+      resetGatewayOtaProgress();
+    }
+    refreshGatewayOtaUi();
+  });
+}
+
+if ($gwOtaBtn) {
+  $gwOtaBtn.addEventListener("click", uploadGatewayFirmware);
+}
 
 // ── Web interface credentials ─────────────────────────────────────────────────
 function saveWebCredentials() {

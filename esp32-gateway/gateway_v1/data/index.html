@@ -1,4 +1,4 @@
-<!-- ESP32 Mesh Gateway Web Interface v3.5 -->
+<!-- ESP32 Mesh Gateway Web Interface v3.6 -->
 <!DOCTYPE html>
 <html lang="en" data-theme="dark">
 <head>
@@ -347,6 +347,56 @@
                 </div>
               </div>
 
+            </div>
+
+            <div class="settings-card">
+              <div class="settings-card-hdr">Gateway Firmware Update</div>
+
+              <p class="settings-subsec-desc">
+                Upload a compiled gateway <code>.bin</code> firmware image built for this ESP32-S3 gateway.
+                The gateway validates the image, flashes it to the inactive OTA slot, and reboots automatically.
+              </p>
+
+              <div class="setting-warn-box">
+                <span class="icon setting-warn-box-icon"></span>
+                <span>Only upload firmware built for this gateway project. A wrong image can fail validation and will be rejected.</span>
+              </div>
+
+              <div class="ota-meta-grid">
+                <div class="ota-meta-item">
+                  <span class="ota-meta-label">Current Version</span>
+                  <span class="ota-meta-value" id="gw-ota-current">v-</span>
+                </div>
+                <div class="ota-meta-item">
+                  <span class="ota-meta-label">OTA Slot Size</span>
+                  <span class="ota-meta-value" id="gw-ota-slot">-</span>
+                </div>
+                <div class="ota-meta-item">
+                  <span class="ota-meta-label">Project</span>
+                  <span class="ota-meta-value" id="gw-ota-project">-</span>
+                </div>
+              </div>
+
+              <div class="setting-field" style="margin-top:.9rem">
+                <label>Firmware Binary</label>
+                <input type="file" class="setting-input ota-file-input" id="gw-ota-file" accept=".bin,application/octet-stream">
+              </div>
+
+              <div class="setting-save-row" style="margin-top:.8rem">
+                <button class="settings-save-btn ota-upload-btn" id="gw-ota-btn" type="button">
+                  Upload Gateway Firmware
+                </button>
+                <span class="setting-save-note" id="gw-ota-note"></span>
+              </div>
+
+              <div class="ota-progress" id="gw-ota-progress" style="display:none">
+                <div class="ota-progress-bar">
+                  <div class="ota-progress-fill" id="gw-ota-progress-fill"></div>
+                </div>
+                <div class="ota-progress-meta">
+                  <span id="gw-ota-progress-text">Idle</span>
+                </div>
+              </div>
             </div>
 
             <div class="settings-card">
