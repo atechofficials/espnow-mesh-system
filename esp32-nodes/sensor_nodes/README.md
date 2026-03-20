@@ -2,7 +2,9 @@
 
 Sensor nodes read physical measurements and transmit them to the gateway over ESP-NOW every configurable interval (default: every 10 seconds).
 
-As of protocol v3.0, nodes are **self-describing** — each node sends a sensor schema to the gateway at pair time that defines the labels, units, and precision of its readings. The gateway and web dashboard have no hardcoded knowledge of any specific sensor type and adapt automatically. Adding a new sensor to a node requires only node firmware changes.
+Supported sensor-node firmwares can also be updated through the **gateway-managed Node OTA** flow. During that OTA window, the selected node temporarily joins the helper AP created by the gateway's ESP32-C3 coprocessor, downloads the staged firmware, flashes it, and then returns to normal ESP-NOW operation after reboot.
+
+As of the current mesh protocol (`v3.2.0`), nodes are **self-describing**. Each node sends a sensor schema to the gateway at pair time that defines the labels, units, and precision of its readings. The gateway and web dashboard have no hardcoded knowledge of any specific sensor type and adapt automatically. Adding a new sensor to a node still requires only node firmware changes when the schema contract is preserved.
 
 ---
 
@@ -10,7 +12,7 @@ As of protocol v3.0, nodes are **self-describing** — each node sends a sensor 
 
 | Directory | Sensors | Measurements | Board |
 |-----------|---------|--------------|-------|
-| `envo_mini_v1/` | Bosch BMP280 + DHT22 + TEMT6000 | Temperature, Atmospheric Pressure, Humidity, Ambient Light | DFRobot Firebeetle 2 ESP32-E |
+| `envo_mini_v1/` | Bosch BMP280 + DHT22 + TEMT6000 | Temperature, Atmospheric Pressure, Humidity, Ambient Light | DFRobot Firebeetle 2 ESP32-E (`v2.1.0`) |
 
 ---
 
@@ -18,11 +20,12 @@ As of protocol v3.0, nodes are **self-describing** — each node sends a sensor 
 
 1. Copy an existing sensor node directory as a starting point
 2. Add your sensor driver and initialisation logic in `setup()`
-3. Add a `SensorDef` entry for each new measurement in `getSensorDefs()` — define its `id`, `label`, `unit`, and `precision`
+3. Add a `SensorDef` entry for each new measurement in `getSensorDefs()` and define its `id`, `label`, `unit`, and `precision`
 4. Add the corresponding reading in `sendSensorData()` using the same `id`
 5. Update `NODE_NAME` at the top of `main.cpp`
-6. Add per-node settings in `loadSettings()` / `saveSettings()` / `getSettingsDefs()` if needed — the gateway displays them automatically in the node settings panel
+6. Add per-node settings in `loadSettings()` / `saveSettings()` / `getSettingsDefs()` if needed; the gateway displays them automatically in the node settings panel
+7. Preserve the node OTA metadata and role/version information used by the gateway when validating uploaded node firmware images
 
 No changes to `mesh_protocol.h`, the gateway firmware, or the web interface are required. The gateway learns what sensors a node has from the schema handshake at pair time.
 
-The pairing flow, heartbeat, gateway-loss recovery, settings protocol, and schema handshake are identical across all node types and can be copied verbatim from any existing node.
+The pairing flow, heartbeat, gateway-loss recovery, settings protocol, schema handshake, and Node OTA downloader flow are consistent across node types and can be reused from existing implementations.

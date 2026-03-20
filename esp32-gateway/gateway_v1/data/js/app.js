@@ -1,5 +1,5 @@
 /**
- * ESP32 Mesh Gateway Web Interface Client v3.8
+ * ESP32 Mesh Gateway Web Interface Client v3.9
  *
  * WS Inbound:  { type:"meta"|"update"|"discovered"|"pair_timeout"|"ap_config_ack"|
  *                     "gw_portal_starting"|"gw_factory_reset"|"gw_rebooting"|
@@ -79,6 +79,16 @@ const $gwOtaProgressText = $("gw-ota-progress-text");
 const $gwOtaCurrent = $("gw-ota-current");
 const $gwOtaSlot = $("gw-ota-slot");
 const $gwOtaProject = $("gw-ota-project");
+const $nodeOtaNode = $("node-ota-node");
+const $nodeOtaFileInput = $("node-ota-file");
+const $nodeOtaBtn = $("node-ota-btn");
+const $nodeOtaNote = $("node-ota-note");
+const $nodeOtaProgress = $("node-ota-progress");
+const $nodeOtaProgressFill = $("node-ota-progress-fill");
+const $nodeOtaProgressText = $("node-ota-progress-text");
+const $nodeOtaHelper = $("node-ota-helper");
+const $nodeOtaTarget = $("node-ota-target");
+const $nodeOtaHost = $("node-ota-host");
 
 // ── Confirm modal ─────────────────────────────────────────────────────────────
 const $confirmOverlay  = $("confirm-overlay");
@@ -95,6 +105,20 @@ let gatewayOtaBusy = false;
 let gatewayOtaMaxBytes = 0;
 let gatewayOtaProject = "";
 let gatewayOtaUploading = false;
+let nodeOtaBusy = false;
+let nodeOtaUploading = false;
+let nodeOtaHelperOnline = false;
+let nodeOtaHost = "192.168.4.1";
+let nodeOtaState = {
+  active: false,
+  node_id: 0,
+  stage: 0,
+  progress: 0,
+  message: "",
+  error: "",
+  version: "",
+  node_name: ""
+};
 
 $themeBtn.addEventListener("click", () => {
   theme = theme === "dark" ? "light" : "dark";
@@ -391,6 +415,9 @@ function connect() {
         }
         break;
       }
+      case "node_ota_state":
+        applyNodeOtaState(msg);
+        break;
       case "update":
         const prevModalNode = nsCurrentNodeId ? nodes.get(nsCurrentNodeId) : null;
         const nextNodes = msg.nodes || [];
@@ -435,6 +462,7 @@ function connect() {
 
         renderDashboard();
         renderConnectedNodes();
+        refreshNodeOtaUi();
         if (nsCurrentNodeId && $nsOverlay.style.display !== "none" &&
             !isEditingRelayLabel(nsCurrentNodeId)) {
           renderNodeSettings(nsCurrentNodeId);
@@ -526,10 +554,14 @@ function applyMeta(m) {
   gatewayOtaBusy = !!m.ota_busy;
   gatewayOtaMaxBytes = Number(m.ota_max_bytes || 0);
   gatewayOtaProject = m.ota_project || "";
+  nodeOtaBusy = !!m.node_ota_busy;
+  nodeOtaHelperOnline = !!m.node_ota_helper_online;
+  nodeOtaHost = m.node_ota_host || "192.168.4.1";
   if (!gatewayOtaUploading && !gatewayOtaBusy) {
     resetGatewayOtaProgress();
   }
   refreshGatewayOtaUi();
+  refreshNodeOtaUi();
 }
 
 // ── Badges ────────────────────────────────────────────────────────────────────
@@ -1254,6 +1286,241 @@ if ($gwOtaBtn) {
 }
 
 // ── Web interface credentials ─────────────────────────────────────────────────
+function setNodeOtaNote(msg, type = "") {
+  if (!$nodeOtaNote) return;
+  $nodeOtaNote.textContent = msg;
+  $nodeOtaNote.className = "setting-save-note" + (type ? " " + type : "");
+}
+
+function setNodeOtaProgress(percent, text) {
+  if (!$nodeOtaProgress || !$nodeOtaProgressFill || !$nodeOtaProgressText) return;
+  $nodeOtaProgress.style.display = "";
+  $nodeOtaProgressFill.style.width = `${Math.max(0, Math.min(100, percent))}%`;
+  $nodeOtaProgressText.textContent = text;
+}
+
+function resetNodeOtaProgress() {
+  if (!$nodeOtaProgress || !$nodeOtaProgressFill || !$nodeOtaProgressText) return;
+  $nodeOtaProgress.style.display = "none";
+  $nodeOtaProgressFill.style.width = "0%";
+  $nodeOtaProgressText.textContent = "Idle";
+}
+
+function populateNodeOtaTargets() {
+  if (!$nodeOtaNode) return;
+  const selected = $nodeOtaNode.value;
+  const pinnedId = Number(selected || nodeOtaState.node_id || 0);
+  const list = [...nodes.values()]
+    .filter(n => n.online || n.id === pinnedId)
+    .sort((a, b) => (a.name || "").localeCompare(b.name || ""));
+
+  $nodeOtaNode.innerHTML = `<option value="">Select a paired online node</option>`;
+  list.forEach(n => {
+    const typeLabel = n.type === 1 ? "Sensor" : "Relay";
+    const opt = document.createElement("option");
+    opt.value = String(n.id);
+    opt.textContent = `${n.name || `Node #${n.id}`} (${n.mac}) • ${typeLabel}`;
+    $nodeOtaNode.appendChild(opt);
+  });
+
+  if (selected && list.some(n => String(n.id) === selected)) {
+    $nodeOtaNode.value = selected;
+  }
+}
+
+function applyNodeOtaState(msg) {
+  nodeOtaState = {
+    active: !!msg.active,
+    node_id: Number(msg.node_id || 0),
+    stage: Number(msg.stage || 0),
+    progress: Number(msg.progress || 0),
+    message: msg.message || "",
+    error: msg.error || "",
+    version: msg.version || "",
+    node_name: msg.node_name || ""
+  };
+  nodeOtaBusy = !!msg.active || !!msg.upload_busy;
+  nodeOtaHelperOnline = msg.helper_online !== undefined ? !!msg.helper_online : nodeOtaHelperOnline;
+
+  if (nodeOtaState.active) {
+    const text = nodeOtaState.error || nodeOtaState.message || "Node OTA in progress...";
+    setNodeOtaProgress(nodeOtaState.progress, text);
+    setNodeOtaNote(text, nodeOtaState.error ? "err" : "ok");
+  } else if (!nodeOtaUploading) {
+    if (nodeOtaState.error) {
+      setNodeOtaProgress(100, nodeOtaState.error);
+      setNodeOtaNote(nodeOtaState.error, "err");
+    } else if (nodeOtaState.message) {
+      setNodeOtaProgress(nodeOtaState.progress || 100, nodeOtaState.message);
+      setNodeOtaNote(nodeOtaState.message, "ok");
+    } else {
+      resetNodeOtaProgress();
+    }
+  }
+
+  refreshNodeOtaUi();
+}
+
+function refreshNodeOtaUi() {
+  populateNodeOtaTargets();
+  if ($nodeOtaHelper) $nodeOtaHelper.textContent = nodeOtaHelperOnline ? "Online" : "Offline";
+  if ($nodeOtaHost) $nodeOtaHost.textContent = nodeOtaHost || "192.168.4.1";
+
+  const selectedId = Number($nodeOtaNode?.value || 0);
+  const selectedNode = selectedId ? nodes.get(selectedId) : null;
+  if ($nodeOtaTarget) {
+    $nodeOtaTarget.textContent = selectedNode
+      ? `${selectedNode.name || `Node #${selectedNode.id}`} (${selectedNode.mac})`
+      : "-";
+  }
+
+  const hasFile = !!$nodeOtaFileInput?.files?.length;
+  const disabled = nodeOtaUploading || nodeOtaBusy || !selectedNode || !hasFile;
+  if ($nodeOtaBtn) $nodeOtaBtn.disabled = disabled;
+  if ($nodeOtaFileInput) $nodeOtaFileInput.disabled = nodeOtaUploading || nodeOtaBusy;
+  if ($nodeOtaNode) $nodeOtaNode.disabled = nodeOtaUploading || nodeOtaBusy;
+
+  if ($nodeOtaBtn) {
+    $nodeOtaBtn.textContent = nodeOtaUploading
+      ? "Uploading..."
+      : nodeOtaBusy
+        ? "Node OTA Busy"
+        : "Upload Node Firmware";
+  }
+
+  if (nodeOtaUploading) return;
+  if (nodeOtaBusy && !nodeOtaState.error) {
+    setNodeOtaNote(nodeOtaState.message || "Node OTA is in progress.", "ok");
+  } else if (!selectedNode && !$nodeOtaNode?.value) {
+    setNodeOtaNote("");
+  }
+}
+
+function uploadNodeFirmwareNow(file, nodeId) {
+  const xhr = new XMLHttpRequest();
+  const formData = new FormData();
+  formData.append("firmware", file, file.name);
+
+  nodeOtaUploading = true;
+  nodeOtaBusy = true;
+  setNodeOtaNote("Uploading node firmware image...", "");
+  setNodeOtaProgress(0, `Preparing ${file.name} (${fmtBytes(file.size)})`);
+  refreshNodeOtaUi();
+
+  xhr.open("POST", "/api/node/ota", true);
+  xhr.timeout = 240000;
+  if (authToken) xhr.setRequestHeader("X-GW-Token", authToken);
+  xhr.setRequestHeader("X-Firmware-Size", String(file.size));
+  xhr.setRequestHeader("X-Node-Id", String(nodeId));
+
+  xhr.upload.addEventListener("progress", event => {
+    if (!event.lengthComputable) return;
+    const rawPercent = event.total > 0 ? (event.loaded / event.total) : 0;
+    const displayPercent = Math.min(25, Math.round(rawPercent * 25));
+    setNodeOtaProgress(displayPercent, `Uploading ${file.name}: ${Math.round(rawPercent * 100)}%`);
+  });
+
+  xhr.addEventListener("load", () => {
+    let response = xhr.response;
+    if (!response || typeof response !== "object") {
+      try { response = JSON.parse(xhr.responseText || "{}"); } catch { response = {}; }
+    }
+
+    nodeOtaUploading = false;
+    if (xhr.status === 200 && response.ok) {
+      setNodeOtaProgress(25, `Firmware uploaded. Preparing OTA session${response.version ? ` v${response.version}` : ""}...`);
+      setNodeOtaNote(`Firmware accepted${response.version ? ` (v${response.version})` : ""}. Waiting for OTA helper...`, "ok");
+      showToast("Node firmware uploaded. OTA preparation started.", "warn");
+      refreshNodeOtaUi();
+      return;
+    }
+
+    nodeOtaBusy = false;
+    const err = response.error || `Upload failed (${xhr.status || "network error"}).`;
+    setNodeOtaProgress(100, err);
+    setNodeOtaNote(err, "err");
+    showToast(err, "error");
+    if (xhr.status === 401) {
+      authToken = null;
+      showLoginScreen("Session expired. Please log in again.");
+    }
+    refreshNodeOtaUi();
+  });
+
+  xhr.addEventListener("error", () => {
+    nodeOtaUploading = false;
+    nodeOtaBusy = false;
+    setNodeOtaProgress(100, "Node firmware upload failed.");
+    setNodeOtaNote("Network error while uploading node firmware.", "err");
+    showToast("Network error while uploading node firmware.", "error");
+    refreshNodeOtaUi();
+  });
+
+  xhr.addEventListener("timeout", () => {
+    nodeOtaUploading = false;
+    nodeOtaBusy = false;
+    setNodeOtaProgress(100, "Node firmware upload timed out.");
+    setNodeOtaNote("Upload timed out before the gateway finished staging the node firmware.", "err");
+    showToast("Node firmware upload timed out.", "error");
+    refreshNodeOtaUi();
+  });
+
+  xhr.send(formData);
+}
+
+function uploadNodeFirmware() {
+  const nodeId = Number($nodeOtaNode?.value || 0);
+  const node = nodeId ? nodes.get(nodeId) : null;
+  if (!node) {
+    setNodeOtaNote("Choose an online paired node first.", "err");
+    return;
+  }
+  if (!$nodeOtaFileInput?.files?.length) {
+    setNodeOtaNote("Select a .bin firmware file first.", "err");
+    return;
+  }
+  if (nodeOtaBusy || nodeOtaUploading) {
+    setNodeOtaNote("Another node OTA session is already running.", "err");
+    return;
+  }
+
+  const file = $nodeOtaFileInput.files[0];
+  if (!/\.bin$/i.test(file.name)) {
+    setNodeOtaNote("Select a compiled .bin firmware file.", "err");
+    return;
+  }
+
+  showConfirm({
+    title: "Flash Node Firmware?",
+    body: `You are about to update <strong>${esc(node.name || `Node #${node.id}`)}</strong> with <strong>${esc(file.name)}</strong> (${fmtBytes(file.size)}).<br><br>
+           The gateway will validate the firmware, prepare the OTA helper, tell the node to switch into OTA mode, and then wait for the node to reboot and reconnect.`,
+    okLabel: "Upload and Update",
+    okClass: "warn",
+    callback: () => uploadNodeFirmwareNow(file, nodeId)
+  });
+}
+
+if ($nodeOtaFileInput) {
+  $nodeOtaFileInput.addEventListener("change", () => {
+    if ($nodeOtaFileInput.files?.length) {
+      const file = $nodeOtaFileInput.files[0];
+      setNodeOtaNote(`Ready: ${file.name} (${fmtBytes(file.size)})`, "");
+    } else {
+      setNodeOtaNote("");
+      resetNodeOtaProgress();
+    }
+    refreshNodeOtaUi();
+  });
+}
+
+if ($nodeOtaNode) {
+  $nodeOtaNode.addEventListener("change", refreshNodeOtaUi);
+}
+
+if ($nodeOtaBtn) {
+  $nodeOtaBtn.addEventListener("click", uploadNodeFirmware);
+}
+
 function saveWebCredentials() {
   const user    = ($("web-user-input")    || {}).value?.trim()  || "";
   const pass    = ($("web-pass-input")    || {}).value           || "";

@@ -1,4 +1,4 @@
-<!-- ESP32 Mesh Gateway Web Interface v3.6 -->
+<!-- ESP32 Mesh Gateway Web Interface v3.7 -->
 <!DOCTYPE html>
 <html lang="en" data-theme="dark">
 <head>
@@ -395,6 +395,63 @@
                 </div>
                 <div class="ota-progress-meta">
                   <span id="gw-ota-progress-text">Idle</span>
+                </div>
+              </div>
+            </div>
+
+            <div class="settings-card">
+              <div class="settings-card-hdr">Node Firmware Update</div>
+
+              <p class="settings-subsec-desc">
+                Upload a compiled node <code>.bin</code> image, choose an online paired node, and let the gateway deliver it through the OTA coprocessor AP.
+              </p>
+
+              <div class="setting-warn-box">
+                <span class="icon setting-warn-box-icon"></span>
+                <span>The selected node must be online, and the uploaded image must match that node type. The gateway will reject mismatched firmware.</span>
+              </div>
+
+              <div class="ota-meta-grid">
+                <div class="ota-meta-item">
+                  <span class="ota-meta-label">OTA Helper</span>
+                  <span class="ota-meta-value" id="node-ota-helper">Checking...</span>
+                </div>
+                <div class="ota-meta-item">
+                  <span class="ota-meta-label">Selected Node</span>
+                  <span class="ota-meta-value" id="node-ota-target">-</span>
+                </div>
+                <div class="ota-meta-item">
+                  <span class="ota-meta-label">OTA Host</span>
+                  <span class="ota-meta-value" id="node-ota-host">192.168.4.1</span>
+                </div>
+              </div>
+
+              <div class="setting-row-2" style="margin-top:.9rem">
+                <div class="setting-field">
+                  <label>Target Node</label>
+                  <select class="setting-input" id="node-ota-node">
+                    <option value="">Select a paired online node</option>
+                  </select>
+                </div>
+                <div class="setting-field">
+                  <label>Firmware Binary</label>
+                  <input type="file" class="setting-input ota-file-input" id="node-ota-file" accept=".bin,application/octet-stream">
+                </div>
+              </div>
+
+              <div class="setting-save-row" style="margin-top:.8rem">
+                <button class="settings-save-btn ota-upload-btn" id="node-ota-btn" type="button">
+                  Upload Node Firmware
+                </button>
+                <span class="setting-save-note" id="node-ota-note"></span>
+              </div>
+
+              <div class="ota-progress" id="node-ota-progress" style="display:none">
+                <div class="ota-progress-bar">
+                  <div class="ota-progress-fill" id="node-ota-progress-fill"></div>
+                </div>
+                <div class="ota-progress-meta">
+                  <span id="node-ota-progress-text">Idle</span>
                 </div>
               </div>
             </div>

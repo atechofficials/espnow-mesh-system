@@ -1,6 +1,6 @@
 # ESP32 Gateway
 
-The gateway is the heart of the ESPNow Mesh System. It runs on an **ESP32-S3** and bridges your Wi-Fi network with the ESP-NOW mesh while serving a live web dashboard, managing paired nodes, and now supporting **web-based gateway OTA firmware updates**.
+The gateway is the heart of the ESPNow Mesh System. It runs on an **ESP32-S3** and bridges your Wi-Fi network with the ESP-NOW mesh while serving a live web dashboard, managing paired nodes, supporting **web-based gateway OTA firmware updates**, and coordinating **gateway-managed Node OTA updates** with a companion **ESP32-C3 coprocessor**.
 
 ---
 
@@ -8,7 +8,8 @@ The gateway is the heart of the ESPNow Mesh System. It runs on an **ESP32-S3** a
 
 | Item | Detail |
 |------|--------|
-| Board | ESP32-S3-DevKitC-1-N8R8 |
+| Main Board | ESP32-S3-DevKitC-1-N8R8 |
+| Companion Helper | ESP32-C3 coprocessor for Node OTA and future helper tasks |
 | Flash | 8 MB (Quad) |
 | PSRAM | 8 MB (Octal) |
 | Status LED | WS2812B on GPIO 38 (on-board) |
@@ -25,6 +26,7 @@ The gateway is the heart of the ESPNow Mesh System. It runs on an **ESP32-S3** a
 - Serves the web dashboard from LittleFS over HTTP/WebSocket
 - Stores gateway configuration, web credentials, paired node records, and relay label assignments in NVS
 - Supports **gateway self-OTA** from the web interface with validation, progress reporting, and automatic reboot
+- Supports **Node OTA** by staging node firmware, handing delivery to the ESP32-C3 helper, tracking node reconnects, and reporting OTA progress back to the dashboard
 
 ---
 
@@ -51,6 +53,7 @@ The gateway is the heart of the ESPNow Mesh System. It runs on an **ESP32-S3** a
 | v1.8.2 | Added ESP32 actuator-node support and improved actuator pairing/state/settings sync |
 | v1.8.3 | Added per-relay label assignment from the web interface for relay nodes |
 | v1.9.0 | Added **web-based gateway OTA firmware update**, OTA partition layout, upload validation, progress/error feedback, and automatic reboot after successful flash |
+| v2.0.0 | Added **gateway-managed Node OTA** for supported sensor and actuator nodes, introduced the ESP32-C3 gateway coprocessor workflow, added helper-assisted node firmware staging/delivery, and extended OTA progress/reconnect tracking in the dashboard |
 
 ---
 
@@ -61,7 +64,9 @@ gateway_v1/
 |-- src/
 |   `-- main.cpp              <- gateway firmware
 |-- include/
-|   `-- mesh_protocol.h       <- shared protocol definitions (keep in sync with nodes)
+|   |-- mesh_protocol.h       <- shared protocol definitions (keep in sync with nodes)
+|   `-- coproc_ota_protocol.h <- shared S3 <-> C3 OTA transport definitions
+|-- coprocessor_esp32c3/      <- helper firmware used for Node OTA delivery
 |-- data/                     <- LittleFS web assets (upload with --target uploadfs)
 |   |-- index.html
 |   |-- js/
@@ -78,13 +83,15 @@ gateway_v1/
 
 ## Current Release Notes
 
-- Gateway firmware version: **v1.9.0**
+- Gateway firmware version: **v2.0.0**
+- Gateway coprocessor firmware version: **v0.1.0**
+- Shared helper transport: `coproc_ota_protocol.h` **v1.0.0**
 - Web UI assets:
-  - `app.js` v3.8
-  - `index.html` v3.6
+  - `app.js` v3.9
+  - `index.html` v3.7
   - `style.css` v3.5
 - Active partition layout: **`partitions_8mb_ota.csv`**
 
 ---
 
-See [gateway_v1/README.md](gateway_v1/README.md) for build, flashing, OTA usage, and configuration details.
+See [gateway_v1/README.md](gateway_v1/README.md) for build, flashing, gateway OTA, Node OTA, coprocessor setup, and configuration details.

@@ -2,7 +2,7 @@
 /**
     * @file [mesh_protocol.h]
     * @brief Shared ESP-NOW message definitions for the ESP32 ESPNow Mesh System project
-    * @version 3.1.0
+    * @version 3.2.0
     * @author Mrinal (@atechofficials)
     * @details Shared ESP-NOW message definitions
         * Copy this file into the include/ folder of every node project.
@@ -35,7 +35,7 @@
 
 #include <stdint.h>
 
-#define SW_VERSION "3.1.0"
+#define SW_VERSION "3.2.0"
 
 // Message Types *****************************************************************************
 typedef enum : uint8_t {
@@ -56,6 +56,8 @@ typedef enum : uint8_t {
     MSG_ACTUATOR_SCHEMA     = 0x0F,  // Node     -> Master   : actuator schema (e.g. relay count)
     MSG_ACTUATOR_STATE      = 0x10,  // Node     -> Master   : actuator states (e.g. relay states)
     MSG_ACTUATOR_SET        = 0x11,  // Master   -> Node     : set actuator state (e.g. toggle relay)
+    MSG_NODE_OTA_BEGIN      = 0x12,  // Master   -> Node     : enter node OTA mode and fetch firmware over Wi-Fi
+    MSG_NODE_OTA_STATUS     = 0x13,  // Node     -> Master   : OTA state / progress for one node
 } MeshMsgType;
 
 // Node Types *****************************************************************************
@@ -100,6 +102,22 @@ typedef enum : uint8_t {
 //                     = 3 + 1 + 4×2  = 12 bytes  (limit 250 bytes for ESP-NOW)
 #define NODE_MAX_ACTUATORS 4    // max actuators (e.g. relays) per node
 #define ACTUATOR_LABEL_LEN 12   // chars for human-readable actuator label (incl. NUL)
+
+// Node OTA Constants *****************************************************************************
+#define NODE_OTA_SSID_LEN       16   // chars for temporary OTA AP SSID (incl. NUL)
+#define NODE_OTA_PASS_LEN       16   // chars for temporary OTA AP password (incl. NUL)
+#define NODE_OTA_VERSION_LEN    16   // chars for firmware version string (incl. NUL)
+#define NODE_OTA_MESSAGE_LEN    24   // chars for status / error text (incl. NUL)
+
+typedef enum : uint8_t {
+    NODE_OTA_IDLE          = 0x00,
+    NODE_OTA_ACCEPTED      = 0x01,
+    NODE_OTA_AP_CONNECTING = 0x02,
+    NODE_OTA_DOWNLOADING   = 0x03,
+    NODE_OTA_FLASHING      = 0x04,
+    NODE_OTA_SUCCESS       = 0x05,
+    NODE_OTA_ERROR         = 0x06,
+} NodeOtaPhase;
 
 // Packed Structs *****************************************************************************
 #pragma pack(push, 1)
@@ -311,6 +329,28 @@ typedef struct {
     uint8_t    count;                            // number of valid entries (0..NODE_MAX_ACTUATORS)
     ActuatorDef actuators[NODE_MAX_ACTUATORS];   // only first `count` entries matter
 } MsgActuatorSchema;
+
+// MSG_NODE_OTA_BEGIN (Gateway -> Node) *****************************************************************************
+typedef struct {
+    MeshHeader hdr;
+    uint32_t   session_id;                       // unique OTA job/session identifier
+    uint32_t   image_size;                       // firmware size in bytes
+    uint32_t   image_crc32;                      // CRC32 of the firmware binary
+    uint16_t   port;                             // HTTP port exposed by the OTA helper AP
+    char       ssid[NODE_OTA_SSID_LEN];          // temporary OTA AP SSID
+    char       password[NODE_OTA_PASS_LEN];      // temporary OTA AP password
+    char       version[NODE_OTA_VERSION_LEN];    // human-readable firmware version
+} MsgNodeOtaBegin;
+
+// MSG_NODE_OTA_STATUS (Node -> Gateway) *****************************************************************************
+typedef struct {
+    MeshHeader hdr;
+    uint32_t   session_id;                       // OTA job/session identifier
+    uint8_t    phase;                            // NodeOtaPhase
+    uint8_t    progress;                         // 0..100
+    uint8_t    error_code;                       // 0 = no error
+    char       message[NODE_OTA_MESSAGE_LEN];    // short status / error text
+} MsgNodeOtaStatus;
 
 #pragma pack(pop)
 

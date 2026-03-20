@@ -1,10 +1,10 @@
 /**
     * @file [main.cpp]
     * @brief Main source file for the ESP32 Mesh Gateway firmware
- * @version 1.9.0
+    * @version 2.0.0
     * @author Mrinal (@atechofficials)
  */
-#define FW_VERSION "1.9.0"
+#define FW_VERSION "2.0.0"
 
 #include <Arduino.h>
 #include <WiFi.h>
@@ -19,6 +19,7 @@
 #include <esp_app_format.h>
 #include <esp_ota_ops.h>
 #include "mesh_protocol.h"
+#include "coproc_ota_protocol.h"
 #include <Preferences.h>
 #include "mbedtls/sha256.h"
 #include <algorithm>
@@ -34,6 +35,31 @@
 #define OTA_FW_MARKER "GWFWVER:"
 #define OTA_FW_MARKER_LEN 8
 #define OTA_FW_VERSION_MAX_LEN 16
+#define NODE_OTA_FW_MARKER "NODEFWVER:"
+#define NODE_OTA_FW_MARKER_LEN 10
+#define NODE_OTA_ROLE_MARKER "NODETYPE:"
+#define NODE_OTA_ROLE_MARKER_LEN 9
+#define NODE_OTA_VERSION_MAX_LEN 16
+#define NODE_OTA_FILE_PATH "/node_ota.bin"
+#define NODE_OTA_HOST "192.168.4.1"
+#define NODE_OTA_PORT 80
+#define NODE_OTA_AP_CHANNEL 6
+#define NODE_OTA_STAGE_TIMEOUT_MS 120000UL
+#define NODE_OTA_TRANSFER_TIMEOUT_MS 300000UL
+#define NODE_OTA_REJOIN_TIMEOUT_MS 90000UL
+#define NODE_OTA_TIMEOUT_RECOVERY_MS 120000UL
+#define NODE_OTA_BEGIN_RETRY_MS 2000UL
+#define NODE_OTA_BEGIN_MAX_ATTEMPTS 10
+#define COPROC_UART_BAUD 230400
+#define COPROC_UART_TX_PIN 17
+#define COPROC_UART_RX_PIN 18
+#define COPROC_UART_RX_BUFFER_SIZE 4096
+#define COPROC_UART_TX_BUFFER_SIZE 4096
+#define COPROC_RESET_PIN 1
+#define COPROC_LINK_PING_MS 5000UL
+#define COPROC_ACK_TIMEOUT_MS 3000UL
+#define COPROC_ACK_RETRY_LIMIT 3
+#define COPROC_FRAME_MAX_PAYLOAD sizeof(CoprocUploadChunkPayload)
 
 // Runtime AP credentials - loaded from NVS on boot, fall back to compile-time defaults.
 // These are the SSID / password the WiFiManager captive portal AP will use.
@@ -140,6 +166,112 @@ struct GatewayOtaRequestState {
 static bool          otaUploadBusy    = false;
 static bool          otaRebootPending = false;
 static unsigned long otaRebootAtMs    = 0;
+
+enum NodeOtaJobStage : uint8_t {
+    NODE_OTA_JOB_IDLE = 0,
+    NODE_OTA_JOB_STAGED,
+    NODE_OTA_JOB_COPROC_WAIT,
+    NODE_OTA_JOB_COPROC_BEGIN,
+    NODE_OTA_JOB_COPROC_STREAM,
+    NODE_OTA_JOB_COPROC_FINALIZE,
+    NODE_OTA_JOB_SEND_COMMAND,
+    NODE_OTA_JOB_WAIT_TRANSFER,
+    NODE_OTA_JOB_WAIT_REJOIN,
+    NODE_OTA_JOB_SUCCESS,
+    NODE_OTA_JOB_ERROR,
+};
+
+struct NodeOtaUploadRequestState {
+    bool   started = false;
+    bool   ok = false;
+    bool   metadataValidated = false;
+    bool   descFlushed = false;
+    size_t expectedSize = 0;
+    size_t written = 0;
+    uint32_t crc32 = 0xFFFFFFFFu;
+    char   filename[64] = {0};
+    char   incomingVersion[NODE_OTA_VERSION_MAX_LEN] = {0};
+    char   incomingDisplayVersion[NODE_OTA_VERSION_MAX_LEN] = {0};
+    char   incomingRole[16] = {0};
+    char   error[128] = {0};
+    uint8_t descBuf[OTA_DESC_BUF_LEN] = {0};
+    size_t descBytes = 0;
+    uint8_t versionMarkerMatchIndex = 0;
+    bool    versionMarkerReading = false;
+    uint8_t versionMarkerLen = 0;
+    uint8_t roleMarkerMatchIndex = 0;
+    bool    roleMarkerReading = false;
+    uint8_t roleMarkerLen = 0;
+    File    file;
+};
+
+struct NodeOtaJobState {
+    bool           active = false;
+    bool           uploadBusy = false;
+    bool           helperOnline = false;
+    bool           awaitingAck = false;
+    bool           helperApReady = false;
+    bool           helperTransferDone = false;
+    bool           nodeAccepted = false;
+    uint8_t        awaitingFrameType = 0;
+    uint8_t        nodeId = 0;
+    NodeType       targetType = NODE_SENSOR;
+    NodeOtaJobStage stage = NODE_OTA_JOB_IDLE;
+    uint32_t       sessionId = 0;
+    uint32_t       imageCrc32 = 0;
+    size_t         imageSize = 0;
+    size_t         uploadOffset = 0;
+    unsigned long  lastCommandAt = 0;
+    unsigned long  stageStartedAt = 0;
+    unsigned long  lastActivityAt = 0;
+    unsigned long  lastAckAt = 0;
+    uint8_t        coprocAckRetries = 0;
+    uint8_t        commandAttempts = 0;
+    char           version[NODE_OTA_VERSION_MAX_LEN] = {0};
+    char           priorVersion[8] = {0};
+    char           filename[64] = {0};
+    char           message[96] = {0};
+    char           error[128] = {0};
+    char           apSsid[NODE_OTA_SSID_LEN] = {0};
+    char           apPassword[NODE_OTA_PASS_LEN] = {0};
+    uint8_t        progress = 0;
+    File           file;
+};
+
+struct CoprocAckState {
+    bool     ready = false;
+    uint8_t  originalType = 0;
+    bool     ok = false;
+    uint32_t value = 0;
+    char     message[COPROC_STATUS_MESSAGE_LEN] = {0};
+};
+
+struct CoprocRxState {
+    enum State : uint8_t {
+        WAIT_MAGIC_1 = 0,
+        WAIT_MAGIC_2,
+        READ_TYPE,
+        READ_LEN_1,
+        READ_LEN_2,
+        READ_PAYLOAD,
+        READ_CRC_1,
+        READ_CRC_2,
+    } state = WAIT_MAGIC_1;
+    uint8_t  type = 0;
+    uint16_t length = 0;
+    uint16_t expectedCrc = 0;
+    uint16_t payloadIndex = 0;
+    uint8_t  payload[COPROC_FRAME_MAX_PAYLOAD] = {0};
+};
+
+static HardwareSerial coprocSerial(1);
+static NodeOtaJobState nodeOtaJob;
+static CoprocAckState coprocAck;
+static CoprocRxState coprocRx;
+static unsigned long lastCoprocHelloAt = 0;
+static bool coprocOnline = false;
+static unsigned long lastCoprocAckAt = 0;
+static unsigned long lastCoprocNoAckLogAt = 0;
 
 // *****************************************************************************
 // Gateway Status LED Helpers
@@ -386,7 +518,9 @@ static String getCookieValue(AsyncWebServerRequest* req, const char* name) {
 }
 
 static bool shouldLogHttpAuthSuccess(AsyncWebServerRequest* req) {
-    return req && req->url() != "/api/gateway/ota";
+    return req &&
+        req->url() != "/api/gateway/ota" &&
+        req->url() != "/api/node/ota";
 }
 
 // Returns true if the HTTP request carries a valid session or remember cookie.
@@ -687,6 +821,858 @@ static void handleGatewayOtaUpload(AsyncWebServerRequest* req,
     if (final && !state->ok && state->updateBegun) {
         Update.abort();
         state->updateBegun = false;
+    }
+}
+
+static uint32_t crc32Update(uint32_t crc, const uint8_t* data, size_t len) {
+    crc = ~crc;
+    while (len--) {
+        crc ^= *data++;
+        for (uint8_t i = 0; i < 8; i++) {
+            crc = (crc >> 1) ^ (0xEDB88320u & (-(int32_t)(crc & 1u)));
+        }
+    }
+    return ~crc;
+}
+
+static uint16_t crc16Ccitt(const uint8_t* data, size_t len) {
+    uint16_t crc = 0xFFFF;
+    for (size_t i = 0; i < len; i++) {
+        crc ^= (uint16_t)data[i] << 8;
+        for (uint8_t bit = 0; bit < 8; bit++) {
+            crc = (crc & 0x8000) ? (uint16_t)((crc << 1) ^ 0x1021) : (uint16_t)(crc << 1);
+        }
+    }
+    return crc;
+}
+
+static const char* nodeTypeToRole(NodeType type) {
+    switch (type) {
+        case NODE_SENSOR: return "SENSOR";
+        case NODE_ACTUATOR: return "ACTUATOR";
+        case NODE_HYBRID: return "HYBRID";
+        default: return "UNKNOWN";
+    }
+}
+
+static NodeType roleToNodeType(const char* role) {
+    if (!role || role[0] == '\0') return (NodeType)0;
+    if (strcmp(role, "SENSOR") == 0) return NODE_SENSOR;
+    if (strcmp(role, "ACTUATOR") == 0) return NODE_ACTUATOR;
+    if (strcmp(role, "HYBRID") == 0) return NODE_HYBRID;
+    return (NodeType)0;
+}
+
+static void setNodeOtaUploadError(NodeOtaUploadRequestState* state, const String& msg) {
+    if (!state || state->error[0] != '\0') return;
+    strncpy(state->error, msg.c_str(), sizeof(state->error) - 1);
+    state->error[sizeof(state->error) - 1] = '\0';
+    Serial.printf("[NODE OTA]  ERROR: %s\n", state->error);
+}
+
+static void scanNodeFirmwareMarkers(NodeOtaUploadRequestState* state,
+                                    const uint8_t* data,
+                                    size_t len) {
+    if (!state || !data || len == 0) return;
+
+    for (size_t i = 0; i < len; i++) {
+        const char ch = (char)data[i];
+
+        if (state->versionMarkerReading) {
+            if (ch == '\0') {
+                if (state->versionMarkerLen > 0) {
+                    state->incomingDisplayVersion[state->versionMarkerLen] = '\0';
+                }
+                state->versionMarkerReading = false;
+                state->versionMarkerLen = 0;
+            } else if (ch >= 32 && ch <= 126 &&
+                       state->versionMarkerLen < (NODE_OTA_VERSION_MAX_LEN - 1)) {
+                state->incomingDisplayVersion[state->versionMarkerLen++] = ch;
+            } else {
+                state->versionMarkerReading = false;
+                state->versionMarkerLen = 0;
+            }
+        }
+
+        if (state->roleMarkerReading) {
+            if (ch == '\0') {
+                if (state->roleMarkerLen > 0) state->incomingRole[state->roleMarkerLen] = '\0';
+                state->roleMarkerReading = false;
+                state->roleMarkerLen = 0;
+            } else if (ch >= 'A' && ch <= 'Z' &&
+                       state->roleMarkerLen < (sizeof(state->incomingRole) - 1)) {
+                state->incomingRole[state->roleMarkerLen++] = ch;
+            } else {
+                state->roleMarkerReading = false;
+                state->roleMarkerLen = 0;
+            }
+        }
+
+        if (!state->versionMarkerReading) {
+            if (ch == NODE_OTA_FW_MARKER[state->versionMarkerMatchIndex]) {
+                state->versionMarkerMatchIndex++;
+                if (state->versionMarkerMatchIndex == NODE_OTA_FW_MARKER_LEN) {
+                    state->versionMarkerReading = true;
+                    state->versionMarkerLen = 0;
+                    memset(state->incomingDisplayVersion, 0, sizeof(state->incomingDisplayVersion));
+                    state->versionMarkerMatchIndex = 0;
+                }
+            } else {
+                state->versionMarkerMatchIndex = (ch == NODE_OTA_FW_MARKER[0]) ? 1 : 0;
+            }
+        }
+
+        if (!state->roleMarkerReading) {
+            if (ch == NODE_OTA_ROLE_MARKER[state->roleMarkerMatchIndex]) {
+                state->roleMarkerMatchIndex++;
+                if (state->roleMarkerMatchIndex == NODE_OTA_ROLE_MARKER_LEN) {
+                    state->roleMarkerReading = true;
+                    state->roleMarkerLen = 0;
+                    memset(state->incomingRole, 0, sizeof(state->incomingRole));
+                    state->roleMarkerMatchIndex = 0;
+                }
+            } else {
+                state->roleMarkerMatchIndex = (ch == NODE_OTA_ROLE_MARKER[0]) ? 1 : 0;
+            }
+        }
+    }
+}
+
+static String buildMetaJson();  // forward declaration
+
+static void broadcastMetaIfClientsConnected() {
+    if (ws.count() > 0) wsBroadcast(buildMetaJson());
+}
+
+static bool validateNodeFirmwareDescriptor(NodeOtaUploadRequestState* state) {
+    if (!state) return false;
+    if (state->descBytes < OTA_DESC_BUF_LEN) return false;
+    if (state->metadataValidated) return true;
+
+    const esp_app_desc_t* incoming =
+        reinterpret_cast<const esp_app_desc_t*>(state->descBuf
+            + sizeof(esp_image_header_t)
+            + sizeof(esp_image_segment_header_t));
+
+    strncpy(state->incomingVersion, incoming->version, sizeof(state->incomingVersion) - 1);
+    state->incomingVersion[sizeof(state->incomingVersion) - 1] = '\0';
+    state->metadataValidated = true;
+
+    Serial.printf("[NODE OTA]  Incoming firmware descriptor version: %s\n",
+                  state->incomingVersion[0] ? state->incomingVersion : "(unknown)");
+    return true;
+}
+
+static String buildNodeOtaJson() {
+    JsonDocument doc;
+    doc["type"] = "node_ota_state";
+    doc["active"] = nodeOtaJob.active;
+    doc["helper_online"] = coprocOnline;
+    doc["upload_busy"] = nodeOtaJob.uploadBusy;
+    doc["node_id"] = nodeOtaJob.nodeId;
+    doc["stage"] = (int)nodeOtaJob.stage;
+    doc["progress"] = nodeOtaJob.progress;
+    doc["message"] = nodeOtaJob.message;
+    doc["error"] = nodeOtaJob.error;
+    doc["version"] = nodeOtaJob.version;
+    if (nodeOtaJob.nodeId > 0 && nodeOtaJob.nodeId < nextId) {
+        doc["node_name"] = nodes[nodeOtaJob.nodeId].name;
+        doc["node_mac"] = macToStr(nodes[nodeOtaJob.nodeId].mac);
+    }
+    String out;
+    serializeJson(doc, out);
+    return out;
+}
+
+static void broadcastNodeOtaState() {
+    wsBroadcast(buildNodeOtaJson());
+}
+
+static void clearNodeOtaJob(bool removeFile = true) {
+    if (nodeOtaJob.file) nodeOtaJob.file.close();
+    if (removeFile && LittleFS.exists(NODE_OTA_FILE_PATH)) {
+        LittleFS.remove(NODE_OTA_FILE_PATH);
+    }
+    nodeOtaJob = NodeOtaJobState{};
+}
+
+static void setNodeOtaJobMessage(const String& msg, uint8_t progress = 0) {
+    nodeOtaJob.lastActivityAt = millis();
+    const bool messageChanged = strncmp(nodeOtaJob.message, msg.c_str(), sizeof(nodeOtaJob.message)) != 0;
+    const bool progressChanged = nodeOtaJob.progress != progress;
+    if (messageChanged) {
+        strncpy(nodeOtaJob.message, msg.c_str(), sizeof(nodeOtaJob.message) - 1);
+        nodeOtaJob.message[sizeof(nodeOtaJob.message) - 1] = '\0';
+        Serial.printf("[NODE OTA]  %s\n", nodeOtaJob.message);
+    }
+    if (messageChanged || progressChanged) {
+        nodeOtaJob.progress = progress;
+        nodeOtaJob.stageStartedAt = millis();
+        broadcastNodeOtaState();
+    }
+}
+
+static void setNodeOtaJobError(const String& msg) {
+    nodeOtaJob.stage = NODE_OTA_JOB_ERROR;
+    nodeOtaJob.awaitingAck = false;
+    nodeOtaJob.awaitingFrameType = 0;
+    if (strncmp(nodeOtaJob.error, msg.c_str(), sizeof(nodeOtaJob.error)) != 0) {
+        strncpy(nodeOtaJob.error, msg.c_str(), sizeof(nodeOtaJob.error) - 1);
+        nodeOtaJob.error[sizeof(nodeOtaJob.error) - 1] = '\0';
+    }
+    setNodeOtaJobMessage(msg, nodeOtaJob.progress);
+}
+
+static bool isRecoverableNodeOtaTimeout() {
+    return nodeOtaJob.stage == NODE_OTA_JOB_ERROR &&
+           strncmp(nodeOtaJob.error, "Node OTA timed out.", sizeof(nodeOtaJob.error)) == 0;
+}
+
+static void randomAscii(char* out, size_t len, const char* alphabet) {
+    if (!out || len == 0) return;
+    const size_t alphaLen = strlen(alphabet);
+    if (alphaLen == 0) {
+        out[0] = '\0';
+        return;
+    }
+    for (size_t i = 0; i + 1 < len; i++) {
+        out[i] = alphabet[esp_random() % alphaLen];
+    }
+    out[len - 1] = '\0';
+}
+
+static void buildNodeOtaCredentials() {
+    const char* alnum = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+    snprintf(nodeOtaJob.apSsid, sizeof(nodeOtaJob.apSsid), "NodeOTA-%02X%02X",
+             (unsigned)(nodeOtaJob.sessionId >> 8) & 0xFF,
+             (unsigned)(nodeOtaJob.sessionId) & 0xFF);
+    randomAscii(nodeOtaJob.apPassword, sizeof(nodeOtaJob.apPassword), alnum);
+}
+
+static void requestCoprocReboot() {
+    digitalWrite(COPROC_RESET_PIN, HIGH);
+    delay(80);
+    digitalWrite(COPROC_RESET_PIN, LOW);
+    Serial.println("[C3]  Reboot pulse sent to coprocessor.");
+}
+
+static void resetCoprocRx() {
+    coprocRx = CoprocRxState{};
+}
+
+static void resetCoprocAck() {
+    coprocAck = CoprocAckState{};
+}
+
+static bool sendCoprocFrame(uint8_t type, const void* payload, size_t len) {
+    if (len > COPROC_FRAME_MAX_PAYLOAD) return false;
+    uint8_t headerBuf[sizeof(CoprocFrameHeader)];
+    CoprocFrameHeader hdr{COPROC_FRAME_MAGIC, type, (uint16_t)len};
+    memcpy(headerBuf, &hdr, sizeof(hdr));
+
+    uint8_t crcBuf[2];
+    uint8_t crcData[1 + 2 + COPROC_FRAME_MAX_PAYLOAD] = {0};
+    crcData[0] = type;
+    crcData[1] = (uint8_t)(len & 0xFF);
+    crcData[2] = (uint8_t)((len >> 8) & 0xFF);
+    if (len > 0 && payload) memcpy(crcData + 3, payload, len);
+    uint16_t crc = crc16Ccitt(crcData, len + 3);
+    crcBuf[0] = (uint8_t)(crc & 0xFF);
+    crcBuf[1] = (uint8_t)((crc >> 8) & 0xFF);
+
+    size_t written = coprocSerial.write(headerBuf, sizeof(headerBuf));
+    if (len > 0 && payload) written += coprocSerial.write((const uint8_t*)payload, len);
+    written += coprocSerial.write(crcBuf, sizeof(crcBuf));
+    coprocSerial.flush();
+    return written == (sizeof(headerBuf) + len + sizeof(crcBuf));
+}
+
+static void handleCoprocFrame(uint8_t type, const uint8_t* payload, size_t len) {
+    if (type == COPROC_FRAME_ACK) {
+        if (len < sizeof(CoprocAckPayload)) return;
+        const auto* ack = reinterpret_cast<const CoprocAckPayload*>(payload);
+        if (nodeOtaJob.active && nodeOtaJob.awaitingAck &&
+            nodeOtaJob.awaitingFrameType != COPROC_FRAME_HELLO &&
+            ack->original_type == COPROC_FRAME_HELLO) {
+            coprocOnline = ack->ok != 0;
+            lastCoprocAckAt = millis();
+            return;
+        }
+        coprocAck.ready = true;
+        coprocAck.originalType = ack->original_type;
+        coprocAck.ok = ack->ok != 0;
+        coprocAck.value = ack->value;
+        memcpy(coprocAck.message, ack->message, sizeof(coprocAck.message));
+        nodeOtaJob.lastAckAt = millis();
+        if (ack->original_type != COPROC_FRAME_UPLOAD_CHUNK) {
+            Serial.printf("[C3]  ACK type=0x%02X ok=%u value=%lu msg=\"%s\"\n",
+                          ack->original_type,
+                          ack->ok,
+                          (unsigned long)ack->value,
+                          ack->message);
+        }
+        return;
+    }
+
+    if (type == COPROC_FRAME_STATUS) {
+        if (len < sizeof(CoprocStatusPayload)) return;
+        const auto* status = reinterpret_cast<const CoprocStatusPayload*>(payload);
+        bool recoveredFromTimeout = false;
+        Serial.printf("[C3]  STATUS session=%lu phase=%u progress=%u err=%u msg=\"%s\"\n",
+                      (unsigned long)status->session_id,
+                      status->phase,
+                      status->progress,
+                      status->error_code,
+                      status->message);
+        if (nodeOtaJob.active && status->session_id == nodeOtaJob.sessionId) {
+            nodeOtaJob.lastActivityAt = millis();
+            if (status->phase == COPROC_HELPER_AP_READY) nodeOtaJob.helperApReady = true;
+            if (status->phase == COPROC_HELPER_DONE || status->phase == NODE_OTA_SUCCESS) {
+                nodeOtaJob.helperTransferDone = true;
+                if (nodeOtaJob.stage == NODE_OTA_JOB_ERROR &&
+                    strncmp(nodeOtaJob.error, "Node OTA timed out.", sizeof(nodeOtaJob.error)) == 0) {
+                    nodeOtaJob.stage = NODE_OTA_JOB_WAIT_REJOIN;
+                    recoveredFromTimeout = true;
+                }
+            }
+            if (status->phase == COPROC_HELPER_ERROR || status->phase == NODE_OTA_ERROR) {
+                setNodeOtaJobError(status->message[0] ? status->message : "Coprocessor reported an OTA error.");
+            } else if (recoveredFromTimeout) {
+                setNodeOtaJobMessage("Firmware sent to node. Waiting for node to reconnect...", 95);
+            } else {
+                setNodeOtaJobMessage(status->message[0] ? status->message : "OTA helper status updated.",
+                                     status->progress);
+            }
+        }
+    }
+}
+
+static void processCoprocSerial() {
+    while (coprocSerial.available() > 0) {
+        const uint8_t b = (uint8_t)coprocSerial.read();
+        switch (coprocRx.state) {
+            case CoprocRxState::WAIT_MAGIC_1:
+                if (b == (COPROC_FRAME_MAGIC & 0xFF)) coprocRx.state = CoprocRxState::WAIT_MAGIC_2;
+                break;
+            case CoprocRxState::WAIT_MAGIC_2:
+                if (b == ((COPROC_FRAME_MAGIC >> 8) & 0xFF)) coprocRx.state = CoprocRxState::READ_TYPE;
+                else coprocRx.state = CoprocRxState::WAIT_MAGIC_1;
+                break;
+            case CoprocRxState::READ_TYPE:
+                coprocRx.type = b;
+                coprocRx.state = CoprocRxState::READ_LEN_1;
+                break;
+            case CoprocRxState::READ_LEN_1:
+                coprocRx.length = b;
+                coprocRx.state = CoprocRxState::READ_LEN_2;
+                break;
+            case CoprocRxState::READ_LEN_2:
+                coprocRx.length |= (uint16_t)b << 8;
+                if (coprocRx.length > COPROC_FRAME_MAX_PAYLOAD) {
+                    resetCoprocRx();
+                } else if (coprocRx.length == 0) {
+                    coprocRx.state = CoprocRxState::READ_CRC_1;
+                } else {
+                    coprocRx.payloadIndex = 0;
+                    coprocRx.state = CoprocRxState::READ_PAYLOAD;
+                }
+                break;
+            case CoprocRxState::READ_PAYLOAD:
+                coprocRx.payload[coprocRx.payloadIndex++] = b;
+                if (coprocRx.payloadIndex >= coprocRx.length) {
+                    coprocRx.state = CoprocRxState::READ_CRC_1;
+                }
+                break;
+            case CoprocRxState::READ_CRC_1:
+                coprocRx.expectedCrc = b;
+                coprocRx.state = CoprocRxState::READ_CRC_2;
+                break;
+            case CoprocRxState::READ_CRC_2: {
+                coprocRx.expectedCrc |= (uint16_t)b << 8;
+                uint8_t crcData[1 + 2 + COPROC_FRAME_MAX_PAYLOAD] = {0};
+                crcData[0] = coprocRx.type;
+                crcData[1] = (uint8_t)(coprocRx.length & 0xFF);
+                crcData[2] = (uint8_t)((coprocRx.length >> 8) & 0xFF);
+                if (coprocRx.length > 0) memcpy(crcData + 3, coprocRx.payload, coprocRx.length);
+                const uint16_t actual = crc16Ccitt(crcData, coprocRx.length + 3);
+                if (actual == coprocRx.expectedCrc) {
+                    handleCoprocFrame(coprocRx.type, coprocRx.payload, coprocRx.length);
+                }
+                resetCoprocRx();
+                break;
+            }
+        }
+    }
+}
+
+static bool sendCoprocHello() {
+    resetCoprocAck();
+    Serial.println("[C3]  Sending HELLO to coprocessor...");
+    const bool ok = sendCoprocFrame(COPROC_FRAME_HELLO, nullptr, 0);
+    lastCoprocHelloAt = millis();
+    return ok;
+}
+
+static void beginCoprocAwait(uint8_t frameType, unsigned long now, bool resetRetries = true) {
+    nodeOtaJob.awaitingAck = true;
+    nodeOtaJob.awaitingFrameType = frameType;
+    nodeOtaJob.lastAckAt = now;
+    if (resetRetries) nodeOtaJob.coprocAckRetries = 0;
+}
+
+static bool sendCoprocUploadBeginFrame(unsigned long now, bool resetRetries = true) {
+    CoprocUploadBeginPayload payload{};
+    payload.session_id = nodeOtaJob.sessionId;
+    payload.image_size = (uint32_t)nodeOtaJob.imageSize;
+    payload.image_crc32 = nodeOtaJob.imageCrc32;
+    payload.node_type = (uint8_t)nodeOtaJob.targetType;
+    payload.ap_channel = NODE_OTA_AP_CHANNEL;
+    payload.port = NODE_OTA_PORT;
+    strncpy(payload.version, nodeOtaJob.version, sizeof(payload.version) - 1);
+    strncpy(payload.ssid, nodeOtaJob.apSsid, sizeof(payload.ssid) - 1);
+    strncpy(payload.password, nodeOtaJob.apPassword, sizeof(payload.password) - 1);
+    resetCoprocAck();
+    if (!sendCoprocFrame(COPROC_FRAME_UPLOAD_BEGIN, &payload, sizeof(payload))) {
+        return false;
+    }
+    beginCoprocAwait(COPROC_FRAME_UPLOAD_BEGIN, now, resetRetries);
+    return true;
+}
+
+static bool sendCoprocUploadChunkFrame(unsigned long now, bool resetRetries = true, bool* reachedEnd = nullptr) {
+    if (reachedEnd) *reachedEnd = false;
+    if (!nodeOtaJob.file) {
+        nodeOtaJob.file = LittleFS.open(NODE_OTA_FILE_PATH, "r");
+        if (!nodeOtaJob.file) {
+            return false;
+        }
+    }
+
+    CoprocUploadChunkPayload chunk{};
+    chunk.offset = (uint32_t)nodeOtaJob.uploadOffset;
+    if (!nodeOtaJob.file.seek(nodeOtaJob.uploadOffset, SeekSet)) {
+        return false;
+    }
+
+    const size_t n = nodeOtaJob.file.read(chunk.data, sizeof(chunk.data));
+    if (n == 0) {
+        if (reachedEnd) *reachedEnd = true;
+        return true;
+    }
+
+    resetCoprocAck();
+    if (!sendCoprocFrame(COPROC_FRAME_UPLOAD_CHUNK, &chunk, sizeof(chunk.offset) + n)) {
+        return false;
+    }
+    beginCoprocAwait(COPROC_FRAME_UPLOAD_CHUNK, now, resetRetries);
+    return true;
+}
+
+static bool sendCoprocUploadEndFrame(unsigned long now, bool resetRetries = true) {
+    resetCoprocAck();
+    if (!sendCoprocFrame(COPROC_FRAME_UPLOAD_END, &nodeOtaJob.sessionId, sizeof(nodeOtaJob.sessionId))) {
+        return false;
+    }
+    beginCoprocAwait(COPROC_FRAME_UPLOAD_END, now, resetRetries);
+    return true;
+}
+
+static void initCoprocLink() {
+    pinMode(COPROC_RESET_PIN, OUTPUT);
+    digitalWrite(COPROC_RESET_PIN, LOW);
+    coprocSerial.setRxBufferSize(COPROC_UART_RX_BUFFER_SIZE);
+    coprocSerial.setTxBufferSize(COPROC_UART_TX_BUFFER_SIZE);
+    coprocSerial.begin(COPROC_UART_BAUD, SERIAL_8N1, COPROC_UART_RX_PIN, COPROC_UART_TX_PIN);
+    Serial.printf("[C3]  Coprocessor UART initialized: baud=%u RX=%u TX=%u reset=%u rxbuf=%u txbuf=%u\n",
+                  (unsigned)COPROC_UART_BAUD,
+                  (unsigned)COPROC_UART_RX_PIN,
+                  (unsigned)COPROC_UART_TX_PIN,
+                  (unsigned)COPROC_RESET_PIN,
+                  (unsigned)COPROC_UART_RX_BUFFER_SIZE,
+                  (unsigned)COPROC_UART_TX_BUFFER_SIZE);
+    resetCoprocRx();
+    sendCoprocHello();
+}
+
+static void processCoprocHeartbeat(unsigned long now) {
+    const unsigned long pingInterval = coprocOnline ? COPROC_LINK_PING_MS : 1500UL;
+    if (!nodeOtaJob.active && (now - lastCoprocHelloAt) >= pingInterval) {
+        sendCoprocHello();
+    }
+
+    if (coprocAck.ready && coprocAck.originalType == COPROC_FRAME_HELLO) {
+        const bool wasOnline = coprocOnline;
+        coprocOnline = coprocAck.ok;
+        lastCoprocAckAt = now;
+        lastCoprocNoAckLogAt = 0;
+        if (coprocOnline && !wasOnline) {
+            Serial.println("[C3]  Coprocessor helper online.");
+            broadcastMetaIfClientsConnected();
+        }
+        resetCoprocAck();
+    }
+
+    if (!coprocOnline && lastCoprocHelloAt > 0 && (now - lastCoprocHelloAt) > COPROC_ACK_TIMEOUT_MS) {
+        if (lastCoprocNoAckLogAt == 0 || (now - lastCoprocNoAckLogAt) > 5000UL) {
+            Serial.println("[C3]  No HELLO response from coprocessor yet.");
+            lastCoprocNoAckLogAt = now;
+        }
+    }
+
+    if (coprocOnline && !nodeOtaJob.active && lastCoprocAckAt > 0 &&
+        (now - lastCoprocAckAt) > (COPROC_LINK_PING_MS * 3)) {
+        coprocOnline = false;
+        Serial.println("[C3]  Coprocessor helper heartbeat lost.");
+        broadcastMetaIfClientsConnected();
+    }
+}
+
+static bool sendNodeOtaBegin(uint8_t nodeId, uint8_t attempt = 1) {
+    if (nodeId == 0 || nodeId >= nextId) return false;
+    if (nodes[nodeId].mac[0] == 0) return false;
+
+    MsgNodeOtaBegin msg{};
+    msg.hdr.type = MSG_NODE_OTA_BEGIN;
+    msg.hdr.node_id = nodeId;
+    msg.hdr.node_type = nodes[nodeId].type;
+    msg.session_id = nodeOtaJob.sessionId;
+    msg.image_size = (uint32_t)nodeOtaJob.imageSize;
+    msg.image_crc32 = nodeOtaJob.imageCrc32;
+    msg.port = NODE_OTA_PORT;
+    strncpy(msg.ssid, nodeOtaJob.apSsid, sizeof(msg.ssid) - 1);
+    strncpy(msg.password, nodeOtaJob.apPassword, sizeof(msg.password) - 1);
+    strncpy(msg.version, nodeOtaJob.version, sizeof(msg.version) - 1);
+
+    const esp_err_t err = esp_now_send(nodes[nodeId].mac, reinterpret_cast<uint8_t*>(&msg), sizeof(msg));
+    if (err != ESP_OK) {
+        Serial.printf("[NODE OTA]  Failed to send OTA begin to node #%u on attempt %u\n", nodeId, attempt);
+        return false;
+    }
+
+    Serial.printf("[NODE OTA]  Sent OTA begin to node #%u (%s) attempt %u\n",
+                  nodeId, macToStr(nodes[nodeId].mac).c_str(), attempt);
+    return true;
+}
+
+static void processNodeOtaJob(unsigned long now) {
+    if (!nodeOtaJob.active) return;
+
+    if (nodeOtaJob.awaitingAck) {
+        if (coprocAck.ready && coprocAck.originalType == nodeOtaJob.awaitingFrameType) {
+            const bool ok = coprocAck.ok;
+            const uint8_t originalType = coprocAck.originalType;
+            const uint32_t value = coprocAck.value;
+            char msg[COPROC_STATUS_MESSAGE_LEN];
+            memcpy(msg, coprocAck.message, sizeof(msg));
+            resetCoprocAck();
+            nodeOtaJob.awaitingAck = false;
+            nodeOtaJob.lastActivityAt = now;
+            nodeOtaJob.coprocAckRetries = 0;
+
+            if (!ok) {
+                setNodeOtaJobError(msg[0] ? msg : "Coprocessor rejected the OTA command.");
+                return;
+            }
+
+            if (originalType == COPROC_FRAME_HELLO) {
+                coprocOnline = true;
+            } else if (originalType == COPROC_FRAME_UPLOAD_BEGIN) {
+                nodeOtaJob.stage = NODE_OTA_JOB_COPROC_STREAM;
+                setNodeOtaJobMessage("Streaming firmware to OTA coprocessor...", 25);
+            } else if (originalType == COPROC_FRAME_UPLOAD_CHUNK) {
+                nodeOtaJob.uploadOffset = value;
+                const uint8_t progress = (uint8_t)std::min<size_t>(60,
+                    25 + ((nodeOtaJob.uploadOffset * 35) / std::max<size_t>(1, nodeOtaJob.imageSize)));
+                setNodeOtaJobMessage("Streaming firmware to OTA coprocessor...", progress);
+            } else if (originalType == COPROC_FRAME_UPLOAD_END) {
+                nodeOtaJob.helperApReady = true;
+                nodeOtaJob.stage = NODE_OTA_JOB_SEND_COMMAND;
+                setNodeOtaJobMessage("OTA helper ready. Telling node to start update...", 65);
+            }
+            return;
+        } else if ((now - nodeOtaJob.lastAckAt) > COPROC_ACK_TIMEOUT_MS) {
+            if (nodeOtaJob.coprocAckRetries < COPROC_ACK_RETRY_LIMIT) {
+                nodeOtaJob.coprocAckRetries++;
+                Serial.printf("[NODE OTA]  Retrying coprocessor frame 0x%02X (%u/%u)\n",
+                              nodeOtaJob.awaitingFrameType,
+                              nodeOtaJob.coprocAckRetries,
+                              (unsigned)COPROC_ACK_RETRY_LIMIT);
+                bool resendOk = false;
+                if (nodeOtaJob.awaitingFrameType == COPROC_FRAME_HELLO) {
+                    resendOk = sendCoprocHello();
+                    if (resendOk) beginCoprocAwait(COPROC_FRAME_HELLO, now, false);
+                } else if (nodeOtaJob.awaitingFrameType == COPROC_FRAME_UPLOAD_BEGIN) {
+                    resendOk = sendCoprocUploadBeginFrame(now, false);
+                } else if (nodeOtaJob.awaitingFrameType == COPROC_FRAME_UPLOAD_CHUNK) {
+                    bool reachedEnd = false;
+                    resendOk = sendCoprocUploadChunkFrame(now, false, &reachedEnd);
+                    if (reachedEnd) {
+                        setNodeOtaJobError("Unexpected end of staged firmware while retrying chunk upload.");
+                        return;
+                    }
+                } else if (nodeOtaJob.awaitingFrameType == COPROC_FRAME_UPLOAD_END) {
+                    resendOk = sendCoprocUploadEndFrame(now, false);
+                }
+                if (!resendOk) {
+                    setNodeOtaJobError("Failed to resend the OTA frame to the coprocessor.");
+                    return;
+                }
+                nodeOtaJob.lastActivityAt = now;
+                return;
+            }
+            String timeoutMsg = String("No response from OTA coprocessor");
+            if (nodeOtaJob.awaitingFrameType == COPROC_FRAME_UPLOAD_BEGIN) {
+                timeoutMsg += " during upload begin.";
+            } else if (nodeOtaJob.awaitingFrameType == COPROC_FRAME_UPLOAD_CHUNK) {
+                timeoutMsg += String(" during chunk upload at offset ") + nodeOtaJob.uploadOffset + ".";
+            } else if (nodeOtaJob.awaitingFrameType == COPROC_FRAME_UPLOAD_END) {
+                timeoutMsg += " while starting the OTA AP.";
+            } else if (nodeOtaJob.awaitingFrameType == COPROC_FRAME_HELLO) {
+                timeoutMsg += " during helper handshake.";
+            } else {
+                timeoutMsg += ".";
+            }
+            setNodeOtaJobError(timeoutMsg);
+            return;
+        } else {
+            return;
+        }
+    }
+
+    if (nodeOtaJob.stage == NODE_OTA_JOB_ERROR || nodeOtaJob.stage == NODE_OTA_JOB_SUCCESS) {
+        unsigned long clearDelayMs = 5000UL;
+        if (isRecoverableNodeOtaTimeout()) {
+            clearDelayMs = NODE_OTA_TIMEOUT_RECOVERY_MS;
+        }
+        if ((now - nodeOtaJob.stageStartedAt) > clearDelayMs) {
+            sendCoprocFrame(COPROC_FRAME_ABORT, &nodeOtaJob.sessionId, sizeof(nodeOtaJob.sessionId));
+            clearNodeOtaJob(true);
+        }
+        return;
+    }
+
+    if (nodeOtaJob.stage == NODE_OTA_JOB_WAIT_REJOIN &&
+        (now - nodeOtaJob.stageStartedAt) > NODE_OTA_REJOIN_TIMEOUT_MS) {
+        setNodeOtaJobError("Node did not come back online after flashing.");
+        return;
+    }
+
+    const bool coprocTransferStage =
+        nodeOtaJob.stage == NODE_OTA_JOB_COPROC_WAIT ||
+        nodeOtaJob.stage == NODE_OTA_JOB_COPROC_BEGIN ||
+        nodeOtaJob.stage == NODE_OTA_JOB_COPROC_STREAM ||
+        nodeOtaJob.stage == NODE_OTA_JOB_COPROC_FINALIZE;
+
+    unsigned long maxIdleMs = NODE_OTA_STAGE_TIMEOUT_MS;
+    if (nodeOtaJob.stage == NODE_OTA_JOB_WAIT_TRANSFER && nodeOtaJob.nodeAccepted) {
+        maxIdleMs = NODE_OTA_TRANSFER_TIMEOUT_MS;
+    }
+
+    if (!coprocTransferStage &&
+        nodeOtaJob.stage != NODE_OTA_JOB_WAIT_REJOIN &&
+        nodeOtaJob.stage != NODE_OTA_JOB_WAIT_TRANSFER &&
+        nodeOtaJob.lastActivityAt > 0 &&
+        (now - nodeOtaJob.lastActivityAt) > maxIdleMs) {
+        setNodeOtaJobError("Node OTA timed out.");
+        return;
+    }
+
+    switch (nodeOtaJob.stage) {
+        case NODE_OTA_JOB_STAGED:
+            if (!coprocOnline) {
+                requestCoprocReboot();
+                if (!sendCoprocHello()) {
+                    setNodeOtaJobError("Failed to send HELLO to the OTA coprocessor.");
+                    return;
+                }
+                beginCoprocAwait(COPROC_FRAME_HELLO, now);
+                nodeOtaJob.stage = NODE_OTA_JOB_COPROC_WAIT;
+                setNodeOtaJobMessage("Waiting for OTA coprocessor...", 10);
+                break;
+            }
+            nodeOtaJob.stage = NODE_OTA_JOB_COPROC_BEGIN;
+            [[fallthrough]];
+
+        case NODE_OTA_JOB_COPROC_BEGIN: {
+            if (!sendCoprocUploadBeginFrame(now)) {
+                setNodeOtaJobError("Failed to send upload begin to the OTA coprocessor.");
+                return;
+            }
+            setNodeOtaJobMessage("Preparing OTA coprocessor storage...", 20);
+            break;
+        }
+
+        case NODE_OTA_JOB_COPROC_STREAM: {
+            bool reachedEnd = false;
+            if (!sendCoprocUploadChunkFrame(now, true, &reachedEnd)) {
+                setNodeOtaJobError("Failed to send node firmware chunk to the OTA coprocessor.");
+                return;
+            }
+            if (nodeOtaJob.uploadOffset == 0 && !reachedEnd) {
+                Serial.printf("[NODE OTA]  Sending first coprocessor chunk (%u bytes)\n",
+                              (unsigned)COPROC_UPLOAD_CHUNK_DATA_LEN);
+            }
+            if (reachedEnd) {
+                nodeOtaJob.stage = NODE_OTA_JOB_COPROC_FINALIZE;
+            }
+            break;
+        }
+
+        case NODE_OTA_JOB_COPROC_FINALIZE:
+            if (!sendCoprocUploadEndFrame(now)) {
+                setNodeOtaJobError("Failed to finalize the OTA helper upload.");
+                return;
+            }
+            setNodeOtaJobMessage("Starting OTA helper access point...", 62);
+            break;
+
+        case NODE_OTA_JOB_SEND_COMMAND:
+            nodeOtaJob.commandAttempts = 1;
+            nodeOtaJob.lastCommandAt = now;
+            if (!sendNodeOtaBegin(nodeOtaJob.nodeId, nodeOtaJob.commandAttempts)) {
+                setNodeOtaJobError("Failed to notify the selected node about OTA mode.");
+                return;
+            }
+            nodeOtaJob.stage = NODE_OTA_JOB_WAIT_TRANSFER;
+            setNodeOtaJobMessage("Waiting for node to acknowledge OTA mode...", 68);
+            break;
+
+        case NODE_OTA_JOB_WAIT_TRANSFER:
+            if (!nodeOtaJob.nodeAccepted && (now - nodeOtaJob.lastCommandAt) >= NODE_OTA_BEGIN_RETRY_MS) {
+                if (nodeOtaJob.commandAttempts >= NODE_OTA_BEGIN_MAX_ATTEMPTS) {
+                    setNodeOtaJobError("Node did not acknowledge the OTA request.");
+                    return;
+                }
+                nodeOtaJob.commandAttempts++;
+                nodeOtaJob.lastCommandAt = now;
+                if (!sendNodeOtaBegin(nodeOtaJob.nodeId, nodeOtaJob.commandAttempts)) {
+                    setNodeOtaJobError("Failed to resend the OTA request to the selected node.");
+                    return;
+                }
+                setNodeOtaJobMessage("Retrying OTA request to node...", 69);
+            }
+            if (nodeOtaJob.nodeAccepted &&
+                (now - nodeOtaJob.lastCommandAt) > NODE_OTA_TRANSFER_TIMEOUT_MS) {
+                setNodeOtaJobError("Node OTA timed out.");
+                return;
+            }
+            if (nodeOtaJob.helperTransferDone) {
+                nodeOtaJob.stage = NODE_OTA_JOB_WAIT_REJOIN;
+                setNodeOtaJobMessage("Firmware flashed. Waiting for node to reconnect...", 95);
+            }
+            break;
+
+        case NODE_OTA_JOB_WAIT_REJOIN:
+        case NODE_OTA_JOB_SUCCESS:
+        case NODE_OTA_JOB_ERROR:
+        case NODE_OTA_JOB_IDLE:
+        case NODE_OTA_JOB_COPROC_WAIT:
+            break;
+    }
+}
+
+static void handleNodeOtaUpload(AsyncWebServerRequest* req,
+                                const String& filename,
+                                size_t index,
+                                uint8_t* data,
+                                size_t len,
+                                bool final) {
+    if (!isHttpAuthenticated(req)) return;
+
+    auto* state = reinterpret_cast<NodeOtaUploadRequestState*>(req->_tempObject);
+    if (index == 0) {
+        if (state) {
+            if (state->file) state->file.close();
+            delete state;
+            state = nullptr;
+        }
+        state = new NodeOtaUploadRequestState();
+        req->_tempObject = state;
+        state->started = true;
+        const AsyncWebHeader* sizeHdr = req->getHeader("X-Firmware-Size");
+        if (sizeHdr) state->expectedSize = (size_t)strtoull(sizeHdr->value().c_str(), nullptr, 10);
+        strncpy(state->filename, filename.c_str(), sizeof(state->filename) - 1);
+        state->filename[sizeof(state->filename) - 1] = '\0';
+
+        if (otaUploadBusy || nodeOtaJob.uploadBusy || nodeOtaJob.active) {
+            setNodeOtaUploadError(state, "Another OTA job is already in progress.");
+        } else if (!LittleFS.begin(true)) {
+            setNodeOtaUploadError(state, "LittleFS is not available.");
+        } else {
+            if (LittleFS.exists(NODE_OTA_FILE_PATH)) LittleFS.remove(NODE_OTA_FILE_PATH);
+            state->file = LittleFS.open(NODE_OTA_FILE_PATH, "w");
+            if (!state->file) {
+                setNodeOtaUploadError(state, "Could not open temporary storage for node firmware.");
+            } else {
+                nodeOtaJob.uploadBusy = true;
+                Serial.printf("[NODE OTA]  Upload started: \"%s\" (%u bytes)\n",
+                              state->filename[0] ? state->filename : "(unnamed)",
+                              (unsigned)state->expectedSize);
+            }
+        }
+    }
+
+    if (!state) return;
+    if (state->error[0] != '\0') {
+        if (final) {
+            if (state->file) state->file.close();
+            if (LittleFS.exists(NODE_OTA_FILE_PATH)) LittleFS.remove(NODE_OTA_FILE_PATH);
+        }
+        return;
+    }
+
+    if (len > 0) {
+        if (index == 0 && data[0] != ESP_IMAGE_HEADER_MAGIC) {
+            setNodeOtaUploadError(state, "Uploaded file is not a valid ESP32 application image.");
+        }
+
+        scanNodeFirmwareMarkers(state, data, len);
+        state->crc32 = crc32Update(state->crc32, data, len);
+
+        const size_t copyLen = std::min<size_t>(len, OTA_DESC_BUF_LEN - state->descBytes);
+        if (copyLen > 0) {
+            memcpy(state->descBuf + state->descBytes, data, copyLen);
+            state->descBytes += copyLen;
+            if (state->descBytes >= OTA_DESC_BUF_LEN) {
+                validateNodeFirmwareDescriptor(state);
+            }
+        }
+
+        const size_t written = state->file.write(data, len);
+        if (written != len) {
+            setNodeOtaUploadError(state, "Failed to store the node firmware image.");
+        } else {
+            state->written += written;
+        }
+    }
+
+    if (final && state->error[0] == '\0') {
+        state->file.close();
+        if (state->written == 0) {
+            setNodeOtaUploadError(state, "Empty firmware upload received.");
+        } else if (state->expectedSize > 0 && state->written != state->expectedSize) {
+            setNodeOtaUploadError(state, String("Upload size mismatch: wrote ")
+                + state->written + " of " + state->expectedSize + " bytes.");
+        } else if (state->incomingDisplayVersion[0] == '\0' && state->incomingVersion[0] != '\0') {
+            strncpy(state->incomingDisplayVersion, state->incomingVersion, sizeof(state->incomingDisplayVersion) - 1);
+            state->incomingDisplayVersion[sizeof(state->incomingDisplayVersion) - 1] = '\0';
+        }
+
+        if (state->error[0] == '\0' && state->incomingDisplayVersion[0] == '\0') {
+            setNodeOtaUploadError(state, "Firmware version marker is missing. Rebuild the node firmware with the current OTA markers.");
+        } else if (roleToNodeType(state->incomingRole) == 0) {
+            setNodeOtaUploadError(state, "Firmware node-role marker is missing or invalid.");
+        } else {
+            state->ok = true;
+            Serial.printf("[NODE OTA]  Firmware staged successfully. Role=%s Version=%s CRC32=%08X\n",
+                          state->incomingRole, state->incomingDisplayVersion, state->crc32);
+        }
+    }
+
+    if (final && !state->ok) {
+        if (state->file) state->file.close();
+        if (LittleFS.exists(NODE_OTA_FILE_PATH)) LittleFS.remove(NODE_OTA_FILE_PATH);
+        nodeOtaJob.uploadBusy = false;
     }
 }
 
@@ -1120,6 +2106,9 @@ static String buildMetaJson() {
     doc["ota_busy"]        = otaUploadBusy;
     doc["ota_max_bytes"]   = (uint32_t)getGatewayOtaSlotSize();
     doc["ota_project"]     = esp_app_get_description()->project_name;
+    doc["node_ota_busy"]   = nodeOtaJob.active || nodeOtaJob.uploadBusy;
+    doc["node_ota_helper_online"] = coprocOnline;
+    doc["node_ota_host"]   = NODE_OTA_HOST;
     String out;
     serializeJson(doc, out);
     return out;
@@ -1339,6 +2328,34 @@ static void processRxQueue() {
                 sendSensorSchemaGet(pkt.mac, assignId, hdr->node_type);
                 // Persist the registry so nodes survive a gateway reboot
                 if (isNew) saveNodesToNvs();
+
+                if (nodeOtaJob.active &&
+                    nodeOtaJob.nodeId == assignId) {
+                    nodeOtaJob.lastActivityAt = millis();
+                    const bool versionMatches = strncmp(nodes[assignId].fw_version,
+                                                        nodeOtaJob.version,
+                                                        sizeof(nodes[assignId].fw_version) - 1) == 0;
+                    const bool versionChangedAcrossOta =
+                        strncmp(nodeOtaJob.priorVersion,
+                                nodeOtaJob.version,
+                                sizeof(nodeOtaJob.priorVersion) - 1) != 0;
+                    const bool timeoutRecovery =
+                        nodeOtaJob.stage == NODE_OTA_JOB_ERROR &&
+                        strncmp(nodeOtaJob.error, "Node OTA timed out.", sizeof(nodeOtaJob.error)) == 0;
+                    const bool otaCompletionConfirmed =
+                        nodeOtaJob.helperTransferDone || (versionChangedAcrossOta && versionMatches);
+                    if ((nodeOtaJob.stage == NODE_OTA_JOB_WAIT_TRANSFER ||
+                         nodeOtaJob.stage == NODE_OTA_JOB_WAIT_REJOIN ||
+                         timeoutRecovery) &&
+                        otaCompletionConfirmed) {
+                        nodeOtaJob.stage = NODE_OTA_JOB_SUCCESS;
+                        setNodeOtaJobMessage(String("Node reconnected with firmware v") + nodes[assignId].fw_version + ".", 100);
+                        broadcastNodeOtaState();
+                    } else if (timeoutRecovery) {
+                        setNodeOtaJobMessage("Node reconnected. Waiting for final OTA confirmation...", 96);
+                    }
+                }
+
                 wsBroadcast(buildNodesJson());
                 wsBroadcast(buildDiscoveredJson());
                 continue;
@@ -1429,6 +2446,26 @@ static void processRxQueue() {
 
                 Serial.printf("[MESH] Node #%d actuator mask: 0x%02X\n", id, mask);
 
+                break;
+            }
+
+            case MSG_NODE_OTA_STATUS: {
+                if (pkt.len < (int)sizeof(MsgNodeOtaStatus)) break;
+                auto* st = (MsgNodeOtaStatus*)pkt.data;
+                const uint8_t id = hdr->node_id;
+                if (id == 0 || id >= nextId) break;
+                if (!nodeOtaJob.active || id != nodeOtaJob.nodeId || st->session_id != nodeOtaJob.sessionId) break;
+
+                nodeOtaJob.nodeAccepted = true;
+                nodeOtaJob.lastActivityAt = millis();
+                if (st->phase == NODE_OTA_ACCEPTED) {
+                    setNodeOtaJobMessage("Node accepted OTA request. Switching to OTA Wi-Fi...", 72);
+                } else if (st->phase == NODE_OTA_ERROR) {
+                    setNodeOtaJobError(st->message[0] ? st->message : "Node rejected the OTA request.");
+                } else {
+                    setNodeOtaJobMessage(st->message[0] ? st->message : "Node OTA status updated.",
+                                         st->progress);
+                }
                 break;
             }
 
@@ -1564,6 +2601,7 @@ static void onWsEvent(AsyncWebSocket*, AsyncWebSocketClient* client,
                 client->text(buildMetaJson());
                 client->text(buildNodesJson());
                 client->text(buildDiscoveredJson());
+                client->text(buildNodeOtaJson());
             } else {
                 // Credentials are set - client must authenticate first
                 client->text("{\"type\":\"auth_required\"}");
@@ -1594,6 +2632,7 @@ static void onWsEvent(AsyncWebSocket*, AsyncWebSocketClient* client,
                     client->text(buildMetaJson());
                     client->text(buildNodesJson());
                     client->text(buildDiscoveredJson());
+                    client->text(buildNodeOtaJson());
                     break;
                 }
                 const char* tok = doc["token"] | "";
@@ -1606,6 +2645,7 @@ static void onWsEvent(AsyncWebSocket*, AsyncWebSocketClient* client,
                     client->text(buildMetaJson());
                     client->text(buildNodesJson());
                     client->text(buildDiscoveredJson());
+                    client->text(buildNodeOtaJson());
                     Serial.printf("[AUTH]  WS client #%u authenticated\n", client->id());
                 } else {
                     client->text("{\"type\":\"auth_fail\"}");
@@ -2109,6 +3149,108 @@ static void setupRoutes() {
         },
         handleGatewayOtaUpload
     );
+    server.on("/api/node/ota", HTTP_POST,
+        [](AsyncWebServerRequest* req) {
+            if (!isHttpAuthenticated(req)) {
+                req->send(401, "application/json", R"({"ok":false,"error":"unauthorized"})");
+                return;
+            }
+
+            auto* state = reinterpret_cast<NodeOtaUploadRequestState*>(req->_tempObject);
+            const AsyncWebHeader* nodeHdr = req->getHeader("X-Node-Id");
+            const uint8_t nodeId = nodeHdr ? (uint8_t)atoi(nodeHdr->value().c_str()) : 0;
+
+            auto cleanup = [&]() {
+                if (state) {
+                    if (state->file) state->file.close();
+                    delete state;
+                    req->_tempObject = nullptr;
+                }
+                nodeOtaJob.uploadBusy = false;
+            };
+
+            if (!state || !state->started) {
+                req->send(400, "application/json", R"({"ok":false,"error":"No node firmware upload received."})");
+                cleanup();
+                return;
+            }
+
+            if (state->error[0] != '\0') {
+                JsonDocument doc;
+                doc["ok"] = false;
+                doc["error"] = state->error;
+                String body;
+                serializeJson(doc, body);
+                req->send(400, "application/json", body);
+                if (LittleFS.exists(NODE_OTA_FILE_PATH)) LittleFS.remove(NODE_OTA_FILE_PATH);
+                cleanup();
+                return;
+            }
+
+            if (!state->ok) {
+                req->send(500, "application/json", R"({"ok":false,"error":"Node firmware upload did not complete."})");
+                if (LittleFS.exists(NODE_OTA_FILE_PATH)) LittleFS.remove(NODE_OTA_FILE_PATH);
+                cleanup();
+                return;
+            }
+
+            if (nodeId == 0 || nodeId >= nextId || nodes[nodeId].mac[0] == 0) {
+                req->send(400, "application/json", R"({"ok":false,"error":"Selected node is invalid."})");
+                if (LittleFS.exists(NODE_OTA_FILE_PATH)) LittleFS.remove(NODE_OTA_FILE_PATH);
+                cleanup();
+                return;
+            }
+
+            if (!nodes[nodeId].online) {
+                req->send(400, "application/json", R"({"ok":false,"error":"Selected node must be online before OTA can begin."})");
+                if (LittleFS.exists(NODE_OTA_FILE_PATH)) LittleFS.remove(NODE_OTA_FILE_PATH);
+                cleanup();
+                return;
+            }
+
+            const NodeType uploadedType = roleToNodeType(state->incomingRole);
+            if (uploadedType == 0 || uploadedType != nodes[nodeId].type) {
+                JsonDocument doc;
+                doc["ok"] = false;
+                doc["error"] = String("Firmware type mismatch. Selected node expects ")
+                    + nodeTypeToRole(nodes[nodeId].type) + " firmware.";
+                String body;
+                serializeJson(doc, body);
+                req->send(400, "application/json", body);
+                if (LittleFS.exists(NODE_OTA_FILE_PATH)) LittleFS.remove(NODE_OTA_FILE_PATH);
+                cleanup();
+                return;
+            }
+
+            nodeOtaJob = NodeOtaJobState{};
+            nodeOtaJob.nodeId = nodeId;
+            nodeOtaJob.targetType = uploadedType;
+            nodeOtaJob.stage = NODE_OTA_JOB_STAGED;
+            nodeOtaJob.sessionId = esp_random();
+            nodeOtaJob.imageSize = state->written;
+            nodeOtaJob.imageCrc32 = state->crc32;
+            nodeOtaJob.stageStartedAt = millis();
+            nodeOtaJob.lastActivityAt = nodeOtaJob.stageStartedAt;
+            strncpy(nodeOtaJob.version, state->incomingDisplayVersion, sizeof(nodeOtaJob.version) - 1);
+            strncpy(nodeOtaJob.priorVersion, nodes[nodeId].fw_version, sizeof(nodeOtaJob.priorVersion) - 1);
+            strncpy(nodeOtaJob.filename, state->filename, sizeof(nodeOtaJob.filename) - 1);
+            buildNodeOtaCredentials();
+            nodeOtaJob.active = true;
+            setNodeOtaJobMessage(String("Node firmware uploaded for ") + nodes[nodeId].name + ". Preparing OTA helper...", 5);
+
+            JsonDocument doc;
+            doc["ok"] = true;
+            doc["queued"] = true;
+            doc["session_id"] = nodeOtaJob.sessionId;
+            doc["version"] = nodeOtaJob.version;
+            String body;
+            serializeJson(doc, body);
+            req->send(200, "application/json", body);
+            cleanup();
+            broadcastNodeOtaState();
+        },
+        handleNodeOtaUpload
+    );
     server.onNotFound([](AsyncWebServerRequest* req) {
         Serial.printf("[HTTP] 404: %s\n", req->url().c_str());
         req->send(404, "text/plain", "Not found");
@@ -2196,6 +3338,8 @@ void setup() {
     // addPeer() calls inside loadNodesFromNvs() succeed.
     loadNodesFromNvs();
 
+    initCoprocLink();
+
     Serial.printf("[ESP-NOW] Ready - MAC: %s  Ch: %d\n",
                   WiFi.macAddress().c_str(), wifiChannel);
 
@@ -2225,6 +3369,9 @@ void loop() {
     unsigned long now = millis();
 
     processRxQueue();
+    processCoprocSerial();
+    processCoprocHeartbeat(now);
+    processNodeOtaJob(now);
     updateGwLed();
 
     if (otaRebootPending && now >= otaRebootAtMs) {
@@ -2276,3 +3423,15 @@ void loop() {
     ws.cleanupClients();
     delay(10);
 }
+
+
+
+
+
+
+
+
+
+
+
+

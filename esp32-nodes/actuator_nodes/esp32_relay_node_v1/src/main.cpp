@@ -14,17 +14,20 @@
      *          - Implements a simple touch input handling for toggling relays, with debounce logic.
      * 
      *        Note: This code is intended as a starting point and may require adjustments based on specific hardware configurations and requirements.
- * @version 1.0.2
+ * @version 1.1.0
     * @author Mrinal (@atechofficials)
  */
-#define FW_VERSION "1.0.2"
+#define FW_VERSION "1.1.0"
 
 #include <Arduino.h>
 #include <WiFi.h>
+#include <HTTPClient.h>
 #include <esp_now.h>
 #include <esp_wifi.h>
 #include <Preferences.h>
 #include <Adafruit_NeoPixel.h>
+#include <Update.h>
+#include <ArduinoJson.h>
 #include "mesh_protocol.h"
 
 // User config
@@ -91,6 +94,9 @@ static char relayLabel[4][16] =
   "Relay 3",
   "Relay 4"
 };
+static const char kNodeFirmwareRoleMarker[] = "NODETYPE:ACTUATOR";
+static const char kNodeFirmwareVersionMarker[] = "NODEFWVER:" FW_VERSION;
+static volatile uint32_t gNodeFirmwareMarkerChecksum = 0;
 #define SETTING_ID_RELAY_PERSIST 0
 #define SETTING_ID_LED_EN 1
 
@@ -100,6 +106,27 @@ static bool sSettingLedEn = true;
 // Gateway-loss detection 
 #define GW_LOST_THRESHOLD   3
 static volatile uint8_t txFailCount = 0;
+
+struct PendingNodeOta {
+    bool     pending = false;
+    uint32_t sessionId = 0;
+    uint32_t imageSize = 0;
+    uint32_t imageCrc32 = 0;
+    uint16_t port = 80;
+    char     ssid[NODE_OTA_SSID_LEN] = {0};
+    char     password[NODE_OTA_PASS_LEN] = {0};
+    char     version[NODE_OTA_VERSION_LEN] = {0};
+};
+
+static PendingNodeOta pendingOta;
+static bool otaRunning = false;
+
+static void touchFirmwareMarkers() {
+    uint32_t sum = 0;
+    for (size_t i = 0; kNodeFirmwareRoleMarker[i] != '\0'; i++) sum += (uint8_t)kNodeFirmwareRoleMarker[i];
+    for (size_t i = 0; kNodeFirmwareVersionMarker[i] != '\0'; i++) sum += (uint8_t)kNodeFirmwareVersionMarker[i];
+    gNodeFirmwareMarkerChecksum = sum;
+}
 
 // RX queue
 struct RxPacket { uint8_t mac[6]; uint8_t data[250]; int len; };
@@ -567,6 +594,208 @@ static void sendSettingsData() {
     Serial.printf("  %s\n", r == ESP_OK ? "ok" : "error");
 }
 
+static uint32_t crc32Update(uint32_t crc, const uint8_t* data, size_t len) {
+    crc = ~crc;
+    while (len--) {
+        crc ^= *data++;
+        for (uint8_t i = 0; i < 8; i++) {
+            crc = (crc >> 1) ^ (0xEDB88320u & (-(int32_t)(crc & 1u)));
+        }
+    }
+    return ~crc;
+}
+
+static void sendOtaStatusNow(uint8_t phase, uint8_t progress, uint8_t errorCode, const char* message) {
+    if (!hasMaster || myNodeId == 0 || pendingOta.sessionId == 0) return;
+
+    MsgNodeOtaStatus status{};
+    status.hdr.type = MSG_NODE_OTA_STATUS;
+    status.hdr.node_id = myNodeId;
+    status.hdr.node_type = NODE_ACTUATOR;
+    status.session_id = pendingOta.sessionId;
+    status.phase = phase;
+    status.progress = progress;
+    status.error_code = errorCode;
+    if (message) strncpy(status.message, message, sizeof(status.message) - 1);
+    esp_now_send(masterMac, reinterpret_cast<uint8_t*>(&status), sizeof(status));
+}
+
+static bool postOtaStatusToHelper(uint8_t phase, uint8_t progress, uint8_t errorCode, const char* message) {
+    if (WiFi.status() != WL_CONNECTED || pendingOta.port == 0) return false;
+
+    WiFiClient client;
+    client.setTimeout(2000);
+    HTTPClient http;
+    String url = String("http://192.168.4.1:") + String(pendingOta.port) + "/status";
+    if (!http.begin(client, url)) return false;
+    http.setTimeout(2000);
+    http.useHTTP10(true);
+
+    JsonDocument doc;
+    doc["session_id"] = pendingOta.sessionId;
+    doc["node_id"] = myNodeId;
+    doc["phase"] = phase;
+    doc["progress"] = progress;
+    doc["error_code"] = errorCode;
+    doc["message"] = message ? message : "";
+
+    String body;
+    serializeJson(doc, body);
+    http.addHeader("Content-Type", "application/json");
+    const int code = http.POST(body);
+    Serial.printf("[OTA]  Helper status POST phase=%u result=%d\n", phase, code);
+    http.end();
+    return code == 200;
+}
+
+static void failNodeOta(const char* message, uint8_t progress = 100, uint8_t errorCode = 1) {
+    Serial.printf("[OTA]  ERROR: %s\n", message ? message : "unknown");
+    sendOtaStatusNow(NODE_OTA_ERROR, progress, errorCode, message ? message : "OTA failed");
+    postOtaStatusToHelper(NODE_OTA_ERROR, progress, errorCode, message ? message : "OTA failed");
+    delay(300);
+    ESP.restart();
+}
+
+static void runPendingOta() {
+    if (!pendingOta.pending || otaRunning) return;
+    otaRunning = true;
+    pendingOta.pending = false;
+
+    sendOtaStatusNow(NODE_OTA_ACCEPTED, 5, 0, "Switching to OTA mode");
+    delay(80);
+
+    esp_now_deinit();
+    WiFi.disconnect(true, true);
+    delay(100);
+    WiFi.mode(WIFI_STA);
+    WiFi.setSleep(false);
+    WiFi.persistent(false);
+
+    Serial.printf("[OTA]  Connecting to helper AP \"%s\"\n", pendingOta.ssid);
+    WiFi.begin(pendingOta.ssid, pendingOta.password);
+
+    const unsigned long connectStarted = millis();
+    while (WiFi.status() != WL_CONNECTED && (millis() - connectStarted) < 20000) {
+        delay(250);
+    }
+    if (WiFi.status() != WL_CONNECTED) {
+        failNodeOta("Could not connect to OTA helper AP.", 15, 2);
+    }
+
+    Serial.printf("[OTA]  Helper AP connected: local=%s gateway=%s rssi=%d\n",
+                  WiFi.localIP().toString().c_str(),
+                  WiFi.gatewayIP().toString().c_str(),
+                  WiFi.RSSI());
+    postOtaStatusToHelper(NODE_OTA_AP_CONNECTING, 20, 0, "Connected to OTA helper AP");
+    delay(250);
+
+    WiFiClient client;
+    client.setTimeout(15000);
+    HTTPClient http;
+    const String url = String("http://192.168.4.1:") + String(pendingOta.port) + "/firmware.bin";
+    if (!http.begin(client, url)) {
+        failNodeOta("Could not open OTA HTTP session.", 25, 3);
+    }
+
+    http.setTimeout(15000);
+    http.useHTTP10(true);
+    Serial.printf("[OTA]  Downloading from %s\n", url.c_str());
+    const int code = http.GET();
+    Serial.printf("[OTA]  Firmware GET result: %d\n", code);
+    if (code != HTTP_CODE_OK) {
+        http.end();
+        failNodeOta("Firmware download request failed.", 25, 4);
+    }
+
+    WiFiClient* stream = http.getStreamPtr();
+    if (!Update.begin(pendingOta.imageSize)) {
+        http.end();
+        failNodeOta("Not enough OTA flash space on node.", 30, 5);
+    }
+
+    // Keep the helper HTTP connection dedicated to the firmware stream.
+
+    uint8_t buffer[1024];
+    size_t written = 0;
+    uint32_t crc32 = 0xFFFFFFFFu;
+    uint8_t lastProgress = 30;
+    unsigned long lastDataAt = millis();
+
+    while (written < pendingOta.imageSize) {
+        size_t avail = stream->available();
+        if (avail == 0) {
+            if (!http.connected()) {
+                delay(20);
+                avail = stream->available();
+                if (avail == 0) break;
+            }
+            if ((millis() - lastDataAt) > 20000UL) {
+                http.end();
+                failNodeOta("Firmware stream timed out.", 80, 7);
+            }
+            delay(2);
+            continue;
+        }
+
+        size_t toRead = pendingOta.imageSize - written;
+        if (toRead > avail) toRead = avail;
+        if (toRead > sizeof(buffer)) toRead = sizeof(buffer);
+        const int got = stream->readBytes(reinterpret_cast<char*>(buffer), toRead);
+        if (got <= 0) {
+            if ((millis() - lastDataAt) > 20000UL) {
+                http.end();
+                failNodeOta("Firmware stream stalled.", 80, 7);
+            }
+            delay(2);
+            continue;
+        }
+
+        lastDataAt = millis();
+        if (Update.write(buffer, (size_t)got) != (size_t)got) {
+            Serial.print("[OTA]  Update.write failed: ");
+            Update.printError(Serial);
+            http.end();
+            failNodeOta("Writing firmware to flash failed.", 75, 6);
+        }
+
+        crc32 = crc32Update(crc32, buffer, (size_t)got);
+        written += (size_t)got;
+
+        const uint8_t progress = (uint8_t)(30 + ((written * 55) / pendingOta.imageSize));
+        if (progress >= lastProgress + 5 || progress >= 85) {
+            lastProgress = progress;
+        }
+    }
+    Serial.printf("[OTA]  Download loop ended: wrote=%u/%u connected=%d available=%u\n",
+                  (unsigned)written,
+                  (unsigned)pendingOta.imageSize,
+                  http.connected() ? 1 : 0,
+                  (unsigned)stream->available());
+    http.end();
+
+    if (written != pendingOta.imageSize) {
+        failNodeOta("Downloaded firmware size mismatch.", 85, 7);
+    }
+    if (crc32 != pendingOta.imageCrc32) {
+        failNodeOta("Downloaded firmware checksum mismatch.", 88, 8);
+    }
+
+    Serial.println("[OTA]  Finalizing downloaded firmware...");
+    if (!Update.end(true)) {
+        Serial.print("[OTA]  Update.end failed: ");
+        Update.printError(Serial);
+        failNodeOta("Firmware finalization failed.", 95, 9);
+    }
+    if (!Update.isFinished()) {
+        failNodeOta("Firmware finalization incomplete.", 95, 9);
+    }
+
+    Serial.println("[OTA]  Firmware finalized successfully. Rebooting...");
+    WiFi.disconnect(true, true);
+    delay(400);
+    ESP.restart();
+}
+
 // *****************************************************************************
 //  Disconnect helper
 // *****************************************************************************
@@ -788,6 +1017,27 @@ static void processRxQueue() {
                 break;
             }
 
+            case MSG_NODE_OTA_BEGIN: {
+                if (pkt.len < (int)sizeof(MsgNodeOtaBegin)) break;
+                if (nodeState != STATE_PAIRED && nodeState != STATE_DISC_PEND && nodeState != STATE_GW_LOST) break;
+
+                auto* ota = (MsgNodeOtaBegin*)pkt.data;
+                pendingOta = PendingNodeOta{};
+                pendingOta.pending = true;
+                pendingOta.sessionId = ota->session_id;
+                pendingOta.imageSize = ota->image_size;
+                pendingOta.imageCrc32 = ota->image_crc32;
+                pendingOta.port = ota->port;
+                strncpy(pendingOta.ssid, ota->ssid, sizeof(pendingOta.ssid) - 1);
+                strncpy(pendingOta.password, ota->password, sizeof(pendingOta.password) - 1);
+                strncpy(pendingOta.version, ota->version, sizeof(pendingOta.version) - 1);
+
+                Serial.printf("[OTA]  Node OTA request received. version=%s size=%lu\n",
+                              pendingOta.version, (unsigned long)pendingOta.imageSize);
+                sendOtaStatusNow(NODE_OTA_ACCEPTED, 1, 0, "OTA request accepted");
+                break;
+            }
+
             default:
                 break;
         }
@@ -801,6 +1051,7 @@ void setup() {
     Serial.begin(115200);
     delay(200);
     Serial.printf("\n[BOOT] %s starting...\n", NODE_NAME);
+    touchFirmwareMarkers();
 
     led.begin();
     led.setBrightness(60);
@@ -905,6 +1156,7 @@ void setup() {
 void loop() {
     unsigned long now = millis();
 
+    runPendingOta();
     handleButton();
     handleTouchInputs();
     processRxQueue();
@@ -950,3 +1202,7 @@ void loop() {
 
     delay(50);
 }
+
+
+
+

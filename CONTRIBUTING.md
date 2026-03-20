@@ -2,7 +2,7 @@
 
 Thank you for contributing to the ESPNow Mesh System.
 
-This project is an ESP32-based mesh platform built around an ESP32-S3 gateway, schema-driven sensor nodes, and actuator nodes such as relay controllers. Contributions are welcome across firmware, protocol design, dashboard UX, documentation, and hardware support.
+This project is an ESP32-based mesh platform built around an ESP32-S3 gateway, an ESP32-C3 gateway coprocessor, schema-driven sensor nodes, and actuator nodes such as relay controllers. Contributions are welcome across firmware, protocol design, dashboard UX, documentation, and hardware support.
 
 ---
 
@@ -15,10 +15,12 @@ This project is an ESP32-based mesh platform built around an ESP32-S3 gateway, s
 - [Architecture Guidelines](#architecture-guidelines)
 - [Ways to Contribute](#ways-to-contribute)
 - [Working on the Gateway Firmware](#working-on-the-gateway-firmware)
+- [Working on the Gateway Coprocessor Firmware](#working-on-the-gateway-coprocessor-firmware)
 - [Working on the Web Interface](#working-on-the-web-interface)
 - [Working on Sensor Nodes](#working-on-sensor-nodes)
 - [Working on Actuator Nodes](#working-on-actuator-nodes)
 - [Changing mesh_protocol.h](#changing-mesh_protocolh)
+- [Changing coproc_ota_protocol.h](#changing-coproc_ota_protocolh)
 - [Versioning Guidelines](#versioning-guidelines)
 - [Pull Request Checklist](#pull-request-checklist)
 - [Ground Rules](#ground-rules)
@@ -31,12 +33,14 @@ Current file versions:
 
 | Component | Current Version |
 |----------|-----------------|
-| ESP32-S3 Gateway firmware `main.cpp` | `v1.9.0` |
-| ESP32 Sensor Node firmware `main.cpp` | `v2.0.1` |
-| ESP32 Actuator Relay Node firmware `main.cpp` | `v1.0.2` |
-| `mesh_protocol.h` | `v3.1.0` |
-| `index.html` | `v3.6` |
-| `app.js` | `v3.8` |
+| ESP32-S3 Gateway firmware `main.cpp` | `v2.0.0` |
+| ESP32-C3 Gateway Coprocessor firmware `main.cpp` | `v0.1.0` |
+| ESP32 Sensor Node firmware `main.cpp` | `v2.1.0` |
+| ESP32 Actuator Relay Node firmware `main.cpp` | `v1.1.0` |
+| `mesh_protocol.h` | `v3.2.0` |
+| `coproc_ota_protocol.h` | `v1.0.0` |
+| `index.html` | `v3.7` |
+| `app.js` | `v3.9` |
 | `style.css` | `v3.5` |
 
 Current supported node categories:
@@ -44,43 +48,55 @@ Current supported node categories:
 - Actuator nodes
 - Hybrid nodes are reserved in the protocol for future development
 
+The current Node OTA system has been validated with:
+- same-version reflashing
+- firmware upgrades
+- firmware downgrades
+- sensor-node OTA
+- relay-node OTA
+
 ---
 
 ## Repository Structure
 
 ```text
 espnow-mesh-system/
-├── README.md
-├── CONTRIBUTING.md
-├── esp32-gateway/
-│   ├── README.md
-│   └── gateway_v1/
-│       ├── src/main.cpp
-│       ├── include/mesh_protocol.h
-│       ├── data/
-│       │   ├── index.html
-│       │   ├── js/app.js
-│       │   └── css/style.css
-│       ├── partitions_8mb_noot.csv
-│       ├── partitions_8mb_ota.csv
-│       ├── platformio.ini
-│       └── README.md
-└── esp32-nodes/
-    ├── README.md
-    ├── sensor_nodes/
-    │   ├── README.md
-    │   └── envo_mini_v1/
-    │       ├── src/main.cpp
-    │       ├── include/mesh_protocol.h
-    │       ├── platformio.ini
-    │       └── README.md
-    └── actuator_nodes/
-        ├── README.md
-        └── esp32_relay_node_v1/
-            ├── src/main.cpp
-            ├── include/mesh_protocol.h
-            ├── platformio.ini
-            └── README.md
+|-- README.md
+|-- CONTRIBUTING.md
+|-- esp32-gateway/
+|   |-- README.md
+|   `-- gateway_v1/
+|       |-- src/main.cpp
+|       |-- include/mesh_protocol.h
+|       |-- include/coproc_ota_protocol.h
+|       |-- coprocessor_esp32c3/
+|       |   |-- src/main.cpp
+|       |   |-- include/coproc_ota_protocol.h
+|       |   `-- platformio.ini
+|       |-- data/
+|       |   |-- index.html
+|       |   |-- js/app.js
+|       |   `-- css/style.css
+|       |-- partitions_8mb_noot.csv
+|       |-- partitions_8mb_ota.csv
+|       |-- platformio.ini
+|       `-- README.md
+`-- esp32-nodes/
+    |-- README.md
+    |-- sensor_nodes/
+    |   |-- README.md
+    |   `-- envo_mini_v1/
+    |       |-- src/main.cpp
+    |       |-- include/mesh_protocol.h
+    |       |-- platformio.ini
+    |       `-- README.md
+    `-- actuator_nodes/
+        |-- README.md
+        `-- esp32_relay_node_v1/
+            |-- src/main.cpp
+            |-- include/mesh_protocol.h
+            |-- platformio.ini
+            `-- README.md
 ```
 
 ---
@@ -123,6 +139,16 @@ pio run --target upload
 pio device monitor
 ```
 
+### Gateway coprocessor
+
+From `esp32-gateway/gateway_v1/coprocessor_esp32c3/`:
+
+```bash
+pio run --target erase
+pio run --target upload
+pio device monitor
+```
+
 ### Sensor node
 
 From the specific sensor node directory:
@@ -149,7 +175,7 @@ pio device monitor
 
 This project is built around a few important design principles.
 
-### 1. Shared binary protocol
+### 1. Shared binary mesh protocol
 
 All node-to-gateway ESP-NOW communication uses packed C structs defined in `mesh_protocol.h`.
 
@@ -158,7 +184,15 @@ This file is the protocol contract and must remain identical across:
 - sensor node firmware
 - actuator node firmware
 
-### 2. Schema-driven system design
+### 2. Shared gateway-helper OTA transport
+
+The ESP32-S3 gateway and ESP32-C3 helper use `coproc_ota_protocol.h` as their UART transport contract for Node OTA staging, control, and status reporting.
+
+This file must remain identical across:
+- `esp32-gateway/gateway_v1/include/coproc_ota_protocol.h`
+- `esp32-gateway/gateway_v1/coprocessor_esp32c3/include/coproc_ota_protocol.h`
+
+### 3. Schema-driven system design
 
 Sensor nodes describe themselves dynamically through protocol messages. The gateway and dashboard should not rely on hardcoded sensor names.
 
@@ -168,15 +202,16 @@ Actuator nodes should also report current actuator state so the gateway and Web 
 - reconnect
 - persistence restore
 
-### 3. Clear separation of responsibilities
+### 4. Clear separation of responsibilities
 
-- Node firmware owns hardware interaction
-- Gateway firmware owns pairing, routing, NVS tracking, and browser communication
+- Node firmware owns hardware interaction and node-side OTA flashing
+- Gateway firmware owns pairing, routing, NVS tracking, browser communication, and Node OTA orchestration
+- Gateway coprocessor firmware owns helper AP hosting, staged firmware serving, and helper-side OTA status reporting
 - Web assets own rendering and user interaction only
 
-### 4. Backward-aware protocol evolution
+### 5. Backward-aware protocol evolution
 
-Protocol changes should be deliberate, documented, and versioned. Silent mismatches between different copies of `mesh_protocol.h` are one of the easiest ways to break the system.
+Protocol changes should be deliberate, documented, and versioned. Silent mismatches between different copies of `mesh_protocol.h` or `coproc_ota_protocol.h` are among the easiest ways to break the system.
 
 ---
 
@@ -186,10 +221,11 @@ Useful contribution areas include:
 
 | Area | Examples |
 |------|----------|
-| Gateway firmware | pairing reliability, actuator support, reconnect logic, NVS robustness, diagnostics |
-| Web Interface | mobile improvements, cleaner UX, node status views, settings UX, better actuator controls |
-| Sensor nodes | new hardware integrations, better power handling, more schema-driven readings |
-| Actuator nodes | relay boards, dimmers, motor control, valve control, hybrid nodes |
+| Gateway firmware | pairing reliability, reconnect logic, Node OTA coordination, NVS robustness, diagnostics |
+| Gateway coprocessor | helper AP behavior, staged firmware serving, transport resilience, helper diagnostics |
+| Web Interface | mobile improvements, cleaner UX, node status views, Node OTA feedback, better actuator controls |
+| Sensor nodes | new hardware integrations, better power handling, schema-driven readings, node OTA robustness |
+| Actuator nodes | relay boards, dimmers, motor control, valve control, hybrid nodes, node OTA robustness |
 | Protocol | new messages, future hybrid support, compatibility improvements |
 | Documentation | setup guides, flash instructions, version notes, troubleshooting |
 | Tooling | CI builds, release packaging, flashing helpers |
@@ -201,8 +237,9 @@ Useful contribution areas include:
 Main file:
 - `esp32-gateway/gateway_v1/src/main.cpp`
 
-Shared protocol:
+Shared protocols:
 - `esp32-gateway/gateway_v1/include/mesh_protocol.h`
+- `esp32-gateway/gateway_v1/include/coproc_ota_protocol.h`
 
 Things typically handled in the gateway:
 - Wi-Fi and captive portal setup
@@ -214,11 +251,35 @@ Things typically handled in the gateway:
 - WebSocket communication
 - HTTP API endpoints
 - persistence of gateway-side state
+- Node OTA job scheduling, validation, progress reporting, and reconnect detection
 
 Before changing gateway logic:
-- confirm whether the change belongs in the gateway or the node
+- confirm whether the change belongs in the gateway, helper, or the node
 - keep settings and sensor handling schema-driven
 - do not hardcode node-specific behavior unless it is truly gateway-specific
+- retest end-to-end Node OTA when changing OTA job timing, status handling, or reconnect logic
+
+---
+
+## Working on the Gateway Coprocessor Firmware
+
+Main file:
+- `esp32-gateway/gateway_v1/coprocessor_esp32c3/src/main.cpp`
+
+Shared protocol:
+- `esp32-gateway/gateway_v1/coprocessor_esp32c3/include/coproc_ota_protocol.h`
+
+Things typically handled in the coprocessor:
+- UART command/response handling with the ESP32-S3 gateway
+- staging uploaded node firmware
+- starting the temporary OTA helper AP
+- serving the staged `firmware.bin` to the target node
+- reporting helper progress back to the gateway
+
+Before changing helper logic:
+- keep the gateway and helper copies of `coproc_ota_protocol.h` synchronized
+- test the full S3 -> C3 -> node OTA flow on hardware
+- validate helper cleanup after OTA success and abort paths
 
 ---
 
@@ -236,6 +297,7 @@ Important notes:
 - UI state should reflect the gateway's live state, not invent its own source of truth
 - actuator buttons, settings panels, and node status should stay in sync with WebSocket updates
 - preserve schema-driven rendering wherever possible
+- when changing Node OTA UX, verify staging, reconnect, success, and failure states
 
 When modifying the dashboard:
 - keep `index.html`, `app.js`, and `style.css` version notes aligned
@@ -243,6 +305,7 @@ When modifying the dashboard:
 - test live update behavior
 - test node reboot scenarios
 - test settings changes from the browser
+- test Node OTA status transitions
 
 ---
 
@@ -257,6 +320,7 @@ Typical work:
 - define per-node settings if needed
 - handle gateway settings changes
 - keep units, labels, and precision inside node firmware
+- maintain the node-side OTA downloader/finalization path
 
 When adding a new sensor node:
 1. Duplicate a similar existing node directory
@@ -265,11 +329,12 @@ When adding a new sensor node:
 4. Extend the sensor schema definition
 5. Extend sensor data sending logic
 6. Add settings only if needed
-7. Update the node README
-8. Update `esp32-nodes/sensor_nodes/README.md`
+7. Preserve the node OTA metadata/descriptor handling
+8. Update the node README
+9. Update `esp32-nodes/sensor_nodes/README.md`
 
 Goal:
-A new sensor node should ideally require no gateway code changes if it follows the current schema-driven model.
+A new sensor node should ideally require no gateway code changes if it follows the current schema-driven model and the existing Node OTA contract.
 
 ---
 
@@ -284,6 +349,7 @@ Typical actuator-node responsibilities:
 - expose configurable settings where useful
 - restore saved state when persistence is enabled
 - resynchronize actuator state after reconnect or reboot
+- maintain the node-side OTA downloader/finalization path
 
 Current example:
 - `esp32-nodes/actuator_nodes/esp32_relay_node_v1/`
@@ -293,8 +359,9 @@ When adding or extending an actuator node:
 2. Keep actuator state reporting reliable
 3. Test persistence behavior carefully
 4. Test reboot and reconnect state sync
-5. Document every exposed setting in that node's README
-6. Update `esp32-nodes/actuator_nodes/README.md`
+5. Preserve the node OTA metadata/descriptor handling
+6. Document every exposed setting in that node's README
+7. Update `esp32-nodes/actuator_nodes/README.md`
 
 Important:
 Actuator nodes should never assume the Web Interface can guess real hardware state. The node must report it.
@@ -303,7 +370,7 @@ Actuator nodes should never assume the Web Interface can guess real hardware sta
 
 ## Changing mesh_protocol.h
 
-Current version: `v3.1.0`
+Current version: `v3.2.0`
 
 File locations must stay synchronized:
 - `esp32-gateway/gateway_v1/include/mesh_protocol.h`
@@ -329,11 +396,34 @@ Examples of changes that likely require a major bump:
 
 ---
 
+## Changing coproc_ota_protocol.h
+
+Current version: `v1.0.0`
+
+File locations must stay synchronized:
+- `esp32-gateway/gateway_v1/include/coproc_ota_protocol.h`
+- `esp32-gateway/gateway_v1/coprocessor_esp32c3/include/coproc_ota_protocol.h`
+
+When changing the helper transport:
+- document every added command, ACK, and status field
+- keep frame sizes, chunk sizing, and CRC assumptions aligned
+- update both copies immediately
+- validate both gateway and coprocessor builds after the change
+- run at least one real Node OTA test on hardware
+
+Use these versioning rules:
+- patch bump for comments or non-functional cleanup
+- minor bump for additive, backward-compatible helper transport extensions
+- major bump for incompatible framing or behavior changes
+
+---
+
 ## Versioning Guidelines
 
 Keep version notes consistent across the project.
 
 ### Gateway firmware
+
 Bump when gateway logic changes in a meaningful way:
 - pairing behavior
 - routing logic
@@ -341,8 +431,19 @@ Bump when gateway logic changes in a meaningful way:
 - actuator support
 - state sync
 - HTTP/WebSocket behavior
+- Node OTA orchestration
+
+### Gateway coprocessor firmware
+
+Bump when helper behavior changes:
+- UART transport handling
+- staged firmware serving
+- helper AP behavior
+- helper status reporting
+- cleanup and abort handling
 
 ### Node firmware
+
 Bump when node behavior changes:
 - hardware handling
 - settings
@@ -350,15 +451,20 @@ Bump when node behavior changes:
 - reconnect behavior
 - schema definitions
 - message handling
+- Node OTA downloader/finalization behavior
 
 ### Web assets
+
 Bump file versions when behavior or layout changes:
 - `index.html`
 - `app.js`
 - `style.css`
 
-### Protocol
-Bump `mesh_protocol.h` only when the communication contract changes.
+### Protocols
+
+Bump `mesh_protocol.h` when the node/gateway communication contract changes.
+
+Bump `coproc_ota_protocol.h` when the gateway/helper transport contract changes.
 
 If a release spans multiple components, update changelog entries in the affected README files as well.
 
@@ -374,9 +480,11 @@ Before opening a PR:
 - update the correct README files
 - keep version references current
 - keep `mesh_protocol.h` synchronized everywhere
+- keep `coproc_ota_protocol.h` synchronized everywhere it exists
 - mention any required flash steps such as `uploadfs`
 - describe whether the change affects:
   - gateway firmware
+  - gateway coprocessor firmware
   - web assets
   - sensor nodes
   - actuator nodes
@@ -395,15 +503,16 @@ Recommended PR structure:
 ## Ground Rules
 
 - Do not let copies of `mesh_protocol.h` drift apart
+- Do not let copies of `coproc_ota_protocol.h` drift apart
 - Prefer schema-driven design over hardcoded gateway/dashboard assumptions
 - Keep contributions focused and easy to review
 - Test actuator-state sync after reboot and reconnect whenever actuator logic changes
 - Test NVS-backed settings and persistence whenever settings logic changes
+- Test end-to-end Node OTA when changing gateway OTA orchestration, helper transport, or node OTA logic
 - If you change `data/`, remember `uploadfs`
 - Update documentation when user-visible behavior changes
-- Do not merge protocol changes without checking all firmware targets
+- Do not merge protocol changes without checking all affected firmware targets
 
 ---
 
 Thank you for helping improve the ESPNow Mesh System.
-```

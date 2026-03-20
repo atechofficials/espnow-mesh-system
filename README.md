@@ -3,7 +3,7 @@
 A local-first ESP32 smart-home system for **wireless sensing and control**.
 
 This project lets you build a small home mesh using **ESP32-based nodes** and a central **ESP32-S3 gateway**.  
-The gateway connects to your Wi-Fi, hosts a browser-based dashboard, and communicates with nearby nodes over **ESP-NOW**.
+The gateway connects to your Wi-Fi, hosts a browser-based dashboard, communicates with nearby nodes over **ESP-NOW**, and now uses a companion **ESP32-C3 coprocessor** to handle **gateway-managed Node OTA updates** and future helper tasks.
 
 That means you can:
 
@@ -33,6 +33,9 @@ Change node settings such as:
 - Relay state persistence
 - Sensor-specific options
 
+### Gateway-managed Node OTA
+Upload compatible sensor-node or actuator-node firmware from the gateway web interface and let the gateway update the selected node without connecting that node to your home Wi-Fi.
+
 ### Automatic recovery
 If the gateway or node reboots, the system reconnects automatically and restores state where supported.
 
@@ -47,6 +50,7 @@ The project already supports both **sensor nodes** and **actuator nodes**.
 | Type | Device | Status |
 |------|--------|--------|
 | Gateway | ESP32-S3 Gateway | Working |
+| Gateway Helper | ESP32-C3 Coprocessor | Working |
 | Sensor Node | Envo Mini v1 | Working |
 | Actuator Node | ESP32 Relay Node v1 | Working |
 
@@ -63,6 +67,12 @@ The project already supports both **sensor nodes** and **actuator nodes**.
 - Relay control from dashboard
 - Relay state persistence across reboot
 - Status LED setting from dashboard
+
+### Current OTA capabilities
+
+- Gateway self-OTA from the browser
+- Gateway-managed OTA for supported sensor nodes
+- Gateway-managed OTA for supported actuator nodes
 
 ---
 
@@ -100,12 +110,15 @@ The gateway acts as the bridge between:
 - your browser over Wi-Fi
 - your ESP32 nodes over ESP-NOW
 
+For **Node OTA**, the gateway temporarily hands firmware delivery to the on-board **ESP32-C3 coprocessor**, which stages the selected node firmware, starts a temporary helper access point, and serves the firmware image to the target node while the main gateway continues managing the mesh and dashboard.
+
 ---
 
 ## Hardware Used
 
 ### Gateway
 - ESP32-S3-DevKitC-1-N8R8
+- ESP32-C3 helper coprocessor for Node OTA delivery and future gateway-side expansion
 
 ### Sensor node reference board
 - DFRobot FireBeetle 2 ESP32-E
@@ -129,6 +142,10 @@ The gateway acts as the bridge between:
 Start with the gateway firmware:
 
 [`esp32-gateway/gateway_v1/README.md`](esp32-gateway/gateway_v1/README.md)
+
+For **Node OTA** support, also flash the ESP32-C3 gateway coprocessor once from:
+
+[`esp32-gateway/gateway_v1/coprocessor_esp32c3/`](esp32-gateway/gateway_v1/coprocessor_esp32c3/)
 
 ### 2. Flash a node
 Choose one:
@@ -160,6 +177,7 @@ The current dashboard supports:
 - opening node settings
 - renaming nodes
 - rebooting nodes remotely
+- updating supported nodes with Node OTA
 - disconnecting nodes
 - changing gateway settings
 - launching Wi-Fi setup mode
@@ -255,6 +273,7 @@ The project currently supports:
 - local sensor monitoring
 - local relay control
 - browser-based node management
+- gateway-managed Node OTA for supported sensor and relay nodes
 
 Planned future growth may include:
 - more sensor node types

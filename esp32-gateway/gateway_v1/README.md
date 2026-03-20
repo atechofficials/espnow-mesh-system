@@ -1,17 +1,19 @@
 # Gateway v1 - Build, Flash, and OTA Guide
 
-Firmware version: **1.9.0**  
+Firmware version: **2.0.0**  
 Target board: `esp32-s3-devkitc1-n8r8`
+
+Gateway helper coprocessor: **ESP32-C3 firmware v0.1.0**
 
 ---
 
-## Highlights in v1.9.0
+## Highlights in v2.0.0
 
-- Added **web-based Gateway OTA firmware updates**
-- Added OTA image validation and automatic reboot after successful flash
-- Added upload progress and OTA status feedback in the web interface
-- Switched the default build to an **OTA-capable 8 MB partition layout**
-- Continued support for gateway web credentials, relay label assignment, gateway LED control, and schema-driven node settings
+- Added **gateway-managed Node OTA** for supported sensor and actuator nodes
+- Introduced the **ESP32-C3 gateway coprocessor** for helper AP hosting, staged node firmware delivery, and future gateway-side features
+- Added `coproc_ota_protocol.h` for the shared ESP32-S3 <-> ESP32-C3 OTA transport
+- Added node OTA progress, reconnect tracking, and completion feedback in the web interface
+- Continued support for **web-based Gateway OTA firmware updates**, gateway web credentials, relay label assignment, gateway LED control, and schema-driven node settings
 
 ---
 
@@ -19,6 +21,7 @@ Target board: `esp32-s3-devkitc1-n8r8`
 
 - [PlatformIO Core](https://docs.platformio.org/en/latest/core/installation/index.html) or the PlatformIO IDE extension for VS Code
 - USB cable connected to the ESP32-S3-DevKitC-1-N8R8
+- USB cable connected to the ESP32-C3 coprocessor when flashing or debugging the Node OTA helper firmware
 
 ---
 
@@ -51,13 +54,13 @@ The project now builds against **`partitions_8mb_ota.csv`**.
 | `LittleFS` | 4544 KB |
 | `coredump` | 64 KB |
 
-This layout is required for the new web-based Gateway OTA update feature.
+This layout is required for the web-based Gateway OTA update feature and leaves the gateway firmware on an OTA-capable base while the ESP32-C3 helper handles node-firmware delivery.
 
 ---
 
-## First-Time Flash / Migration to v1.9.0
+## First-Time Flash / Migration to v2.0.0
 
-If you are coming from an older gateway build that used the non-OTA partition table, the **first upgrade to v1.9.0 must be done over USB**.
+If you are coming from an older gateway build that used the non-OTA partition table, the **first upgrade to v2.0.0 must be done over USB**.
 
 Run these commands from the `gateway_v1/` directory:
 
@@ -74,6 +77,17 @@ pio run --target upload
 
 After this migration, future **gateway firmware** updates can be done from the web interface.
 
+To use **Node OTA**, also flash the ESP32-C3 helper once from the `coprocessor_esp32c3/` directory:
+
+```bash
+cd coprocessor_esp32c3
+pio run --target erase
+pio run --target upload
+pio device monitor
+```
+
+See [coprocessor_esp32c3/README.md](coprocessor_esp32c3/README.md) for the helper-specific hardware, transport, and runtime details.
+
 If you change only the dashboard assets later, run:
 
 ```bash
@@ -85,6 +99,29 @@ If you change only the firmware later and want to use USB instead of OTA, run:
 ```bash
 pio run --target upload
 ```
+
+---
+
+## ESP32-C3 Gateway Coprocessor
+
+The Node OTA workflow uses a dedicated **ESP32-C3 coprocessor** connected to the ESP32-S3 gateway.
+
+During a node update, the gateway:
+
+1. validates and stages the uploaded node `firmware.bin`
+2. transfers that firmware to the ESP32-C3 helper over UART
+3. tells the helper to start a temporary OTA access point
+4. instructs the selected node to join that helper AP
+5. waits for the node to download, flash, reboot, and re-register
+
+The coprocessor also reports OTA helper status back to the gateway so the web interface can show live progress.
+
+Shared transport definitions between the gateway and helper live in:
+
+- `include/coproc_ota_protocol.h`
+- `coprocessor_esp32c3/include/coproc_ota_protocol.h`
+
+Keep those copies synchronized.
 
 ---
 
@@ -108,7 +145,7 @@ Wi-Fi credentials, gateway settings, and paired-node records are stored in NVS a
 
 ## Gateway OTA Update from the Web Interface
 
-Once v1.9.0 is already installed, the gateway can update its **own firmware** directly from the dashboard.
+Once an OTA-capable gateway build is already installed, the gateway can update its **own firmware** directly from the dashboard.
 
 ### Steps
 
@@ -137,6 +174,34 @@ pio run
 - Upload **`firmware.bin`**, not `bootloader.bin`, not `partitions.bin`
 - If the web UI assets were changed, also upload LittleFS via `pio run --target uploadfs`
 - The dashboard firmware version is still taken from `FW_VERSION` in `src/main.cpp`
+
+---
+
+## Node OTA Update from the Web Interface
+
+The gateway can also update a paired **sensor node** or **actuator node** from the dashboard.
+
+### Supported flow
+
+1. Build the target node firmware and locate its `firmware.bin`
+2. Open the dashboard in a browser
+3. Go to the **Node OTA Update** section
+4. Select the target node and upload the matching node `firmware.bin`
+5. Wait for the gateway to stage the file, arm the ESP32-C3 helper, and start the temporary helper AP
+6. The target node downloads the staged image, flashes it, reboots, and re-registers automatically
+
+### What the gateway checks
+
+- uploaded image role matches the selected node type
+- firmware metadata is readable before starting delivery
+- helper staging finishes successfully on the ESP32-C3
+- the node accepts OTA mode and reconnects after reboot
+
+### Notes
+
+- Upload **node `firmware.bin`** from the node project, not bootloader or partition files
+- The node does **not** need your home Wi-Fi credentials; it only joins the temporary helper AP for the OTA window
+- Supported and verified flows now include same-version reflashing, upgrades, downgrades, sensor-node OTA, and relay-node OTA
 
 ---
 
@@ -198,6 +263,8 @@ All main tuneable constants are near the top of `src/main.cpp`.
 
 Timing constants shared with the nodes live in `include/mesh_protocol.h`.
 
+Node OTA transport and helper constants are shared with the ESP32-C3 helper through `include/coproc_ota_protocol.h`.
+
 ---
 
 ## Serial Monitor
@@ -223,6 +290,8 @@ Useful log prefixes:
 | `[AUTH]` | Web interface authentication |
 | `[WS]` | WebSocket client activity |
 | `[OTA]` | Gateway OTA upload and reboot flow |
+| `[C3]` | ESP32-C3 helper handshake, staging, and helper status |
+| `[NODE OTA]` | Node OTA job lifecycle, node reconnect detection, and completion |
 
 ---
 
@@ -250,6 +319,7 @@ ws://<gateway-ip>/ws
 | `gw_portal_starting` | Gateway is restarting into WiFiManager portal mode |
 | `gw_rebooting` | Gateway is about to reboot |
 | `gw_factory_reset` | Factory reset acknowledged |
+| Node OTA progress/status messages | Helper staging, helper AP state, target-node reconnect, and completion/error feedback during Node OTA |
 | `auth_required` / `auth_ok` / `auth_fail` / `session_expired` | Web interface auth flow |
 
 ### Browser -> Gateway
@@ -271,6 +341,7 @@ ws://<gateway-ip>/ws
 | `node_settings_get` | Request node settings schema |
 | `node_settings_set` | Update one node setting |
 | `node_sensor_schema_get` | Request node sensor schema |
+| node OTA upload actions | Upload a compatible node `firmware.bin` and start gateway-managed Node OTA for the selected node |
 | `relay_labels_set` | Save per-relay labels on the gateway |
 | `ping` | Keep-alive |
 
@@ -283,7 +354,14 @@ gateway_v1/
 |-- src/
 |   `-- main.cpp
 |-- include/
-|   `-- mesh_protocol.h
+|   |-- mesh_protocol.h
+|   `-- coproc_ota_protocol.h
+|-- coprocessor_esp32c3/
+|   |-- src/
+|   |   `-- main.cpp
+|   |-- include/
+|   |   `-- coproc_ota_protocol.h
+|   `-- platformio.ini
 |-- data/
 |   |-- index.html
 |   |-- js/

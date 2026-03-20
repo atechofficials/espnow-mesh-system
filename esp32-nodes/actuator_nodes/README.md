@@ -4,6 +4,8 @@ This directory contains firmware for ESP32-based actuator nodes used in the ESP-
 
 Actuator nodes receive commands from the gateway and control physical outputs such as relays. They follow the same pairing, heartbeat, registration, and settings flow used by sensor nodes, while also reporting actuator state back to the gateway so the Web Interface stays synchronized.
 
+Supported actuator-node firmwares can also be updated through the **gateway-managed Node OTA** flow. During that OTA window, the selected node temporarily joins the helper AP created by the gateway's ESP32-C3 coprocessor, downloads the staged firmware, flashes it, and then returns to normal ESP-NOW operation after reboot.
+
 ---
 
 ## Currently Available
@@ -24,12 +26,13 @@ Actuator nodes receive commands from the gateway and control physical outputs su
 - Per-node settings exposed in the Web Interface
 - Persistent settings stored in NVS
 - Optional relay state persistence, depending on node firmware
+- Gateway-managed Node OTA delivery for supported actuator-node firmware
 
 ---
 
 ## Protocol Notes
 
-Actuator nodes use the shared `mesh_protocol.h` definitions and the actuator messaging introduced in protocol version **v3.1.0**.
+Actuator nodes use the shared `mesh_protocol.h` definitions and the actuator messaging available in protocol version **v3.2.0**.
 
 ### Actuator-related message types
 
@@ -42,7 +45,7 @@ Actuator nodes use the shared `mesh_protocol.h` definitions and the actuator mes
 
 - `NODE_SENSOR`
 - `NODE_ACTUATOR`
-- `NODE_HYBRID`  
+- `NODE_HYBRID`
   Reserved for future development of nodes that combine both sensing and actuation in one device.
 
 ---
@@ -55,12 +58,14 @@ Actuator nodes are designed to work much like sensor nodes, but instead of mainl
 2. Apply those commands to physical outputs
 3. Report the resulting actuator state back to the gateway
 4. Expose configurable node settings where needed
+5. Participate in the gateway-managed Node OTA workflow when a compatible firmware image is uploaded from the dashboard
 
 This keeps the gateway and Web Interface synchronized after:
 - actuator toggles
 - node reboot
 - gateway reconnect
 - state persistence restore
+- node OTA reboot/rejoin
 
 ---
 
@@ -76,7 +81,8 @@ Main capabilities:
 - supports relay state persistence across reboot
 - supports Status LED enable/disable setting
 - exposes settings in the gateway Web Interface for easier control
-- supports per relay lable set from Web Interface
+- supports per-relay labels set from the Web Interface
+- supports gateway-managed Node OTA
 
 ---
 
@@ -96,12 +102,13 @@ This directory is intended to grow with additional actuator node types, for exam
 
 ```text
 actuator_nodes/
-├── README.md
-└── esp32_relay_node_v1/
-    ├── README.md
-    ├── src/
-    ├── include/
-    ├── lib/
-    └── platformio.ini
+|-- README.md
+`-- esp32_relay_node_v1/
+    |-- README.md
+    |-- src/
+    |-- include/
+    |-- lib/
+    `-- platformio.ini
+```
 
-For board-specific wiring, firmware configuration, build steps, and node settings, see the README inside each actuator node folder.
+For board-specific wiring, firmware configuration, build steps, settings, and Node OTA behavior, see the README inside each actuator node folder.
