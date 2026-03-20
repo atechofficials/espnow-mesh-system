@@ -1,5 +1,5 @@
 /**
- * ESP32 Mesh Gateway Web Interface Client v3.9
+ * ESP32 Mesh Gateway Web Interface Client v4.0
  *
  * WS Inbound:  { type:"meta"|"update"|"discovered"|"pair_timeout"|"ap_config_ack"|
  *                     "gw_portal_starting"|"gw_factory_reset"|"gw_rebooting"|
@@ -1149,11 +1149,14 @@ function refreshGatewayOtaUi() {
   }
 
   $gwOtaBtn.textContent = gatewayOtaBusy ? "OTA Busy" : "Upload Gateway Firmware";
+  const hasExplicitError = !!($gwOtaNote?.textContent?.trim()) && $gwOtaNote?.classList?.contains("err");
 
   if (!gatewayOtaSupported) {
     setGatewayOtaNote("OTA is unavailable until the gateway is flashed with the OTA partition layout.", "err");
   } else if (gatewayOtaBusy) {
-    setGatewayOtaNote("Another firmware update is already in progress or the gateway is rebooting.", "err");
+    if (!hasExplicitError) {
+      setGatewayOtaNote("Another firmware update is already in progress or the gateway is rebooting.", "err");
+    }
   } else if (!hasFile) {
     setGatewayOtaNote("");
   }
@@ -1203,6 +1206,7 @@ function uploadGatewayFirmwareNow(file) {
     }
 
     gatewayOtaUploading = false;
+    gatewayOtaBusy = false;
     const err = response.error || `Upload failed (${xhr.status || "network error"}).`;
     setGatewayOtaProgress(100, "Firmware update failed.");
     setGatewayOtaNote(err, "err");
@@ -1216,6 +1220,7 @@ function uploadGatewayFirmwareNow(file) {
 
   xhr.addEventListener("error", () => {
     gatewayOtaUploading = false;
+    gatewayOtaBusy = false;
     setGatewayOtaProgress(100, "Firmware upload failed.");
     setGatewayOtaNote("Network error while uploading firmware.", "err");
     showToast("Network error while uploading firmware.", "error");
@@ -1224,6 +1229,7 @@ function uploadGatewayFirmwareNow(file) {
 
   xhr.addEventListener("timeout", () => {
     gatewayOtaUploading = false;
+    gatewayOtaBusy = false;
     setGatewayOtaProgress(100, "Firmware upload timed out.");
     setGatewayOtaNote("Upload timed out before the gateway finished flashing.", "err");
     showToast("Firmware upload timed out.", "error");

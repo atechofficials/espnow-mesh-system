@@ -25,8 +25,9 @@ The gateway is the heart of the ESPNow Mesh System. It runs on an **ESP32-S3** a
 - Forwards dashboard commands to the correct node (pair, unpair, reboot, actuator toggle, settings change)
 - Serves the web dashboard from LittleFS over HTTP/WebSocket
 - Stores gateway configuration, web credentials, paired node records, and relay label assignments in NVS
-- Supports **gateway self-OTA** from the web interface with validation, progress reporting, and automatic reboot
-- Supports **Node OTA** by staging node firmware, handing delivery to the ESP32-C3 helper, tracking node reconnects, and reporting OTA progress back to the dashboard
+- Stores gateway configuration, web credentials, paired node records, node hardware-config IDs, and relay label assignments in NVS
+- Supports **gateway self-OTA** from the web interface with validation, hardware-config ID checking, progress reporting, and automatic reboot
+- Supports **Node OTA** by validating node role and hardware-config markers, staging node firmware, handing delivery to the ESP32-C3 helper, tracking node reconnects, and reporting OTA progress back to the dashboard
 
 ---
 
@@ -54,6 +55,7 @@ The gateway is the heart of the ESPNow Mesh System. It runs on an **ESP32-S3** a
 | v1.8.3 | Added per-relay label assignment from the web interface for relay nodes |
 | v1.9.0 | Added **web-based gateway OTA firmware update**, OTA partition layout, upload validation, progress/error feedback, and automatic reboot after successful flash |
 | v2.0.0 | Added **gateway-managed Node OTA** for supported sensor and actuator nodes, introduced the ESP32-C3 gateway coprocessor workflow, added helper-assisted node firmware staging/delivery, and extended OTA progress/reconnect tracking in the dashboard |
+| v2.0.1 | Added OTA **hardware configuration ID** checks for both gateway OTA and node OTA, persisted node hardware IDs across gateway reboot, and improved OTA mismatch/error reporting in the serial logs and web UI |
 
 ---
 
@@ -83,11 +85,12 @@ gateway_v1/
 
 ## Current Release Notes
 
-- Gateway firmware version: **v2.0.0**
+- Gateway firmware version: **v2.0.1**
 - Gateway coprocessor firmware version: **v0.1.0**
 - Shared helper transport: `coproc_ota_protocol.h` **v1.0.0**
+- Shared mesh protocol: `mesh_protocol.h` **v3.2.1**
 - Web UI assets:
-  - `app.js` v3.9
+  - `app.js` v4.0
   - `index.html` v3.7
   - `style.css` v3.5
 - Active partition layout: **`partitions_8mb_ota.csv`**

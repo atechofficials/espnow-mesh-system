@@ -2,7 +2,7 @@
 /**
     * @file [mesh_protocol.h]
     * @brief Shared ESP-NOW message definitions for the ESP32 ESPNow Mesh System project
-    * @version 3.2.0
+    * @version 3.2.1
     * @author Mrinal (@atechofficials)
     * @details Shared ESP-NOW message definitions
         * Copy this file into the include/ folder of every node project.
@@ -35,7 +35,7 @@
 
 #include <stdint.h>
 
-#define SW_VERSION "3.2.0"
+#define SW_VERSION "3.2.1"
 
 // Message Types *****************************************************************************
 typedef enum : uint8_t {
@@ -103,6 +103,9 @@ typedef enum : uint8_t {
 #define NODE_MAX_ACTUATORS 4    // max actuators (e.g. relays) per node
 #define ACTUATOR_LABEL_LEN 12   // chars for human-readable actuator label (incl. NUL)
 
+// Hardware Configuration Constants *****************************************************************************
+#define HW_CONFIG_ID_LEN   12   // chars for hardware configuration ID string (incl. NUL), e.g. "0x0B"
+
 // Node OTA Constants *****************************************************************************
 #define NODE_OTA_SSID_LEN       16   // chars for temporary OTA AP SSID (incl. NUL)
 #define NODE_OTA_PASS_LEN       16   // chars for temporary OTA AP password (incl. NUL)
@@ -134,7 +137,10 @@ typedef struct {
     MeshHeader hdr;
     char       name[16];
     char       fw_version[8];   // e.g. "1.2.0\0" - populated from FW_VERSION define
+    char       hw_config_id[HW_CONFIG_ID_LEN]; // e.g. "0x0B\0" - populated from HW_CONFIG_ID define
 } MsgRegister;
+
+#define MSG_REGISTER_MIN_LEN (sizeof(MeshHeader) + 16 + 8)
 
 // MSG_REGISTER_ACK (Master -> Node) *****************************************************************************
 typedef struct {

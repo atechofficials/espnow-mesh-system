@@ -2,7 +2,7 @@
 /**
     * @file [mesh_protocol.h]
     * @brief Shared ESP-NOW message definitions for the ESP32 ESPNow Mesh System project
-    * @version 3.2.0
+    * @version 3.3.0
     * @author Mrinal (@atechofficials)
     * @details Shared ESP-NOW message definitions
         * Copy this file into the include/ folder of every node project.
@@ -35,7 +35,7 @@
 
 #include <stdint.h>
 
-#define SW_VERSION "3.2.0"
+#define SW_VERSION "3.3.0"
 
 // Message Types *****************************************************************************
 typedef enum : uint8_t {

@@ -1,10 +1,11 @@
 /**
     * @file [main.cpp]
     * @brief Main source file for the ESP32 Mesh Gateway firmware
-    * @version 2.0.0
+ * @version 2.0.1
     * @author Mrinal (@atechofficials)
  */
-#define FW_VERSION "2.0.0"
+#define FW_VERSION "2.0.1"
+#define HW_CONFIG_ID "0x0A"
 
 #include <Arduino.h>
 #include <WiFi.h>
@@ -23,6 +24,7 @@
 #include <Preferences.h>
 #include "mbedtls/sha256.h"
 #include <algorithm>
+#include <ctype.h>
 #include <set>
 
 // Configuration
@@ -35,10 +37,15 @@
 #define OTA_FW_MARKER "GWFWVER:"
 #define OTA_FW_MARKER_LEN 8
 #define OTA_FW_VERSION_MAX_LEN 16
+#define OTA_HWCFG_MARKER "GWHWCFG:"
+#define OTA_HWCFG_MARKER_LEN 8
+#define OTA_HWCFG_ID_MAX_LEN HW_CONFIG_ID_LEN
 #define NODE_OTA_FW_MARKER "NODEFWVER:"
 #define NODE_OTA_FW_MARKER_LEN 10
 #define NODE_OTA_ROLE_MARKER "NODETYPE:"
 #define NODE_OTA_ROLE_MARKER_LEN 9
+#define NODE_OTA_HWCFG_MARKER "NODEHWCFG:"
+#define NODE_OTA_HWCFG_MARKER_LEN 10
 #define NODE_OTA_VERSION_MAX_LEN 16
 #define NODE_OTA_FILE_PATH "/node_ota.bin"
 #define NODE_OTA_HOST "192.168.4.1"
@@ -85,6 +92,7 @@ struct NodeRecord {
     NodeType      type;
     char          name[16];
     char          fw_version[8];  // reported by node in MSG_REGISTER
+    char          hw_config_id[HW_CONFIG_ID_LEN];  // reported by node in MSG_REGISTER
     unsigned long lastSeen;
     bool          online;
     uint32_t      uptime;
@@ -143,6 +151,19 @@ static uint32_t          gwLedCurrent   = 0xDEADBEEF;
 static unsigned long     gwLedFlashUntil = 0;
 bool gwLedEnabled = true;
 __attribute__((used)) static const char kGatewayFirmwareVersionMarker[] = OTA_FW_MARKER FW_VERSION;
+__attribute__((used)) static const char kGatewayHardwareConfigMarker[] = OTA_HWCFG_MARKER HW_CONFIG_ID;
+static volatile uint32_t gGatewayFirmwareMarkerChecksum = 0;
+
+static void touchGatewayFirmwareMarkers() {
+    uint32_t sum = 0;
+    for (size_t i = 0; kGatewayFirmwareVersionMarker[i] != '\0'; i++) {
+        sum += (uint8_t)kGatewayFirmwareVersionMarker[i];
+    }
+    for (size_t i = 0; kGatewayHardwareConfigMarker[i] != '\0'; i++) {
+        sum += (uint8_t)kGatewayHardwareConfigMarker[i];
+    }
+    gGatewayFirmwareMarkerChecksum = sum;
+}
 
 struct GatewayOtaRequestState {
     bool   started = false;
@@ -155,12 +176,16 @@ struct GatewayOtaRequestState {
     char   filename[64] = {0};
     char   incomingVersion[33] = {0};
     char   incomingDisplayVersion[OTA_FW_VERSION_MAX_LEN] = {0};
+    char   incomingHwConfigId[OTA_HWCFG_ID_MAX_LEN] = {0};
     char   error[128] = {0};
     uint8_t descBuf[OTA_DESC_BUF_LEN] = {0};
     size_t descBytes = 0;
     uint8_t markerMatchIndex = 0;
     bool    markerReadingVersion = false;
     uint8_t markerVersionLen = 0;
+    uint8_t hwMarkerMatchIndex = 0;
+    bool    hwMarkerReading = false;
+    uint8_t hwMarkerLen = 0;
 };
 
 static bool          otaUploadBusy    = false;
@@ -193,6 +218,7 @@ struct NodeOtaUploadRequestState {
     char   incomingVersion[NODE_OTA_VERSION_MAX_LEN] = {0};
     char   incomingDisplayVersion[NODE_OTA_VERSION_MAX_LEN] = {0};
     char   incomingRole[16] = {0};
+    char   incomingHwConfigId[HW_CONFIG_ID_LEN] = {0};
     char   error[128] = {0};
     uint8_t descBuf[OTA_DESC_BUF_LEN] = {0};
     size_t descBytes = 0;
@@ -202,6 +228,9 @@ struct NodeOtaUploadRequestState {
     uint8_t roleMarkerMatchIndex = 0;
     bool    roleMarkerReading = false;
     uint8_t roleMarkerLen = 0;
+    uint8_t hwMarkerMatchIndex = 0;
+    bool    hwMarkerReading = false;
+    uint8_t hwMarkerLen = 0;
     File    file;
 };
 
@@ -596,10 +625,10 @@ static void setOtaError(GatewayOtaRequestState* state, const String& msg) {
     Serial.printf("[OTA]  ERROR: %s\n", state->error);
 }
 
-static void scanGatewayFirmwareVersionMarker(GatewayOtaRequestState* state,
-                                             const uint8_t* data,
-                                             size_t len) {
-    if (!state || !data || len == 0 || state->incomingDisplayVersion[0] != '\0') return;
+static void scanGatewayFirmwareMarkers(GatewayOtaRequestState* state,
+                                       const uint8_t* data,
+                                       size_t len) {
+    if (!state || !data || len == 0) return;
 
     for (size_t i = 0; i < len; i++) {
         const char ch = (char)data[i];
@@ -608,7 +637,6 @@ static void scanGatewayFirmwareVersionMarker(GatewayOtaRequestState* state,
             if (ch == '\0') {
                 if (state->markerVersionLen > 0) {
                     state->incomingDisplayVersion[state->markerVersionLen] = '\0';
-                    return;
                 }
                 state->markerReadingVersion = false;
                 state->markerVersionLen = 0;
@@ -626,6 +654,27 @@ static void scanGatewayFirmwareVersionMarker(GatewayOtaRequestState* state,
             state->markerMatchIndex = 0;
         }
 
+        if (state->hwMarkerReading) {
+            if (ch == '\0') {
+                if (state->hwMarkerLen > 0) {
+                    state->incomingHwConfigId[state->hwMarkerLen] = '\0';
+                }
+                state->hwMarkerReading = false;
+                state->hwMarkerLen = 0;
+                state->hwMarkerMatchIndex = 0;
+                continue;
+            }
+
+            if (ch >= 32 && ch <= 126 && state->hwMarkerLen < (OTA_HWCFG_ID_MAX_LEN - 1)) {
+                state->incomingHwConfigId[state->hwMarkerLen++] = ch;
+                continue;
+            }
+
+            state->hwMarkerReading = false;
+            state->hwMarkerLen = 0;
+            state->hwMarkerMatchIndex = 0;
+        }
+
         if (ch == OTA_FW_MARKER[state->markerMatchIndex]) {
             state->markerMatchIndex++;
             if (state->markerMatchIndex == OTA_FW_MARKER_LEN) {
@@ -637,6 +686,18 @@ static void scanGatewayFirmwareVersionMarker(GatewayOtaRequestState* state,
         } else {
             state->markerMatchIndex = (ch == OTA_FW_MARKER[0]) ? 1 : 0;
         }
+
+        if (ch == OTA_HWCFG_MARKER[state->hwMarkerMatchIndex]) {
+            state->hwMarkerMatchIndex++;
+            if (state->hwMarkerMatchIndex == OTA_HWCFG_MARKER_LEN) {
+                state->hwMarkerReading = true;
+                state->hwMarkerLen = 0;
+                memset(state->incomingHwConfigId, 0, sizeof(state->incomingHwConfigId));
+                state->hwMarkerMatchIndex = 0;
+            }
+        } else {
+            state->hwMarkerMatchIndex = (ch == OTA_HWCFG_MARKER[0]) ? 1 : 0;
+        }
     }
 }
 
@@ -645,6 +706,29 @@ static const char* getIncomingGatewayFirmwareVersion(const GatewayOtaRequestStat
     if (state->incomingDisplayVersion[0] != '\0') return state->incomingDisplayVersion;
     if (state->incomingVersion[0] != '\0') return state->incomingVersion;
     return "(unknown)";
+}
+
+static bool parseHardwareConfigId(const char* text, uint32_t* outValue = nullptr) {
+    if (!text) return false;
+    while (*text != '\0' && isspace((unsigned char)*text)) text++;
+    if (*text == '\0') return false;
+
+    char* end = nullptr;
+    unsigned long value = strtoul(text, &end, 0);
+    if (end == text) return false;
+    while (*end != '\0' && isspace((unsigned char)*end)) end++;
+    if (*end != '\0') return false;
+
+    if (outValue) *outValue = (uint32_t)value;
+    return true;
+}
+
+static bool hardwareConfigIdsMatch(const char* lhs, const char* rhs) {
+    uint32_t lhsValue = 0;
+    uint32_t rhsValue = 0;
+    return parseHardwareConfigId(lhs, &lhsValue) &&
+           parseHardwareConfigId(rhs, &rhsValue) &&
+           lhsValue == rhsValue;
 }
 
 static bool validateGatewayFirmwareDescriptor(GatewayOtaRequestState* state) {
@@ -739,7 +823,7 @@ static void handleGatewayOtaUpload(AsyncWebServerRequest* req,
     }
 
     if (len > 0) {
-        scanGatewayFirmwareVersionMarker(state, data, len);
+        scanGatewayFirmwareMarkers(state, data, len);
 
         if (index == 0 && data[0] != ESP_IMAGE_HEADER_MAGIC) {
             setOtaError(state, "Uploaded file is not a valid ESP32 application image.");
@@ -800,8 +884,18 @@ static void handleGatewayOtaUpload(AsyncWebServerRequest* req,
     }
 
     if (final && state->error[0] == '\0') {
+        if (state->incomingDisplayVersion[0] == '\0' && state->incomingVersion[0] != '\0') {
+            strncpy(state->incomingDisplayVersion, state->incomingVersion, sizeof(state->incomingDisplayVersion) - 1);
+            state->incomingDisplayVersion[sizeof(state->incomingDisplayVersion) - 1] = '\0';
+        }
+
         if (!state->metadataValidated) {
             setOtaError(state, "Firmware metadata could not be validated.");
+        } else if (state->incomingHwConfigId[0] == '\0') {
+            setOtaError(state, "Gateway firmware hardware configuration marker (GWHWCFG) is missing. Rebuild the uploaded gateway firmware with the current OTA markers.");
+        } else if (!hardwareConfigIdsMatch(state->incomingHwConfigId, HW_CONFIG_ID)) {
+            setOtaError(state, String("Gateway hardware configuration mismatch. This gateway supports hardware config ID ")
+                + HW_CONFIG_ID + " but the uploaded firmware targets " + state->incomingHwConfigId + ".");
         } else if (state->expectedSize > 0 && state->written != state->expectedSize) {
             setOtaError(state, String("Upload size mismatch: wrote ")
                 + state->written + " of " + state->expectedSize + " bytes.");
@@ -908,6 +1002,20 @@ static void scanNodeFirmwareMarkers(NodeOtaUploadRequestState* state,
             }
         }
 
+        if (state->hwMarkerReading) {
+            if (ch == '\0') {
+                if (state->hwMarkerLen > 0) state->incomingHwConfigId[state->hwMarkerLen] = '\0';
+                state->hwMarkerReading = false;
+                state->hwMarkerLen = 0;
+            } else if (ch >= 32 && ch <= 126 &&
+                       state->hwMarkerLen < (sizeof(state->incomingHwConfigId) - 1)) {
+                state->incomingHwConfigId[state->hwMarkerLen++] = ch;
+            } else {
+                state->hwMarkerReading = false;
+                state->hwMarkerLen = 0;
+            }
+        }
+
         if (!state->versionMarkerReading) {
             if (ch == NODE_OTA_FW_MARKER[state->versionMarkerMatchIndex]) {
                 state->versionMarkerMatchIndex++;
@@ -933,6 +1041,20 @@ static void scanNodeFirmwareMarkers(NodeOtaUploadRequestState* state,
                 }
             } else {
                 state->roleMarkerMatchIndex = (ch == NODE_OTA_ROLE_MARKER[0]) ? 1 : 0;
+            }
+        }
+
+        if (!state->hwMarkerReading) {
+            if (ch == NODE_OTA_HWCFG_MARKER[state->hwMarkerMatchIndex]) {
+                state->hwMarkerMatchIndex++;
+                if (state->hwMarkerMatchIndex == NODE_OTA_HWCFG_MARKER_LEN) {
+                    state->hwMarkerReading = true;
+                    state->hwMarkerLen = 0;
+                    memset(state->incomingHwConfigId, 0, sizeof(state->incomingHwConfigId));
+                    state->hwMarkerMatchIndex = 0;
+                }
+            } else {
+                state->hwMarkerMatchIndex = (ch == NODE_OTA_HWCFG_MARKER[0]) ? 1 : 0;
             }
         }
     }
@@ -1662,10 +1784,16 @@ static void handleNodeOtaUpload(AsyncWebServerRequest* req,
             setNodeOtaUploadError(state, "Firmware version marker is missing. Rebuild the node firmware with the current OTA markers.");
         } else if (roleToNodeType(state->incomingRole) == 0) {
             setNodeOtaUploadError(state, "Firmware node-role marker is missing or invalid.");
+        } else if (state->incomingHwConfigId[0] == '\0') {
+            setNodeOtaUploadError(state, "Firmware hardware configuration marker is missing. Rebuild the node firmware with the current OTA markers.");
+        } else if (!parseHardwareConfigId(state->incomingHwConfigId)) {
+            setNodeOtaUploadError(state, String("Firmware hardware configuration ID is invalid: ")
+                + state->incomingHwConfigId + ".");
         } else {
             state->ok = true;
-            Serial.printf("[NODE OTA]  Firmware staged successfully. Role=%s Version=%s CRC32=%08X\n",
-                          state->incomingRole, state->incomingDisplayVersion, state->crc32);
+            Serial.printf("[NODE OTA]  Firmware staged successfully. Role=%s HW=%s Version=%s CRC32=%08X\n",
+                          state->incomingRole, state->incomingHwConfigId,
+                          state->incomingDisplayVersion, state->crc32);
         }
     }
 
@@ -1711,12 +1839,20 @@ static void saveApConfig(const char* ssid, const char* pass) {
 static bool addPeer(const uint8_t* mac, uint8_t channel = 0);
 static void sendSettingsGet(const uint8_t* mac, uint8_t nodeId, NodeType nodeType);
 static void sendSensorSchemaGet(const uint8_t* mac, uint8_t nodeId, NodeType nodeType);
-struct NodeNvsRecord {
+struct NodeNvsRecordV1 {
     uint8_t  mac[6];
     NodeType type;
     char     name[16];
     char     fw_version[8];
-};  // 31 bytes per node
+};  // legacy format: 31 bytes per node
+
+struct NodeNvsRecordV2 {
+    uint8_t  mac[6];
+    NodeType type;
+    char     name[16];
+    char     fw_version[8];
+    char     hw_config_id[HW_CONFIG_ID_LEN];
+};  // current format: 43 bytes per node
 
 static void saveNodesToNvs() {
     Preferences prefs;
@@ -1729,11 +1865,12 @@ static void saveNodesToNvs() {
             prefs.remove(key);  // slot was freed - remove stale entry
             continue;
         }
-        NodeNvsRecord rec;
+        NodeNvsRecordV2 rec = {};
         memcpy(rec.mac,        nodes[i].mac,        6);
         rec.type = nodes[i].type;
         memcpy(rec.name,       nodes[i].name,       16);
         memcpy(rec.fw_version, nodes[i].fw_version, 8);
+        memcpy(rec.hw_config_id, nodes[i].hw_config_id, sizeof(rec.hw_config_id));
         prefs.putBytes(key, &rec, sizeof(rec));
     }
     prefs.end();
@@ -1752,14 +1889,27 @@ static void loadNodesFromNvs() {
     for (uint8_t i = 1; i < savedNextId; i++) {
         char key[5];
         snprintf(key, sizeof(key), "n%d", i);
-        NodeNvsRecord rec;
-        if (prefs.getBytes(key, &rec, sizeof(rec)) != sizeof(rec)) continue;
+        const size_t blobLen = prefs.getBytesLength(key);
+        if (blobLen != sizeof(NodeNvsRecordV1) && blobLen != sizeof(NodeNvsRecordV2)) continue;
+
+        NodeNvsRecordV2 rec = {};
+        if (blobLen == sizeof(NodeNvsRecordV2)) {
+            if (prefs.getBytes(key, &rec, sizeof(rec)) != sizeof(rec)) continue;
+        } else {
+            NodeNvsRecordV1 legacyRec = {};
+            if (prefs.getBytes(key, &legacyRec, sizeof(legacyRec)) != sizeof(legacyRec)) continue;
+            memcpy(rec.mac, legacyRec.mac, sizeof(rec.mac));
+            rec.type = legacyRec.type;
+            memcpy(rec.name, legacyRec.name, sizeof(rec.name));
+            memcpy(rec.fw_version, legacyRec.fw_version, sizeof(rec.fw_version));
+        }
         if (rec.mac[0] == 0 && rec.mac[1] == 0 && rec.mac[2] == 0) continue;
 
         memcpy(nodes[i].mac,        rec.mac,        6);
         nodes[i].type = rec.type;
         memcpy(nodes[i].name,       rec.name,       16);
         memcpy(nodes[i].fw_version, rec.fw_version, 8);
+        memcpy(nodes[i].hw_config_id, rec.hw_config_id, sizeof(nodes[i].hw_config_id));
         nodes[i].lastSeen      = millis();  // avoid instant NODE_TIMEOUT
         nodes[i].online        = false;     // marked offline until first message
         nodes[i].actuatorMask = 0;
@@ -1767,8 +1917,14 @@ static void loadNodesFromNvs() {
 
         addPeer(rec.mac);  // re-register ESP-NOW peer
         restored++;
-        Serial.printf("[MESH] Restored node #%d \"%s\"  %s\n",
-                      i, nodes[i].name, macToStr(nodes[i].mac).c_str());
+        if (nodes[i].hw_config_id[0] != '\0') {
+            Serial.printf("[MESH] Restored node #%d \"%s\"  %s  hw=%s\n",
+                          i, nodes[i].name, macToStr(nodes[i].mac).c_str(),
+                          nodes[i].hw_config_id);
+        } else {
+            Serial.printf("[MESH] Restored node #%d \"%s\"  %s\n",
+                          i, nodes[i].name, macToStr(nodes[i].mac).c_str());
+        }
     }
     nextId = savedNextId;
     prefs.end();
@@ -2060,6 +2216,7 @@ static String buildNodesJson() {
             n["last_seen"]  = (int)((now - nodes[i].lastSeen) / 1000);
             n["uptime"]     = nodes[i].uptime;
             n["fw_version"] = nodes[i].fw_version;
+            n["hw_config_id"] = nodes[i].hw_config_id;
 
             if (nodes[i].type == NODE_SENSOR) {
                 // sensor_schema_ready mirrors sensorCount > 0, used by the JS client
@@ -2099,6 +2256,7 @@ static String buildMetaJson() {
     doc["channel"]         = wifiChannel;
     doc["uptime"]          = (millis() - bootMs) / 1000;
     doc["fw_version"]      = FW_VERSION;
+    doc["hw_config_id"]    = HW_CONFIG_ID;
     doc["gw_led_enabled"] = gwLedEnabled;
     doc["ap_ssid"]         = gwApSsid;
     doc["credentials_set"] = credentialsSet();
@@ -2264,7 +2422,7 @@ static void processRxQueue() {
 
             // Registration (paired reboot reconnect OR post-PAIR_CMD confirm)
             case MSG_REGISTER: {
-                if (pkt.len < (int)sizeof(MsgRegister)) break;
+                if (pkt.len < MSG_REGISTER_MIN_LEN) break;
                 auto* reg = (MsgRegister*)pkt.data;
 
                 uint8_t assignId = findNodeByMac(pkt.mac);
@@ -2284,6 +2442,11 @@ static void processRxQueue() {
                     nodes[assignId].name[15] = '\0';
                     strncpy(nodes[assignId].fw_version, reg->fw_version, 7);
                     nodes[assignId].fw_version[7] = '\0';
+                    memset(nodes[assignId].hw_config_id, 0, sizeof(nodes[assignId].hw_config_id));
+                    if (pkt.len >= (int)sizeof(MsgRegister)) {
+                        strncpy(nodes[assignId].hw_config_id, reg->hw_config_id,
+                                sizeof(nodes[assignId].hw_config_id) - 1);
+                    }
                     nodes[assignId].lastSeen = millis();
                     nodes[assignId].online   = true;
                     if (isNew) nodes[assignId].settingsCount = 0;  // clear stale schema on fresh slot
@@ -2294,9 +2457,16 @@ static void processRxQueue() {
                     loadRelayLabelsForNode(assignId);
                 }
 
-                Serial.printf("[MESH] %s node #%d \"%s\"  %s\n",
-                              isNew ? "New" : "Re-reg",
-                              assignId, reg->name, macToStr(pkt.mac).c_str());
+                if (nodes[assignId].hw_config_id[0] != '\0') {
+                    Serial.printf("[MESH] %s node #%d \"%s\"  %s  hw=%s\n",
+                                  isNew ? "New" : "Re-reg",
+                                  assignId, reg->name, macToStr(pkt.mac).c_str(),
+                                  nodes[assignId].hw_config_id);
+                } else {
+                    Serial.printf("[MESH] %s node #%d \"%s\"  %s\n",
+                                  isNew ? "New" : "Re-reg",
+                                  assignId, reg->name, macToStr(pkt.mac).c_str());
+                }
 
                 // Cancel pending pair if this is the expected MAC
                 if (pendingPair.active &&
@@ -2326,8 +2496,9 @@ static void processRxQueue() {
                 // the node replies.
                 sendSettingsGet(pkt.mac, assignId, hdr->node_type);
                 sendSensorSchemaGet(pkt.mac, assignId, hdr->node_type);
-                // Persist the registry so nodes survive a gateway reboot
-                if (isNew) saveNodesToNvs();
+                // Persist every registration so firmware/version/hardware metadata
+                // survives gateway restarts and older saved records get upgraded.
+                saveNodesToNvs();
 
                 if (nodeOtaJob.active &&
                     nodeOtaJob.nodeId == assignId) {
@@ -3222,6 +3393,31 @@ static void setupRoutes() {
                 return;
             }
 
+            if (nodes[nodeId].hw_config_id[0] == '\0') {
+                Serial.printf("[NODE OTA]  Node #%d has no stored hardware config ID. "
+                              "Reboot or re-pair the node so it can re-register with the "
+                              "latest firmware metadata.\n", nodeId);
+                req->send(400, "application/json",
+                          R"({"ok":false,"error":"Selected node did not report a hardware configuration ID. If it is already on the latest firmware, reboot or re-pair the node once so the gateway can refresh its stored hardware ID; otherwise flash the latest node firmware first."})");
+                if (LittleFS.exists(NODE_OTA_FILE_PATH)) LittleFS.remove(NODE_OTA_FILE_PATH);
+                cleanup();
+                return;
+            }
+
+            if (!hardwareConfigIdsMatch(state->incomingHwConfigId, nodes[nodeId].hw_config_id)) {
+                JsonDocument doc;
+                doc["ok"] = false;
+                doc["error"] = String("Firmware hardware configuration mismatch. Selected node expects ")
+                    + nodes[nodeId].hw_config_id + " but the uploaded firmware targets "
+                    + state->incomingHwConfigId + ".";
+                String body;
+                serializeJson(doc, body);
+                req->send(400, "application/json", body);
+                if (LittleFS.exists(NODE_OTA_FILE_PATH)) LittleFS.remove(NODE_OTA_FILE_PATH);
+                cleanup();
+                return;
+            }
+
             nodeOtaJob = NodeOtaJobState{};
             nodeOtaJob.nodeId = nodeId;
             nodeOtaJob.targetType = uploadedType;
@@ -3265,6 +3461,7 @@ void setup() {
     delay(200);
     Serial.println("\n\n[BOOT] ESP32 Mesh Gateway");
     bootMs = millis();
+    touchGatewayFirmwareMarkers();
 
     // Gateway Status LED Setup
     gwLed.begin();

@@ -5,6 +5,8 @@ Target board: `dfrobot_beetle_esp32c3`
 
 This firmware runs on the **ESP32-C3 coprocessor** attached to the ESP32-S3 gateway. It is not a standalone mesh node. Its main job is to help the gateway perform **Node OTA updates** by staging node firmware, creating a temporary helper access point, serving the staged `firmware.bin` over HTTP, and sending helper status back to the gateway over UART.
 
+The helper does not decide firmware compatibility by itself. The ESP32-S3 gateway now validates node role and hardware-config compatibility before the helper staging flow is allowed to begin.
+
 ---
 
 ## What This Coprocessor Does
@@ -19,6 +21,8 @@ During a Node OTA update, the helper:
 6. reports progress and errors back to the gateway
 
 The gateway remains the OTA orchestrator. The ESP32-C3 only handles the helper-side transport and temporary OTA hosting.
+
+This means incompatible uploads such as wrong-role firmware, wrong hardware-config firmware, or gateway firmware accidentally sent through the node OTA path are rejected by the gateway before the helper is engaged.
 
 ---
 

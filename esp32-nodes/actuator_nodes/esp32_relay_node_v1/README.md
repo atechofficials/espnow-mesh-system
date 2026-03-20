@@ -1,6 +1,6 @@
 # ESP32 Relay Node v1
 
-Firmware version: **1.1.0**
+Firmware version: **1.1.1**
 Target board: `esp32dev`
 
 ## Firmware Changelog
@@ -10,6 +10,7 @@ Target board: `esp32dev`
 | v1.0.1 | Added per-node settings support for relay state persistence and status LED control, added actuator-state sync after reconnect/reboot, and fixed relay-state persistence so all 4 relays restore correctly after reboot |
 | v1.0.2 | Added capacitive touch sensor support to the ESP32 Relay Node with relay-state sync for the web interface |
 | v1.1.0 | Added gateway-managed Node OTA support, helper-AP download handling, OTA finalization/reboot flow, and validated relay-node OTA reconnect behavior |
+| v1.1.1 | Added `HW_CONFIG_ID` reporting/firmware markers so the gateway can reject incompatible actuator firmware during Node OTA |
 
 ## Hardware
 
@@ -87,6 +88,7 @@ Change these defines before flashing:
 | `TOUCH3_PIN` | `13` | TTP224 capacitive touch sensor 3 |
 | `TOUCH4_PIN` | `14` | TTP224 capacitive touch sensor 4 |
 | `relay_active_high` | `false` | Active-HIGH relay support flag |
+| `HW_CONFIG_ID` | `"0x1A"` | Hardware configuration ID embedded in firmware and reported to the gateway for OTA compatibility checks |
 
 When deploying multiple nodes, give each a unique `NODE_NAME`.
 
@@ -122,7 +124,7 @@ After the initial USB flash, future compatible firmware builds can be delivered 
 5. The gateway detects the beacon and completes the handshake automatically
 6. The LED turns solid green - the node is now paired and transmitting
 
-At pair time the node sends its actuator state and settings data to the gateway so the dashboard can stay synchronized without extra manual configuration.
+At pair time the node sends its actuator state, settings data, firmware version, and hardware configuration ID to the gateway so the dashboard can stay synchronized without extra manual configuration.
 
 ---
 
@@ -137,6 +139,8 @@ When the gateway starts a Node OTA update for this device:
 5. relay control and dashboard synchronization resume after reconnect
 
 Relay-node OTA has now been validated successfully with the current gateway-managed Node OTA workflow.
+
+The gateway now validates both the `ACTUATOR` role marker and the matching `HW_CONFIG_ID` before the helper delivery flow is started.
 
 ---
 

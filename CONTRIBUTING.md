@@ -33,14 +33,14 @@ Current file versions:
 
 | Component | Current Version |
 |----------|-----------------|
-| ESP32-S3 Gateway firmware `main.cpp` | `v2.0.0` |
+| ESP32-S3 Gateway firmware `main.cpp` | `v2.0.1` |
 | ESP32-C3 Gateway Coprocessor firmware `main.cpp` | `v0.1.0` |
-| ESP32 Sensor Node firmware `main.cpp` | `v2.1.0` |
-| ESP32 Actuator Relay Node firmware `main.cpp` | `v1.1.0` |
-| `mesh_protocol.h` | `v3.2.0` |
+| ESP32 Sensor Node firmware `main.cpp` | `v2.1.1` |
+| ESP32 Actuator Relay Node firmware `main.cpp` | `v1.1.1` |
+| `mesh_protocol.h` | `v3.2.1` |
 | `coproc_ota_protocol.h` | `v1.0.0` |
 | `index.html` | `v3.7` |
-| `app.js` | `v3.9` |
+| `app.js` | `v4.0` |
 | `style.css` | `v3.5` |
 
 Current supported node categories:
@@ -54,6 +54,10 @@ The current Node OTA system has been validated with:
 - firmware downgrades
 - sensor-node OTA
 - relay-node OTA
+- node-role mismatch rejection
+- node hardware-config mismatch rejection
+- gateway hardware-config mismatch rejection
+- gateway-image rejection on the node OTA route
 
 ---
 
@@ -184,6 +188,8 @@ This file is the protocol contract and must remain identical across:
 - sensor node firmware
 - actuator node firmware
 
+The current OTA-safety extension also depends on node registration carrying `hw_config_id`, so contributors must keep that field aligned everywhere the shared protocol is copied.
+
 ### 2. Shared gateway-helper OTA transport
 
 The ESP32-S3 gateway and ESP32-C3 helper use `coproc_ota_protocol.h` as their UART transport contract for Node OTA staging, control, and status reporting.
@@ -208,6 +214,11 @@ Actuator nodes should also report current actuator state so the gateway and Web 
 - Gateway firmware owns pairing, routing, NVS tracking, browser communication, and Node OTA orchestration
 - Gateway coprocessor firmware owns helper AP hosting, staged firmware serving, and helper-side OTA status reporting
 - Web assets own rendering and user interaction only
+
+OTA compatibility checks are split deliberately:
+- the gateway validates firmware type, firmware markers, and hardware-config compatibility
+- the helper only stages and serves firmware that has already passed gateway-side checks
+- nodes still own the final download, flash, and reboot flow
 
 ### 5. Backward-aware protocol evolution
 
@@ -251,13 +262,14 @@ Things typically handled in the gateway:
 - WebSocket communication
 - HTTP API endpoints
 - persistence of gateway-side state
-- Node OTA job scheduling, validation, progress reporting, and reconnect detection
+- Node OTA job scheduling, validation, progress reporting, reconnect detection, and persistence of node hardware-config metadata
 
 Before changing gateway logic:
 - confirm whether the change belongs in the gateway, helper, or the node
 - keep settings and sensor handling schema-driven
 - do not hardcode node-specific behavior unless it is truly gateway-specific
 - retest end-to-end Node OTA when changing OTA job timing, status handling, or reconnect logic
+- preserve `GWHWCFG:` and `NODEHWCFG:` validation behavior when changing OTA upload parsing or firmware-marker scanning
 
 ---
 
@@ -298,6 +310,7 @@ Important notes:
 - actuator buttons, settings panels, and node status should stay in sync with WebSocket updates
 - preserve schema-driven rendering wherever possible
 - when changing Node OTA UX, verify staging, reconnect, success, and failure states
+- keep explicit OTA error messages visible; do not replace specific mismatch errors with generic busy/rebooting text
 
 When modifying the dashboard:
 - keep `index.html`, `app.js`, and `style.css` version notes aligned
@@ -330,8 +343,9 @@ When adding a new sensor node:
 5. Extend sensor data sending logic
 6. Add settings only if needed
 7. Preserve the node OTA metadata/descriptor handling
-8. Update the node README
-9. Update `esp32-nodes/sensor_nodes/README.md`
+8. Define a unique `HW_CONFIG_ID` for the actual hardware build and preserve the `NODEHWCFG` marker/reporting path
+9. Update the node README
+10. Update `esp32-nodes/sensor_nodes/README.md`
 
 Goal:
 A new sensor node should ideally require no gateway code changes if it follows the current schema-driven model and the existing Node OTA contract.
@@ -360,8 +374,9 @@ When adding or extending an actuator node:
 3. Test persistence behavior carefully
 4. Test reboot and reconnect state sync
 5. Preserve the node OTA metadata/descriptor handling
-6. Document every exposed setting in that node's README
-7. Update `esp32-nodes/actuator_nodes/README.md`
+6. Define a unique `HW_CONFIG_ID` for the actual hardware build and preserve the `NODEHWCFG` marker/reporting path
+7. Document every exposed setting in that node's README
+8. Update `esp32-nodes/actuator_nodes/README.md`
 
 Important:
 Actuator nodes should never assume the Web Interface can guess real hardware state. The node must report it.
@@ -370,7 +385,7 @@ Actuator nodes should never assume the Web Interface can guess real hardware sta
 
 ## Changing mesh_protocol.h
 
-Current version: `v3.2.0`
+Current version: `v3.2.1`
 
 File locations must stay synchronized:
 - `esp32-gateway/gateway_v1/include/mesh_protocol.h`
@@ -382,6 +397,7 @@ When changing the protocol:
 - keep packing assumptions consistent
 - update all copies immediately
 - validate both gateway and node builds after the change
+- re-check any OTA metadata that depends on registration contents, including `hw_config_id`
 
 Use these versioning rules:
 - patch bump for comments or non-functional cleanup
@@ -432,6 +448,7 @@ Bump when gateway logic changes in a meaningful way:
 - state sync
 - HTTP/WebSocket behavior
 - Node OTA orchestration
+- gateway-side OTA safety validation such as hardware-config checks
 
 ### Gateway coprocessor firmware
 
@@ -452,6 +469,7 @@ Bump when node behavior changes:
 - schema definitions
 - message handling
 - Node OTA downloader/finalization behavior
+- hardware identity reporting used by gateway-managed OTA
 
 ### Web assets
 
@@ -504,6 +522,7 @@ Recommended PR structure:
 
 - Do not let copies of `mesh_protocol.h` drift apart
 - Do not let copies of `coproc_ota_protocol.h` drift apart
+- Keep `HW_CONFIG_ID`, `GWHWCFG`, and `NODEHWCFG` behavior aligned with the actual hardware variant being built
 - Prefer schema-driven design over hardcoded gateway/dashboard assumptions
 - Keep contributions focused and easy to review
 - Test actuator-state sync after reboot and reconnect whenever actuator logic changes

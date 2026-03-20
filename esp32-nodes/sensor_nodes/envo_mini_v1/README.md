@@ -1,11 +1,11 @@
 # Envo Mini V1 Node
 
-Firmware version: **2.1.0**
+Firmware version: **2.1.1**
 Target board: `dfrobot_firebeetle2_esp32e`
 
 Reads temperature and barometric pressure from a **Bosch BMP280**, humidity from a **DHT22**, and ambient light level from a **TEMT6000** phototransistor. Transmits all readings to the gateway over ESP-NOW using the schema-driven sensor protocol, so the node self-describes its sensors to the gateway at pair time and no gateway changes are needed when sensors are added or removed.
 
-This node also supports the **gateway-managed Node OTA** workflow introduced with the ESP32-S3 gateway `v2.0.0` and ESP32-C3 helper firmware `v0.1.0`.
+This node also supports the **gateway-managed Node OTA** workflow introduced with the ESP32-S3 gateway `v2.0.0` and ESP32-C3 helper firmware `v0.1.0`. Current releases also report this node's hardware configuration ID so the gateway can reject incompatible sensor firmware before the OTA session starts.
 
 ## Firmware Changelog
 | Version | Notes |
@@ -13,6 +13,7 @@ This node also supports the **gateway-managed Node OTA** workflow introduced wit
 | v2.0.0 | Added two more sensors: DHT22 for relative humidity and TEMT6000 for ambient light |
 | v2.0.1 | Added more serial-monitor debugging messages |
 | v2.1.0 | Added gateway-managed Node OTA support, helper-AP download handling, OTA finalization/reboot flow, and improved OTA status reporting |
+| v2.1.1 | Added `HW_CONFIG_ID` reporting/firmware markers for hardware-safe OTA validation and compatibility checks from the gateway |
 
 ---
 
@@ -90,6 +91,7 @@ Change these defines before flashing:
 | `TEMT6000_PIN` | `36` | TEMT6000 ADC GPIO |
 | `PAIR_BTN_PIN` | `27` | Pairing button GPIO (active-LOW) |
 | `LED_PIN` | `5` | WS2812B data GPIO |
+| `HW_CONFIG_ID` | `"0x0B"` | Hardware configuration ID embedded in firmware and reported to the gateway for OTA compatibility checks |
 
 When deploying multiple nodes, give each a unique `NODE_NAME`.
 
@@ -125,7 +127,7 @@ After the initial USB flash, future compatible firmware builds can be delivered 
 5. The gateway detects the beacon and completes the handshake automatically
 6. The LED turns solid green - the node is now paired and transmitting
 
-At pair time the node sends its sensor schema to the gateway. The gateway and dashboard adapt automatically - no configuration required on the gateway side.
+At pair time the node sends its sensor schema, firmware version, and hardware configuration ID to the gateway. The gateway and dashboard adapt automatically - no configuration required on the gateway side.
 
 ---
 
@@ -143,6 +145,8 @@ Validated behaviors now include:
 - same-version reflashing
 - version upgrades
 - version downgrades
+
+The gateway now validates both the `SENSOR` role marker and the matching `HW_CONFIG_ID` before the OTA helper flow is started.
 
 ---
 

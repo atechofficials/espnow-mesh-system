@@ -34,7 +34,7 @@ Change node settings such as:
 - Sensor-specific options
 
 ### Gateway-managed Node OTA
-Upload compatible sensor-node or actuator-node firmware from the gateway web interface and let the gateway update the selected node without connecting that node to your home Wi-Fi.
+Upload compatible sensor-node or actuator-node firmware from the gateway web interface and let the gateway update the selected node without connecting that node to your home Wi-Fi. The gateway now validates both the node role and the node hardware configuration ID before delivery begins.
 
 ### Automatic recovery
 If the gateway or node reboots, the system reconnects automatically and restores state where supported.
@@ -70,9 +70,9 @@ The project already supports both **sensor nodes** and **actuator nodes**.
 
 ### Current OTA capabilities
 
-- Gateway self-OTA from the browser
-- Gateway-managed OTA for supported sensor nodes
-- Gateway-managed OTA for supported actuator nodes
+- Gateway self-OTA from the browser with gateway hardware-config ID validation
+- Gateway-managed OTA for supported sensor nodes with role and hardware-config ID validation
+- Gateway-managed OTA for supported actuator nodes with role and hardware-config ID validation
 
 ---
 
@@ -110,7 +110,7 @@ The gateway acts as the bridge between:
 - your browser over Wi-Fi
 - your ESP32 nodes over ESP-NOW
 
-For **Node OTA**, the gateway temporarily hands firmware delivery to the on-board **ESP32-C3 coprocessor**, which stages the selected node firmware, starts a temporary helper access point, and serves the firmware image to the target node while the main gateway continues managing the mesh and dashboard.
+For **Node OTA**, the gateway temporarily hands firmware delivery to the on-board **ESP32-C3 coprocessor**, which stages the selected node firmware, starts a temporary helper access point, and serves the firmware image to the target node while the main gateway continues managing the mesh and dashboard. Incompatible uploads are blocked up front if the firmware markers do not match the selected node role or hardware configuration.
 
 ---
 
@@ -273,7 +273,7 @@ The project currently supports:
 - local sensor monitoring
 - local relay control
 - browser-based node management
-- gateway-managed Node OTA for supported sensor and relay nodes
+- gateway-managed Node OTA for supported sensor and relay nodes with role and hardware-config safety checks
 
 Planned future growth may include:
 - more sensor node types

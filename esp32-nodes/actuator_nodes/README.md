@@ -27,12 +27,13 @@ Supported actuator-node firmwares can also be updated through the **gateway-mana
 - Persistent settings stored in NVS
 - Optional relay state persistence, depending on node firmware
 - Gateway-managed Node OTA delivery for supported actuator-node firmware
+- Hardware-config-aware OTA safety checks for compatible actuator-node firmware
 
 ---
 
 ## Protocol Notes
 
-Actuator nodes use the shared `mesh_protocol.h` definitions and the actuator messaging available in protocol version **v3.2.0**.
+Actuator nodes use the shared `mesh_protocol.h` definitions and the actuator messaging available in protocol version **v3.2.1**.
 
 ### Actuator-related message types
 
@@ -60,6 +61,8 @@ Actuator nodes are designed to work much like sensor nodes, but instead of mainl
 4. Expose configurable node settings where needed
 5. Participate in the gateway-managed Node OTA workflow when a compatible firmware image is uploaded from the dashboard
 
+Current actuator-node firmwares also report their `HW_CONFIG_ID` during registration so the gateway can block incompatible actuator firmware before OTA delivery begins.
+
 This keeps the gateway and Web Interface synchronized after:
 - actuator toggles
 - node reboot
@@ -82,7 +85,7 @@ Main capabilities:
 - supports Status LED enable/disable setting
 - exposes settings in the gateway Web Interface for easier control
 - supports per-relay labels set from the Web Interface
-- supports gateway-managed Node OTA
+- supports gateway-managed Node OTA with role and hardware-config validation
 
 ---
 

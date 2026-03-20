@@ -14,10 +14,11 @@
      *          - Implements a simple touch input handling for toggling relays, with debounce logic.
      * 
      *        Note: This code is intended as a starting point and may require adjustments based on specific hardware configurations and requirements.
- * @version 1.1.0
+ * @version 1.1.1
     * @author Mrinal (@atechofficials)
  */
-#define FW_VERSION "1.1.0"
+#define FW_VERSION "1.1.1"
+#define HW_CONFIG_ID "0x1A"
 
 #include <Arduino.h>
 #include <WiFi.h>
@@ -96,6 +97,7 @@ static char relayLabel[4][16] =
 };
 static const char kNodeFirmwareRoleMarker[] = "NODETYPE:ACTUATOR";
 static const char kNodeFirmwareVersionMarker[] = "NODEFWVER:" FW_VERSION;
+static const char kNodeHardwareConfigMarker[] = "NODEHWCFG:" HW_CONFIG_ID;
 static volatile uint32_t gNodeFirmwareMarkerChecksum = 0;
 #define SETTING_ID_RELAY_PERSIST 0
 #define SETTING_ID_LED_EN 1
@@ -125,6 +127,7 @@ static void touchFirmwareMarkers() {
     uint32_t sum = 0;
     for (size_t i = 0; kNodeFirmwareRoleMarker[i] != '\0'; i++) sum += (uint8_t)kNodeFirmwareRoleMarker[i];
     for (size_t i = 0; kNodeFirmwareVersionMarker[i] != '\0'; i++) sum += (uint8_t)kNodeFirmwareVersionMarker[i];
+    for (size_t i = 0; kNodeHardwareConfigMarker[i] != '\0'; i++) sum += (uint8_t)kNodeHardwareConfigMarker[i];
     gNodeFirmwareMarkerChecksum = sum;
 }
 
@@ -475,7 +478,7 @@ static void sendBeacon() {
 }
 
 static void sendRegistration() {
-    MsgRegister reg;
+    MsgRegister reg{};
     reg.hdr.type      = MSG_REGISTER;
     reg.hdr.node_id   = myNodeId;
     reg.hdr.node_type = NODE_ACTUATOR;
@@ -483,6 +486,8 @@ static void sendRegistration() {
     reg.name[15] = '\0';
     strncpy(reg.fw_version, FW_VERSION, 7);
     reg.fw_version[7] = '\0';
+    strncpy(reg.hw_config_id, HW_CONFIG_ID, sizeof(reg.hw_config_id) - 1);
+    reg.hw_config_id[sizeof(reg.hw_config_id) - 1] = '\0';
     esp_now_send(masterMac, (uint8_t*)&reg, sizeof(reg));
     // For Debugging: print sent registration info to Serial Monitor
     Serial.printf("[MSG]  Registration sent to master.\n Waiting for ACK...\n");

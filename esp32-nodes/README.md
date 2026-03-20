@@ -16,7 +16,7 @@ Currently implemented:
 
 | Node | Sensors | Firmware |
 |------|---------|----------|
-| Envo Mini V1 Node | Bosch BMP280 (temperature + pressure) + DHT22 (humidity) + TEMT6000 (ambient light) | v2.1.0 |
+| Envo Mini V1 Node | Bosch BMP280 (temperature + pressure) + DHT22 (humidity) + TEMT6000 (ambient light) | v2.1.1 |
 
 ### Actuator Nodes (`actuator_nodes/`)
 
@@ -26,7 +26,7 @@ Currently implemented:
 
 | Node | Actuator | Firmware |
 |------|---------|----------|
-| ESP32 Relay Node v1 | 4-Relays | v1.1.0 |
+| ESP32 Relay Node v1 | 4-Relays | v1.1.1 |
 
 ---
 
@@ -46,6 +46,8 @@ Pairing data (gateway MAC, channel, assigned node ID) is saved to NVS on the nod
 ## How Re-registration Works
 
 If the gateway reboots or loses power, nodes detect the absence of acknowledgements and automatically re-send their registration message. The gateway reassigns the same ID (if the node was previously known) and the mesh reassembles without any user intervention.
+
+Current node firmwares also re-report their `HW_CONFIG_ID` during registration and re-registration so the gateway can keep hardware-aware OTA checks available even after restarts.
 
 ---
 
@@ -67,6 +69,8 @@ This flow has now been validated with:
 - version upgrades
 - version downgrades
 - same-version reflashing
+- role mismatch rejection
+- hardware-config mismatch rejection
 
 ---
 
