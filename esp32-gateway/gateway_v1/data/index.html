@@ -1,4 +1,4 @@
-<!-- ESP32 Mesh Gateway Web Interface v3.7 -->
+<!-- ESP32 Mesh Gateway Web Interface v3.8 -->
 <!DOCTYPE html>
 <html lang="en" data-theme="dark">
 <head>
@@ -6,7 +6,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>ESP32 Mesh Gateway</title>
   <link rel="icon" type="image/svg+xml" href="/icons/esp32-mesh-icon.svg">
-  <link rel="stylesheet" href="/css/style.css">
+  <link rel="stylesheet" href="/css/style.css?v=3.6-mobilefix7">
 </head>
 <body>
 
@@ -68,6 +68,7 @@
           <span class="sb-brand-main">ESP32</span>
           <span class="sb-brand-sub">MESH GATEWAY</span>
         </div>
+        <button class="sb-close-btn" id="sidebar-close-btn" type="button" aria-label="Close menu">×</button>
       </div>
 
       <nav class="sb-nav">
@@ -92,6 +93,18 @@
           <span class="icon icon-md sb-btn-icon icon-gears"></span>
           <span>Settings</span>
         </button>
+
+        <div class="sb-mobile-actions">
+          <button class="sb-action-btn reboot" id="gw-reboot-btn-mobile" title="Reboot Gateway" type="button">
+            <span class="icon icon-md gw-reboot-btn-icon"></span>
+            <span>Reboot GW</span>
+          </button>
+
+          <button class="sb-action-btn factory" id="gw-factory-btn-mobile" title="Factory Reset Gateway" type="button">
+            <span class="icon icon-md gw-factory-btn-icon"></span>
+            <span>Factory Reset</span>
+          </button>
+        </div>
       </nav>
 
       <!-- Footer Section -->
@@ -138,12 +151,12 @@
           <span>Logout</span>
         </button>
 
-        <button class="gw-reboot-btn" id="gw-reboot-btn" title="Reboot Gateway">
+        <button class="gw-reboot-btn" id="gw-reboot-btn" title="Reboot Gateway" type="button">
           <span class="icon icon-sm gw-reboot-btn-icon"></span>
           <span>Reboot GW</span>
         </button>
 
-        <button class="gw-factory-btn" id="gw-factory-btn" title="Factory Reset Gateway">
+        <button class="gw-factory-btn" id="gw-factory-btn" title="Factory Reset Gateway" type="button">
           <span class="icon icon-sm gw-factory-btn-icon"></span>
           <span>Factory Reset</span>
         </button>
@@ -540,6 +553,6 @@
   <!-- ── Pair timeout toast ─────────────────────────────────────── -->
   <div class="toast" id="toast" style="display:none"></div>
 
-  <script src="/js/app.js"></script>
+  <script src="/js/app.js?v=4.1-mobilefix5"></script>
 </body>
 </html>

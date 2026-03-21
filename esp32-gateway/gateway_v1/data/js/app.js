@@ -1,5 +1,5 @@
 /**
- * ESP32 Mesh Gateway Web Interface Client v4.1
+ * ESP32 Mesh Gateway Web Interface Client v4.2
  *
  * WS Inbound:  { type:"meta"|"update"|"discovered"|"pair_timeout"|"ap_config_ack"|
  *                     "gw_portal_starting"|"gw_factory_reset"|"gw_rebooting"|
@@ -58,8 +58,8 @@ const $modalTitle = $("modal-title");
 const $modalBody  = $("modal-body");
 const $themeBtn = $("theme-btn");
 const $toast    = $("toast");
-const $gwReboot  = $("gw-reboot-btn");
-const $gwFactory = $("gw-factory-btn");
+const $gwRebootButtons = [$("gw-reboot-btn"), $("gw-reboot-btn-mobile")].filter(Boolean);
+const $gwFactoryButtons = [$("gw-factory-btn"), $("gw-factory-btn-mobile")].filter(Boolean);
 const $gwLedToggle = $("gw-led-toggle");
 const $logoutBtn = $("logout-btn");
 
@@ -134,6 +134,43 @@ $themeBtn.addEventListener("click", () => {
 });
 
 // ── Navigation ────────────────────────────────────────────────────────────────
+let sidebarScrollLockY = 0;
+
+function lockPageScroll() {
+  if (document.body.classList.contains("sidebar-open")) return;
+  sidebarScrollLockY = window.scrollY || window.pageYOffset || 0;
+  document.body.classList.add("sidebar-open");
+  document.body.style.top = `-${sidebarScrollLockY}px`;
+}
+
+function unlockPageScroll() {
+  if (!document.body.classList.contains("sidebar-open")) return;
+  document.body.classList.remove("sidebar-open");
+  document.body.style.top = "";
+  window.scrollTo(0, sidebarScrollLockY);
+}
+
+function openSidebar() {
+  document.getElementById("sidebar").classList.add("open");
+  document.getElementById("sb-overlay").classList.add("open");
+  lockPageScroll();
+}
+
+function closeSidebar() {
+  document.getElementById("sidebar").classList.remove("open");
+  document.getElementById("sb-overlay").classList.remove("open");
+  unlockPageScroll();
+}
+
+function toggleSidebar() {
+  const sidebar = document.getElementById("sidebar");
+  if (sidebar.classList.contains("open")) {
+    closeSidebar();
+    return;
+  }
+  openSidebar();
+}
+
 function navigate(section) {
   currentSection = section;
 
@@ -145,8 +182,7 @@ function navigate(section) {
   });
 
   // Close mobile sidebar
-  document.getElementById("sidebar").classList.remove("open");
-  document.getElementById("sb-overlay").classList.remove("open");
+  closeSidebar();
 }
 
 document.querySelectorAll(".sb-btn[data-section]").forEach(btn => {
@@ -154,14 +190,27 @@ document.querySelectorAll(".sb-btn[data-section]").forEach(btn => {
 });
 
 // Mobile menu toggle
-$("menu-btn").addEventListener("click", () => {
-  document.getElementById("sidebar").classList.toggle("open");
-  document.getElementById("sb-overlay").classList.toggle("open");
+$("menu-btn").addEventListener("click", e => {
+  e.preventDefault();
+  e.stopPropagation();
+  toggleSidebar();
 });
 
-$("sb-overlay").addEventListener("click", () => {
-  document.getElementById("sidebar").classList.remove("open");
-  $("sb-overlay").classList.remove("open");
+const $sidebarCloseBtn = $("sidebar-close-btn");
+if ($sidebarCloseBtn) {
+  $sidebarCloseBtn.addEventListener("click", e => {
+    e.preventDefault();
+    e.stopPropagation();
+    closeSidebar();
+  });
+}
+
+$("sb-overlay").addEventListener("click", closeSidebar);
+
+window.addEventListener("resize", () => {
+  if (getComputedStyle($("menu-btn")).display === "none") {
+    closeSidebar();
+  }
 });
 
 // ── Auth ──────────────────────────────────────────────────────────────────────
@@ -444,23 +493,31 @@ function connect() {
       case "rfid_scan_event": {
         const nodeId = Number(msg.node_id || 0);
         const uid = normalizeRfidUidInput(msg.uid || "");
+        const matchedSlot = Number(msg.matched_slot ?? -1);
         const prev = nodeRfidConfigs.get(nodeId) || { ready: false, slots: [] };
         nodeRfidConfigs.set(nodeId, {
           ...prev,
           last_scan: {
             uid,
-            matched_slot: Number(msg.matched_slot ?? -1),
+            matched_slot: matchedSlot,
             relay_mask: Number(msg.relay_mask || 0)
           }
         });
-        const targetSlot = Number(msg.matched_slot) >= 0
-          ? Number(msg.matched_slot)
+        const targetSlot = matchedSlot >= 0
+          ? matchedSlot
           : getRfidSlotsForNode(nodeId).find(slot => !slot.enabled)?.slot ?? 0;
         const state = loadRfidEditorSlot(nodeId, targetSlot);
         if (uid) {
           state.uid = uid;
-          if (Number(msg.matched_slot) < 0) state.relayMask = 0;
+          if (matchedSlot < 0) state.relayMask = 0;
           rfidEditorState.set(nodeId, state);
+        }
+        if (uid) {
+          if (matchedSlot >= 0) {
+            showToast("RFID Card Swiped. Performing Actions.", "success");
+          } else {
+            showToast("New RFID Card Detected. Ready for addition to database.", "warn");
+          }
         }
         if (nsCurrentNodeId === nodeId) renderNodeSettings(nodeId);
         break;
@@ -1320,12 +1377,24 @@ function sendUnpairCmd(nodeId) {
 
 // ── Reboot ────────────────────────────────────────────────────────────────────
 function sendGatewayReboot() {
-  if (!confirm("Reboot the ESP32-S3 Gateway?\nThe dashboard will reconnect automatically.")) return;
-  send({ type: "reboot_gw" });
-  showToast("Gateway rebooting — reconnecting...", "warn");
-  // Disable the button briefly so it can't be clicked again mid-reboot
-  $gwReboot.disabled = true;
-  setTimeout(() => { $gwReboot.disabled = false; }, 12000);
+  closeSidebar();
+  showConfirm({
+    title: "Reboot Gateway?",
+    body: `The ESP32-S3 Gateway will <strong>restart immediately</strong>.<br><br>
+           The dashboard will disconnect briefly and then <strong>reconnect automatically</strong>
+           once the gateway finishes booting.`,
+    okLabel: "Yes, Reboot Gateway",
+    okClass: "warn",
+    callback() {
+      send({ type: "reboot_gw" });
+      showToast("Gateway rebooting — reconnecting...", "warn");
+      // Disable the button briefly so it can't be clicked again mid-reboot
+      $gwRebootButtons.forEach(btn => { btn.disabled = true; });
+      setTimeout(() => {
+        $gwRebootButtons.forEach(btn => { btn.disabled = false; });
+      }, 12000);
+    }
+  });
 }
 
 function sendNodeReboot(nodeId) {
@@ -1353,18 +1422,37 @@ function sendRelayCmd(nodeId, relayIndex, currentState) {
 
 // ── Confirm modal (destructive actions) ───────────────────────────────────────
 let _confirmCallback = null;
+let confirmScrollLockY = 0;
+
+function lockConfirmPageScroll() {
+  if (document.body.classList.contains("sidebar-open") || document.body.classList.contains("confirm-open")) return;
+  confirmScrollLockY = window.scrollY || window.pageYOffset || 0;
+  document.body.style.top = `-${confirmScrollLockY}px`;
+  document.body.classList.add("confirm-open");
+}
+
+function unlockConfirmPageScroll() {
+  if (!document.body.classList.contains("confirm-open")) return;
+  document.body.classList.remove("confirm-open");
+  if (document.body.classList.contains("sidebar-open")) return;
+  document.body.style.top = "";
+  window.scrollTo(0, confirmScrollLockY);
+}
+
 function showConfirm({ title, body, okLabel = "Confirm", okClass = "", callback }) {
   $confirmTitle.textContent = title;
   $confirmBody.innerHTML    = body;   // supports HTML for bold/line-breaks in warning text
   $confirmOkBtn.textContent = okLabel;
   $confirmOkBtn.className   = "confirm-ok-btn" + (okClass ? " " + okClass : "");
   _confirmCallback          = callback;
+  lockConfirmPageScroll();
   $confirmOverlay.style.display = "";
   $confirmCancelBtn.focus();
 }
 function closeConfirm() {
   $confirmOverlay.style.display = "none";
   _confirmCallback = null;
+  unlockConfirmPageScroll();
 }
 $confirmCancelBtn.addEventListener("click", closeConfirm);
 $confirmOkBtn.addEventListener("click", () => {
@@ -1887,6 +1975,7 @@ $wifiPortalBtn.addEventListener("click", triggerWifiPortal);
 
 // ── Factory reset ─────────────────────────────────────────────────────────────
 function factoryReset() {
+  closeSidebar();
   showConfirm({
     title: "Factory Reset Gateway?",
     body: `<strong>This action is irreversible.</strong><br><br>
@@ -1903,12 +1992,11 @@ function factoryReset() {
     callback() {
       send({ type: "factory_reset" });
       showToast("🗑 Factory reset initiated — gateway restarting…", "warn");
-      $gwFactory.disabled = true;
+      $gwFactoryButtons.forEach(btn => { btn.disabled = true; });
     }
   });
 }
 
-$gwFactory.addEventListener("click", factoryReset);
 
 // ── Node Settings Modal ────────────────────────────────────────────────────────
 function openNodeSettings(nodeId) {
@@ -2233,7 +2321,6 @@ function showToast(msg, type = "success") {
   toastTimer = setTimeout(() => { $toast.style.display = "none"; }, 4000);
 }
 
-$gwReboot.addEventListener("click", sendGatewayReboot);
 
 // ── Login form ────────────────────────────────────────────────────────────────
 $("login-btn").addEventListener("click", doLogin);
@@ -2249,6 +2336,28 @@ $logoutBtn.addEventListener("click", () => {
 
 // ── Delegated events ──────────────────────────────────────────────────────────
 document.addEventListener("click", e => {
+  const sidebarCloseBtn = e.target.closest("#sidebar-close-btn");
+  if (sidebarCloseBtn) {
+    e.preventDefault();
+    e.stopPropagation();
+    closeSidebar();
+    return;
+  }
+
+  const gwRebootBtn = e.target.closest("#gw-reboot-btn, #gw-reboot-btn-mobile");
+  if (gwRebootBtn && !gwRebootBtn.disabled) {
+    e.preventDefault();
+    sendGatewayReboot();
+    return;
+  }
+
+  const gwFactoryBtn = e.target.closest("#gw-factory-btn, #gw-factory-btn-mobile");
+  if (gwFactoryBtn && !gwFactoryBtn.disabled) {
+    e.preventDefault();
+    factoryReset();
+    return;
+  }
+
   // Node settings stepper buttons
   const stepBtn = e.target.closest(".ns-stepper-btn");
   if (stepBtn && !stepBtn.disabled) {

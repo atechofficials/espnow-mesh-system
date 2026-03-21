@@ -1,17 +1,21 @@
 # Gateway v1 - Build, Flash, and OTA Guide
 
-Firmware version: **2.1.0**  
+Firmware version: **2.1.1**  
 Target board: `esp32-s3-devkitc1-n8r8`
 
 Gateway helper coprocessor: **ESP32-C3 firmware v0.1.1**
 
 ---
 
-## Highlights in v2.1.0
+## Highlights in v2.1.1
 
 - Continues the **gateway-managed Node OTA** workflow for supported sensor, actuator, and hybrid nodes
-- Adds first-class **Hybrid node** handling with capability-aware actuator/RFID synchronization
-- Supports the new **ESP32 Hybrid Relay Node v1** and its RFID card-action workflow in the dashboard
+- Continues first-class **Hybrid node** handling with capability-aware actuator/RFID synchronization
+- Continues support for the **ESP32 Hybrid Relay Node v1** and its RFID card-action workflow in the dashboard
+- Adds RFID scan toasts in the dashboard for **new card detection** and **known card action execution**
+- Improves the **mobile web UI** with better top-bar responsiveness, mobile sidebar gateway actions, and improved side-nav behavior in portrait and landscape orientations
+- Replaces the browser reboot confirmation with a custom **Reboot Gateway** popup consistent with the Factory Reset flow
+- Improves popup styling, warning-icon visibility, small-screen landscape fit, and background scroll locking for side menus and dialogs
 - Preserves actuator state across gateway reboot so relay cards recover correctly after restart
 - Improves gateway OTA success/reboot feedback in the web interface
 - Continues support for the **ESP32-C3 gateway coprocessor**, `coproc_ota_protocol.h`, gateway web credentials, relay label assignment, gateway LED control, and schema-driven node settings

@@ -1,10 +1,10 @@
 /**
     * @file [main.cpp]
     * @brief Main source file for the ESP32 Mesh Gateway firmware
-    * @version 2.1.0
+    * @version 2.1.1
     * @author Mrinal (@atechofficials)
  */
-#define FW_VERSION "2.1.0"
+#define FW_VERSION "2.1.1"
 #define HW_CONFIG_ID "0x0A"
 
 #include <Arduino.h>
@@ -3652,7 +3652,7 @@ static void setupRoutes() {
     // Static files served without auth - the JS login overlay handles access control.
     server.serveStatic("/", LittleFS, "/")
           .setDefaultFile("index.html")
-          .setCacheControl("max-age=3600");
+          .setCacheControl("no-store, no-cache, must-revalidate, max-age=0");
 
     // /api/auth_check - used by the client on initial page load to determine if credentials are set
     // and if the user is already authenticated (e.g. via remember me)

@@ -57,7 +57,7 @@ The gateway is the heart of the ESPNow Mesh System. It runs on an **ESP32-S3** a
 | v2.0.0 | Added **gateway-managed Node OTA** for supported sensor and actuator nodes, introduced the ESP32-C3 gateway coprocessor workflow, added helper-assisted node firmware staging/delivery, and extended OTA progress/reconnect tracking in the dashboard |
 | v2.0.1 | Added OTA **hardware configuration ID** checks for both gateway OTA and node OTA, persisted node hardware IDs across gateway reboot, and improved OTA mismatch/error reporting in the serial logs and web UI |
 | v2.1.0 | Added first-class **Hybrid node** support, introduced the RFID-enabled Hybrid Relay Node flow, added capability-aware actuator/RFID handling, and improved relay-state restore plus gateway OTA UI feedback after reboot |
-
+| v2.1.1 | Improved the **web dashboard UX** with RFID scan toasts, mobile responsive layout fixes, custom reboot confirmation popup, better popup styling on small screens, overlay scroll-lock fixes, and improved UI asset refresh behavior |
 ---
 
 ## Contents
