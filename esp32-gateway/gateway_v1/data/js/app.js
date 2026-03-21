@@ -1,16 +1,19 @@
 /**
- * ESP32 Mesh Gateway Web Interface Client v4.0
+ * ESP32 Mesh Gateway Web Interface Client v4.1
  *
  * WS Inbound:  { type:"meta"|"update"|"discovered"|"pair_timeout"|"ap_config_ack"|
  *                     "gw_portal_starting"|"gw_factory_reset"|"gw_rebooting"|
  *                     "auth_required"|"auth_ok"|"auth_fail"|"session_expired"|
  *                     "web_creds_ack"|"node_settings"|"node_sensor_schema"|
+ *                     "node_actuator_schema"|"node_rfid_config"|
+ *                     "node_rfid_config_ack"|"rfid_scan_event"|
  *                     "relay_labels_ack" }
  * WS Outbound: { type:"auth"|"actuator_cmd"|"pair_cmd"|"unpair_cmd"|"rename_node"|
  *                     "reboot_gw"|"reboot_node"|"set_ap_config"|"set_web_credentials"|
  *                     "start_wifi_portal"|"factory_reset"|"node_settings_get"|
  *                     "node_settings_set"|"node_sensor_schema_get"|
- *                     "relay_labels_set"|"ping" }
+ *                     "node_actuator_schema_get"|"node_rfid_config_get"|
+ *                     "node_rfid_config_set"|"relay_labels_set"|"ping" }
  */
 "use strict";
 
@@ -24,7 +27,11 @@ const nodes      = new Map();   // nodeId → NodeRecord
 const discovered = new Map();   // mac → DiscoveredNode
 const nodeSettings     = new Map(); // nodeId → SettingDef[]   (schema from node)
 const nodeSensorSchemas = new Map(); // nodeId → SensorDef[]   (schema from node)
+const nodeActuatorSchemas = new Map(); // nodeId → ActuatorDef[] (schema from node)
+const nodeRfidConfigs = new Map(); // nodeId → RFID config snapshot
+const rfidEditorState = new Map(); // nodeId → { selectedSlot, uid, relayMask }
 const RELAY_CHANNEL_COUNT     = 4;
+const RFID_SLOT_COUNT         = 8;
 let   ws         = null;
 let   serverUptime   = 0;
 let   uptimeSyncedAt = 0;
@@ -395,6 +402,69 @@ function connect() {
         nodeSensorSchemas.set(msg.node_id, msg.sensors || []);
         renderDashboard();
         break;
+      case "node_actuator_schema":
+        nodeActuatorSchemas.set(msg.node_id, msg.actuators || []);
+        renderDashboard();
+        renderConnectedNodes();
+        if (nsCurrentNodeId === msg.node_id) renderNodeSettings(msg.node_id);
+        break;
+      case "node_rfid_config": {
+        const nodeId = Number(msg.node_id || 0);
+        nodeRfidConfigs.set(nodeId, {
+          ready: !!msg.ready,
+          actuator_count: Number(msg.actuator_count || 0),
+          slots: Array.isArray(msg.slots) ? msg.slots : [],
+          last_scan: (msg.last_uid || msg.last_uid_len)
+            ? {
+                uid: normalizeRfidUidInput(msg.last_uid || ""),
+                matched_slot: Number(msg.last_matched_slot ?? -1),
+                relay_mask: Number(msg.last_relay_mask || 0),
+                seen_ms: Number(msg.last_seen_ms || 0)
+              }
+            : null
+        });
+        if (!rfidEditorState.has(nodeId)) {
+          loadRfidEditorSlot(nodeId, findDefaultRfidSlot(nodeId));
+        }
+        if (nsCurrentNodeId === nodeId) renderNodeSettings(nodeId);
+        renderDashboard();
+        break;
+      }
+      case "node_rfid_config_ack": {
+        const nodeId = Number(msg.node_id || 0);
+        if (msg.ok) {
+          setRfidSaveNote(nodeId, "Saved on node.", "ok");
+          showToast("RFID card action saved.", "success");
+        } else {
+          setRfidSaveNote(nodeId, msg.err || "Could not save RFID config.", "err");
+          showToast(msg.err || "Could not save RFID config.", "error");
+        }
+        break;
+      }
+      case "rfid_scan_event": {
+        const nodeId = Number(msg.node_id || 0);
+        const uid = normalizeRfidUidInput(msg.uid || "");
+        const prev = nodeRfidConfigs.get(nodeId) || { ready: false, slots: [] };
+        nodeRfidConfigs.set(nodeId, {
+          ...prev,
+          last_scan: {
+            uid,
+            matched_slot: Number(msg.matched_slot ?? -1),
+            relay_mask: Number(msg.relay_mask || 0)
+          }
+        });
+        const targetSlot = Number(msg.matched_slot) >= 0
+          ? Number(msg.matched_slot)
+          : getRfidSlotsForNode(nodeId).find(slot => !slot.enabled)?.slot ?? 0;
+        const state = loadRfidEditorSlot(nodeId, targetSlot);
+        if (uid) {
+          state.uid = uid;
+          if (Number(msg.matched_slot) < 0) state.relayMask = 0;
+          rfidEditorState.set(nodeId, state);
+        }
+        if (nsCurrentNodeId === nodeId) renderNodeSettings(nodeId);
+        break;
+      }
       case "relay_labels_ack": {
         const nodeId = Number(msg.node_id || 0);
         if (msg.ok) {
@@ -432,6 +502,15 @@ function connect() {
         [...nodeSensorSchemas.keys()].forEach(id => {
           if (!activeIds.has(id)) nodeSensorSchemas.delete(id);
         });
+        [...nodeActuatorSchemas.keys()].forEach(id => {
+          if (!activeIds.has(id)) nodeActuatorSchemas.delete(id);
+        });
+        [...nodeRfidConfigs.keys()].forEach(id => {
+          if (!activeIds.has(id)) nodeRfidConfigs.delete(id);
+        });
+        [...rfidEditorState.keys()].forEach(id => {
+          if (!activeIds.has(id)) rfidEditorState.delete(id);
+        });
 
         if (nsCurrentNodeId && !nodes.has(nsCurrentNodeId)) {
           const reboundId = prevModalNode?.mac ? findNodeIdByMac(prevModalNode.mac) : 0;
@@ -457,6 +536,12 @@ function connect() {
           // immediately and updates itself when node_sensor_schema arrives.
           if (n.sensor_schema_ready && !nodeSensorSchemas.has(n.id)) {
             send({ type: "node_sensor_schema_get", node_id: n.id });
+          }
+          if (n.actuator_schema_ready && !nodeActuatorSchemas.has(n.id)) {
+            send({ type: "node_actuator_schema_get", node_id: n.id });
+          }
+          if (n.rfid_ready && !nodeRfidConfigs.has(n.id)) {
+            send({ type: "node_rfid_config_get", node_id: n.id });
           }
         });
 
@@ -631,17 +716,65 @@ function findNodeIdByMac(mac) {
   return 0;
 }
 
+function nodeHasSensorData(node) {
+  const caps = Number(node?.capabilities || 0);
+  return !!(caps & 0x01) || Number(node?.type) === 1;
+}
+
+function nodeHasActuators(node) {
+  const caps = Number(node?.capabilities || 0);
+  return !!(caps & 0x02) || Number(node?.type) === 2 || Number(node?.type) === 3;
+}
+
+function nodeHasRfid(node) {
+  const caps = Number(node?.capabilities || 0);
+  return !!(caps & 0x04);
+}
+
+function getNodeTypeClass(nodeOrType) {
+  const type = typeof nodeOrType === "number"
+    ? nodeOrType
+    : Number(nodeOrType?.type || 0);
+  if (type === 1) return "sensor";
+  if (type === 3) return "hybrid";
+  return "relay";
+}
+
+function getNodeTypeLabel(nodeOrType, compact = false) {
+  const type = typeof nodeOrType === "number"
+    ? nodeOrType
+    : Number(nodeOrType?.type || 0);
+  if (type === 1) return compact ? "SENSOR" : "Sensor";
+  if (type === 3) return compact ? "HYBRID" : "Hybrid";
+  return compact ? "ACTUATOR" : "Actuator";
+}
+
+function getActuatorSchemaForNode(nodeId) {
+  return nodeActuatorSchemas.get(nodeId) || [];
+}
+
+function getActuatorCountForNode(node) {
+  if (!nodeHasActuators(node)) return 0;
+  const schema = getActuatorSchemaForNode(node?.id);
+  if (schema.length > 0) return schema.length;
+  const count = Number(node?.actuator_count || 0);
+  return count > 0 ? count : RELAY_CHANNEL_COUNT;
+}
+
 function getRelayLabelsForNode(node) {
   const labels = Array.isArray(node?.relay_labels) ? node.relay_labels : [];
-  return Array.from({ length: RELAY_CHANNEL_COUNT }, (_, i) => (
-    sanitizeRelayLabel(labels[i], i)
-  ));
+  const schema = getActuatorSchemaForNode(node?.id);
+  const count = getActuatorCountForNode(node);
+  return Array.from({ length: count }, (_, i) => {
+    const fallback = schema[i]?.label || defaultRelayLabel(i);
+    return sanitizeRelayLabel(labels[i] || fallback, i);
+  });
 }
 
 function setRelayLabelsOnNode(nodeId, labels) {
   const n = nodes.get(nodeId);
   if (!n) return null;
-  const normalized = Array.from({ length: RELAY_CHANNEL_COUNT }, (_, i) => (
+  const normalized = Array.from({ length: getActuatorCountForNode(n) }, (_, i) => (
     sanitizeRelayLabel(labels[i], i)
   ));
   n.relay_labels = normalized;
@@ -659,8 +792,9 @@ function setRelayLabelDraft(nodeId, relayIndex, value) {
 }
 
 function replaceRelayLabelDraft(nodeId, labels) {
+  const n = nodes.get(nodeId);
   relayLabelDrafts.set(nodeId, Array.from(
-    { length: RELAY_CHANNEL_COUNT },
+    { length: getActuatorCountForNode(n) },
     (_, i) => sanitizeRelayLabel(labels[i], i)
   ));
 }
@@ -671,6 +805,171 @@ function clearRelayLabelDraft(nodeId) {
 
 function getActuatorMask(n) {
   return Number(n.actuator_mask ?? n.relay_mask ?? 0);
+}
+
+function normalizeRfidUidInput(text) {
+  const compact = String(text || "")
+    .toUpperCase()
+    .replace(/[^0-9A-F]/g, "")
+    .slice(0, 20);
+  return compact.replace(/(..)(?=.)/g, "$1 ").trim();
+}
+
+function compactRfidUid(text) {
+  return normalizeRfidUidInput(text).replace(/\s+/g, "");
+}
+
+function isValidRfidUidInput(text) {
+  const compact = compactRfidUid(text);
+  const byteLen = compact.length / 2;
+  return compact.length > 0 && [4, 7, 10].includes(byteLen);
+}
+
+function getRfidSlotsForNode(nodeId) {
+  const cfg = nodeRfidConfigs.get(nodeId);
+  const rawSlots = Array.isArray(cfg?.slots) ? cfg.slots : [];
+  return Array.from({ length: RFID_SLOT_COUNT }, (_, i) => {
+    const slot = rawSlots.find(s => Number(s.slot) === i) || rawSlots[i] || {};
+    return {
+      slot: i,
+      enabled: !!slot.enabled,
+      uid: normalizeRfidUidInput(slot.uid || ""),
+      relay_mask: Number(slot.relay_mask || 0)
+    };
+  });
+}
+
+function findDefaultRfidSlot(nodeId) {
+  const slots = getRfidSlotsForNode(nodeId);
+  const firstEnabled = slots.find(slot => slot.enabled);
+  return firstEnabled ? firstEnabled.slot : 0;
+}
+
+function loadRfidEditorSlot(nodeId, slotIndex) {
+  const slots = getRfidSlotsForNode(nodeId);
+  const safeSlot = Math.max(0, Math.min(RFID_SLOT_COUNT - 1, Number(slotIndex || 0)));
+  const slot = slots[safeSlot] || slots[0];
+  const state = {
+    selectedSlot: slot.slot,
+    uid: slot.enabled ? slot.uid : "",
+    relayMask: slot.enabled ? Number(slot.relay_mask || 0) : 0
+  };
+  rfidEditorState.set(nodeId, state);
+  return state;
+}
+
+function getRfidEditorState(nodeId) {
+  const current = rfidEditorState.get(nodeId);
+  if (current && Number.isInteger(current.selectedSlot)) return current;
+  return loadRfidEditorSlot(nodeId, findDefaultRfidSlot(nodeId));
+}
+
+function setRfidSaveNote(nodeId, msg, type = "") {
+  const el = document.getElementById(`rfid-note-${nodeId}`);
+  if (!el) return;
+  el.textContent = msg;
+  el.className = "setting-save-note" + (type ? " " + type : "");
+}
+
+function buildRfidSlotLabel(slot) {
+  return slot.enabled
+    ? `Card ${slot.slot + 1} - ${slot.uid || "UID saved"}`
+    : `Card ${slot.slot + 1} - Empty`;
+}
+
+function buildRfidRelayButtons(node, relayMask) {
+  const labels = getRelayLabelsForNode(node);
+  return Array.from({ length: labels.length }, (_, i) => {
+    const on = !!((Number(relayMask || 0) >> i) & 1);
+    return `<button class="rfid-relay-toggle ${on ? "on" : "off"}"
+      data-node-id="${node.id}" data-relay="${i}" type="button">
+      ${esc(labels[i])}<br>${on ? "ON" : "OFF"}</button>`;
+  }).join("");
+}
+
+function buildRfidSection(node) {
+  const cfg = nodeRfidConfigs.get(node.id);
+  if (!cfg?.ready) {
+    return `
+      <div class="nsettings-section">
+        <div class="nsettings-section-hdr">RFID Card Actions</div>
+        <div class="nsettings-section-desc">
+          Saved RFID cards can apply a relay scene to this Hybrid node. Waiting for the node
+          to send its RFID configuration table...
+        </div>
+        <div class="nsettings-empty">RFID config not available yet.</div>
+      </div>`;
+  }
+
+  const slots = getRfidSlotsForNode(node.id);
+  const state = getRfidEditorState(node.id);
+  const selectedSlot = Math.max(0, Math.min(RFID_SLOT_COUNT - 1, Number(state.selectedSlot || 0)));
+  const lastScan = cfg.last_scan || null;
+
+  return `
+    <div class="nsettings-section">
+      <div class="nsettings-section-hdr">RFID Card Actions</div>
+      <div class="nsettings-section-desc">
+        Each saved card stores the full relay state mask for this node. When that card is swiped,
+        the node overwrites all relay outputs with the saved states.
+      </div>
+      <div class="nsetting-row">
+        <div class="nsetting-info">
+          <div class="nsetting-label">Saved Card Slot</div>
+          <div class="nsetting-type">Store up to ${RFID_SLOT_COUNT} RFID cards on this node</div>
+        </div>
+        <select class="ns-select rfid-slot-select" data-node-id="${node.id}">
+          ${slots.map(slot => `
+            <option value="${slot.slot}" ${slot.slot === selectedSlot ? "selected" : ""}>
+              ${esc(buildRfidSlotLabel(slot))}
+            </option>`).join("")}
+        </select>
+      </div>
+      <div class="nsetting-row">
+        <div class="nsetting-info">
+          <div class="nsetting-label">RFID Card UID</div>
+          <div class="nsetting-type">Enter manually or pull in the most recent scanned UID</div>
+        </div>
+        <div class="rfid-uid-row">
+          <input type="text"
+                 class="setting-input rfid-uid-input"
+                 data-node-id="${node.id}"
+                 value="${esc(state.uid || "")}"
+                 maxlength="29"
+                 placeholder="AA BB CC DD">
+          <button class="tbl-btn rfid-use-last-btn"
+                  data-node-id="${node.id}"
+                  type="button"
+                  ${lastScan?.uid ? "" : "disabled"}>
+            Use Last Scan
+          </button>
+        </div>
+      </div>
+      <div class="nsetting-row rfid-last-scan-row">
+        <div class="nsetting-info">
+          <div class="nsetting-label">Latest Scan</div>
+          <div class="nsetting-type">
+            ${lastScan?.uid
+              ? `${esc(lastScan.uid)}${Number(lastScan.matched_slot) >= 0 ? ` mapped to Card ${Number(lastScan.matched_slot) + 1}` : " not yet assigned"}`
+              : "No RFID card has been scanned yet"}
+          </div>
+        </div>
+      </div>
+      <div class="rfid-relay-section">
+        <div class="nsetting-label">Relay Scene</div>
+        <div class="nsetting-type">Tap each relay to define its absolute state for this card</div>
+        <div class="rfid-relay-grid">${buildRfidRelayButtons(node, state.relayMask)}</div>
+      </div>
+      <div class="setting-save-row relay-label-actions">
+        <button class="settings-save-btn rfid-save-btn" data-node-id="${node.id}" type="button">
+          Save Card Action
+        </button>
+        <button class="tbl-btn rfid-delete-btn" data-node-id="${node.id}" type="button">
+          Delete Slot
+        </button>
+        <span class="setting-save-note" id="rfid-note-${node.id}"></span>
+      </div>
+    </div>`;
 }
 
 // ── Dashboard ─────────────────────────────────────────────────────────────────
@@ -704,9 +1003,12 @@ function renderDashboard() {
 
 function buildCard(n) {
   const online  = n.online;
-  const typeCls = n.type === 1 ? "sensor" : "relay";
-  const typeLbl = n.type === 1 ? "SENSOR"  : "RELAY";
-  const body    = n.type === 1 ? buildSensorRows(n) : buildRelayGrid(n);
+  const typeCls = getNodeTypeClass(n);
+  const typeLbl = getNodeTypeLabel(n, true);
+  const body = [
+    nodeHasSensorData(n) ? buildSensorRows(n) : "",
+    nodeHasActuators(n) ? buildRelayGrid(n) : ""
+  ].filter(Boolean).join("");
 
   return `
   <div class="node-card ${online ? "" : "offline"}" data-id="${n.id}">
@@ -771,7 +1073,7 @@ function buildSensorRows(n) {
 function buildRelayGrid(n) {
   const mask = getActuatorMask(n);
   const labels = getRelayLabelsForNode(n);
-  const btns = Array.from({ length: RELAY_CHANNEL_COUNT }, (_, i) => {
+  const btns = Array.from({ length: labels.length }, (_, i) => {
     const on = !!((mask >> i) & 1);
     return `<button class="relay-btn ${on ? "on" : "off"}"
       data-node="${n.id}" data-relay="${i}" data-state="${on ? "1" : "0"}">
@@ -789,23 +1091,18 @@ function patchCard(el, n) {
   const nameEl = el.querySelector(".card-name");
   if (nameEl) nameEl.textContent = n.name || `Node #${n.id}`;
 
-  if (n.type === 1) {
-    // Rebuild sensor rows via innerHTML so row count automatically adapts when
-    // the sensor schema changes (e.g. a new firmware adds or removes a sensor).
-    // Safe: sensor card rows have no inline event listeners (all delegation is
-    // handled at the document level via .card-rows, .relay-btn, etc.).
-    const rowsEl = el.querySelector(".card-rows");
-    if (rowsEl) rowsEl.innerHTML = buildSensorRows(n);
-  } else {
-    const mask = getActuatorMask(n);
-    const labels = getRelayLabelsForNode(n);
-    el.querySelectorAll(".relay-btn").forEach(btn => {
-      const i  = parseInt(btn.dataset.relay, 10);
-      const on = !!((mask >> i) & 1);
-      btn.className     = `relay-btn ${on ? "on" : "off"}`;
-      btn.dataset.state = on ? "1" : "0";
-      btn.innerHTML     = `${esc(labels[i])}<br>${on ? "● ON" : "○ OFF"}`;
-    });
+  const badge = el.querySelector(".card-badge");
+  if (badge) {
+    badge.className = `card-badge ${getNodeTypeClass(n)}`;
+    badge.textContent = getNodeTypeLabel(n, true);
+  }
+
+  const rowsEl = el.querySelector(".card-rows");
+  if (rowsEl) {
+    rowsEl.innerHTML = [
+      nodeHasSensorData(n) ? buildSensorRows(n) : "",
+      nodeHasActuators(n) ? buildRelayGrid(n) : ""
+    ].filter(Boolean).join("");
   }
 }
 
@@ -839,8 +1136,8 @@ function renderConnectedNodes() {
 
 function buildRow(n) {
   const online  = n.online;
-  const typeCls = n.type === 1 ? "sensor" : "relay";
-  const typeLbl = n.type === 1 ? "Sensor" : "Relay";
+  const typeCls = getNodeTypeClass(n);
+  const typeLbl = getNodeTypeLabel(n);
   return `
   <tr data-nid="${n.id}">
     <td>
@@ -921,8 +1218,8 @@ function renderAvailable() {
 }
 
 function buildAvailCard(n) {
-  const typeCls = n.type === 1 ? "sensor" : "relay";
-  const typeLbl = n.type === 1 ? "Sensor" : "Relay";
+  const typeCls = getNodeTypeClass(n);
+  const typeLbl = getNodeTypeLabel(n);
   const pending = pendingMacs.has(n.mac);
   return `
   <div class="avail-card" data-mac="${esc(n.mac)}">
@@ -946,7 +1243,7 @@ function showInfoModal(nodeId) {
 
   $modalTitle.textContent = "Node Details";
 
-  const typeLbl = n.type === 1 ? "Sensor" : "Relay";
+  const typeLbl = getNodeTypeLabel(n);
 
   $modalBody.innerHTML = `
     <div class="modal-row">
@@ -1149,12 +1446,12 @@ function refreshGatewayOtaUi() {
   }
 
   $gwOtaBtn.textContent = gatewayOtaBusy ? "OTA Busy" : "Upload Gateway Firmware";
-  const hasExplicitError = !!($gwOtaNote?.textContent?.trim()) && $gwOtaNote?.classList?.contains("err");
+  const hasExplicitNote = !!($gwOtaNote?.textContent?.trim());
 
   if (!gatewayOtaSupported) {
     setGatewayOtaNote("OTA is unavailable until the gateway is flashed with the OTA partition layout.", "err");
   } else if (gatewayOtaBusy) {
-    if (!hasExplicitError) {
+    if (!hasExplicitNote) {
       setGatewayOtaNote("Another firmware update is already in progress or the gateway is rebooting.", "err");
     }
   } else if (!hasFile) {
@@ -1322,7 +1619,7 @@ function populateNodeOtaTargets() {
 
   $nodeOtaNode.innerHTML = `<option value="">Select a paired online node</option>`;
   list.forEach(n => {
-    const typeLabel = n.type === 1 ? "Sensor" : "Relay";
+    const typeLabel = getNodeTypeLabel(n);
     const opt = document.createElement("option");
     opt.value = String(n.id);
     opt.textContent = `${n.name || `Node #${n.id}`} (${n.mac}) • ${typeLabel}`;
@@ -1630,6 +1927,12 @@ function openNodeSettings(nodeId) {
   } else {
     renderNodeSettings(nodeId);
   }
+  if (nodeHasActuators(n) && !nodeActuatorSchemas.has(nodeId)) {
+    send({ type: "node_actuator_schema_get", node_id: nodeId });
+  }
+  if (nodeHasRfid(n) && !nodeRfidConfigs.has(nodeId)) {
+    send({ type: "node_rfid_config_get", node_id: nodeId });
+  }
 }
 
 function openRelayAwareNodeSettings(nodeId) {
@@ -1643,6 +1946,12 @@ function openRelayAwareNodeSettings(nodeId) {
 
   if (!nodeSettings.has(nodeId)) {
     send({ type: "node_settings_get", node_id: nodeId });
+  }
+  if (nodeHasActuators(n) && !nodeActuatorSchemas.has(nodeId)) {
+    send({ type: "node_actuator_schema_get", node_id: nodeId });
+  }
+  if (nodeHasRfid(n) && !nodeRfidConfigs.has(nodeId)) {
+    send({ type: "node_rfid_config_get", node_id: nodeId });
   }
 }
 
@@ -1686,8 +1995,12 @@ function restoreNodeSettingsFocus(nodeId, snapshot) {
 function isEditingRelayLabel(nodeId) {
   const active = document.activeElement;
   const relayInput = active?.closest?.(".relay-label-input");
-  if (!relayInput) return false;
-  return parseInt(relayInput.dataset.node, 10) === nodeId;
+  if (relayInput) return parseInt(relayInput.dataset.node, 10) === nodeId;
+
+  const rfidInput = active?.closest?.(".rfid-uid-input");
+  if (rfidInput) return parseInt(rfidInput.dataset.nodeId, 10) === nodeId;
+
+  return false;
 }
 
 function renderNodeSettings(nodeId) {
@@ -1710,7 +2023,8 @@ function renderNodeSettings(nodeId) {
 
   const sections = [];
 
-  if (n.type !== 1) sections.push(buildRelayLabelSection(n));
+  if (nodeHasActuators(n)) sections.push(buildRelayLabelSection(n));
+  if (nodeHasRfid(n)) sections.push(buildRfidSection(n));
 
   if (!schema) {
     sections.push(`
@@ -1727,7 +2041,7 @@ function renderNodeSettings(nodeId) {
         <div class="nsettings-section-hdr">Node Settings</div>
         ${rows}
       </div>`);
-  } else if (n.type === 1) {
+  } else if (nodeHasSensorData(n)) {
     sections.push(`
       <div class="nsettings-section">
         <div class="nsettings-section-hdr">Node Settings</div>
@@ -1843,7 +2157,7 @@ function collectRelayLabelInputs(nodeId) {
 
 function saveRelayLabels(nodeId) {
   const n = nodes.get(nodeId);
-  if (!n || n.type === 1) return;
+  if (!n || !nodeHasActuators(n)) return;
 
   const inputs = collectRelayLabelInputs(nodeId);
   if (inputs.length === 0) return;
@@ -1857,9 +2171,9 @@ function saveRelayLabels(nodeId) {
 
 function resetRelayLabels(nodeId) {
   const n = nodes.get(nodeId);
-  if (!n || n.type === 1) return;
+  if (!n || !nodeHasActuators(n)) return;
 
-  const defaults = Array.from({ length: RELAY_CHANNEL_COUNT }, (_, i) => defaultRelayLabel(i));
+  const defaults = Array.from({ length: getActuatorCountForNode(n) }, (_, i) => defaultRelayLabel(i));
   replaceRelayLabelDraft(nodeId, defaults);
 
   collectRelayLabelInputs(nodeId).forEach((input, index) => {
@@ -1867,6 +2181,46 @@ function resetRelayLabels(nodeId) {
   });
   setRelayLabelSaveNote(nodeId, "Saving default labels to gateway...", "");
   send({ type: "relay_labels_set", node_id: nodeId, labels: defaults });
+}
+
+function saveRfidConfig(nodeId) {
+  const node = nodes.get(nodeId);
+  if (!node || !nodeHasRfid(node)) return;
+
+  const state = getRfidEditorState(nodeId);
+  if (!isValidRfidUidInput(state.uid || "")) {
+    setRfidSaveNote(nodeId, "RFID UID must be 4, 7, or 10 bytes in hex.", "err");
+    showToast("Invalid RFID UID.", "error");
+    return;
+  }
+
+  setRfidSaveNote(nodeId, "Saving to node...", "");
+  send({
+    type: "node_rfid_config_set",
+    node_id: nodeId,
+    slot: Number(state.selectedSlot || 0),
+    enabled: true,
+    uid: compactRfidUid(state.uid),
+    relay_mask: Number(state.relayMask || 0)
+  });
+}
+
+function deleteRfidConfig(nodeId) {
+  const node = nodes.get(nodeId);
+  if (!node || !nodeHasRfid(node)) return;
+
+  const state = getRfidEditorState(nodeId);
+  setRfidSaveNote(nodeId, "Deleting slot...", "");
+  send({
+    type: "node_rfid_config_set",
+    node_id: nodeId,
+    slot: Number(state.selectedSlot || 0),
+    enabled: false,
+    uid: "",
+    relay_mask: 0
+  });
+  loadRfidEditorSlot(nodeId, Number(state.selectedSlot || 0));
+  if (nsCurrentNodeId === nodeId) renderNodeSettings(nodeId);
 }
 
 // ── Toast ─────────────────────────────────────────────────────────────────────
@@ -1952,6 +2306,44 @@ document.addEventListener("click", e => {
     return;
   }
 
+  const rfidToggleBtn = e.target.closest(".rfid-relay-toggle");
+  if (rfidToggleBtn) {
+    const nodeId = parseInt(rfidToggleBtn.dataset.nodeId, 10);
+    const relayIndex = parseInt(rfidToggleBtn.dataset.relay, 10);
+    const state = getRfidEditorState(nodeId);
+    state.relayMask = Number(state.relayMask || 0) ^ (1 << relayIndex);
+    rfidEditorState.set(nodeId, state);
+    if (nsCurrentNodeId === nodeId) renderNodeSettings(nodeId);
+    return;
+  }
+
+  const rfidUseLastBtn = e.target.closest(".rfid-use-last-btn");
+  if (rfidUseLastBtn) {
+    const nodeId = parseInt(rfidUseLastBtn.dataset.nodeId, 10);
+    const cfg = nodeRfidConfigs.get(nodeId);
+    if (!cfg?.last_scan?.uid) return;
+    const slot = Number(cfg.last_scan.matched_slot) >= 0
+      ? Number(cfg.last_scan.matched_slot)
+      : getRfidEditorState(nodeId).selectedSlot;
+    const state = loadRfidEditorSlot(nodeId, slot);
+    state.uid = normalizeRfidUidInput(cfg.last_scan.uid);
+    rfidEditorState.set(nodeId, state);
+    if (nsCurrentNodeId === nodeId) renderNodeSettings(nodeId);
+    return;
+  }
+
+  const rfidSaveBtn = e.target.closest(".rfid-save-btn");
+  if (rfidSaveBtn) {
+    saveRfidConfig(parseInt(rfidSaveBtn.dataset.nodeId, 10));
+    return;
+  }
+
+  const rfidDeleteBtn = e.target.closest(".rfid-delete-btn");
+  if (rfidDeleteBtn) {
+    deleteRfidConfig(parseInt(rfidDeleteBtn.dataset.nodeId, 10));
+    return;
+  }
+
   // Card info button
   const cardInfo = e.target.closest(".card-info-btn");
   if (cardInfo) {
@@ -2012,6 +2404,13 @@ document.addEventListener("keydown", e => {
     return;
   }
 
+  const rfidInput = e.target.closest(".rfid-uid-input");
+  if (e.key === "Enter" && rfidInput) {
+    e.preventDefault();
+    saveRfidConfig(parseInt(rfidInput.dataset.nodeId, 10));
+    return;
+  }
+
   if (e.key === "Enter") {
     const inp = $("rename-input");
     const sav = $("rename-save");
@@ -2046,6 +2445,12 @@ document.addEventListener("change", e => {
   // Enum select
   const sel = e.target.closest(".ns-select");
   if (sel) {
+    if (sel.classList.contains("rfid-slot-select")) {
+      const nodeId = parseInt(sel.dataset.nodeId, 10);
+      loadRfidEditorSlot(nodeId, parseInt(sel.value, 10));
+      if (nsCurrentNodeId === nodeId) renderNodeSettings(nodeId);
+      return;
+    }
     const nodeId  = parseInt(sel.dataset.node, 10);
     const sid     = parseInt(sel.dataset.sid, 10);
     const newVal  = parseInt(sel.value, 10);
@@ -2061,13 +2466,25 @@ document.addEventListener("change", e => {
 
 document.addEventListener("input", e => {
   const relayInput = e.target.closest(".relay-label-input");
-  if (!relayInput) return;
-  setRelayLabelDraft(
-    parseInt(relayInput.dataset.node, 10),
-    parseInt(relayInput.dataset.relay, 10),
-    relayInput.value
-  );
-  setRelayLabelSaveNote(parseInt(relayInput.dataset.node, 10), "");
+  if (relayInput) {
+    setRelayLabelDraft(
+      parseInt(relayInput.dataset.node, 10),
+      parseInt(relayInput.dataset.relay, 10),
+      relayInput.value
+    );
+    setRelayLabelSaveNote(parseInt(relayInput.dataset.node, 10), "");
+    return;
+  }
+
+  const rfidInput = e.target.closest(".rfid-uid-input");
+  if (rfidInput) {
+    const nodeId = parseInt(rfidInput.dataset.nodeId, 10);
+    const state = getRfidEditorState(nodeId);
+    state.uid = normalizeRfidUidInput(rfidInput.value);
+    rfidEditorState.set(nodeId, state);
+    rfidInput.value = state.uid;
+    setRfidSaveNote(nodeId, "");
+  }
 });
 
 // Gateway Status LED toggle functionality

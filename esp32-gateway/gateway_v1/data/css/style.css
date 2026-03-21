@@ -1,5 +1,5 @@
 /* ═══════════════════════════════════════════════════════════════════
-   ESP32 Mesh Gateway Web Interface Stylesheet v3.5
+   ESP32 Mesh Gateway Web Interface Stylesheet v3.6
    ═══════════════════════════════════════════════════════════════════ */
 
 /* ── Local Fonts ───────────────────────────────────────────── */
@@ -587,6 +587,7 @@ svg { display: block; }
 
 .card-badge.sensor { background: var(--green-dim); color: var(--green); border: 1px solid var(--green-border); }
 .card-badge.relay  { background: var(--purple-dim); color: var(--purple); border: 1px solid var(--purple-border); }
+.card-badge.hybrid { background: var(--amber-dim); color: var(--amber); border: 1px solid var(--amber-border); }
 
 .card-info-btn {
   width: 26px; height: 26px;
@@ -849,6 +850,7 @@ svg { display: block; }
 
 .type-badge.sensor { background: var(--green-dim); color: var(--green); border: 1px solid var(--green-border); }
 .type-badge.relay  { background: var(--purple-dim); color: var(--purple); border: 1px solid var(--purple-border); }
+.type-badge.hybrid { background: var(--amber-dim); color: var(--amber); border: 1px solid var(--amber-border); }
 
 /* ── Available to pair ───────────────────────────────────────── */
 .avail-list {
@@ -1643,6 +1645,46 @@ svg { display: block; }
 .relay-label-actions {
   margin-top: -.1rem;
 }
+
+.rfid-uid-row {
+  width: 220px;
+  max-width: 56%;
+  display: flex;
+  flex-direction: column;
+  gap: .45rem;
+}
+
+.rfid-relay-section {
+  display: flex;
+  flex-direction: column;
+  gap: .45rem;
+}
+
+.rfid-relay-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: .45rem;
+}
+
+.rfid-relay-toggle {
+  padding: .5rem;
+  border-radius: var(--radius-sm);
+  border: 1px solid transparent;
+  font-size: .78rem;
+  font-weight: 700;
+  line-height: 1.35;
+  text-align: center;
+  white-space: normal;
+  word-break: break-word;
+  min-height: 68px;
+  cursor: pointer;
+  transition: filter .15s, transform .1s;
+}
+
+.rfid-relay-toggle.on  { background: var(--green-dim); color: var(--green); border-color: var(--green-border); }
+.rfid-relay-toggle.off { background: var(--surface-3); color: var(--text-muted); border-color: var(--border-2); }
+.rfid-relay-toggle:hover { filter: brightness(1.08); }
+.rfid-relay-toggle:active { transform: scale(.97); }
 
 .nsetting-label {
   font-size: .88rem;

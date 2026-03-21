@@ -2,22 +2,22 @@
     * @file [main.cpp]
     * @brief Main source file for the ESP32 Mesh Actuator Node firmware
     * @details ESP-NOW based mesh relay node for controlling 4 relays and reporting button state, with WS2812B LED status indicator.
-     *        Designed for use with a central gateway node that manages pairing and communication.
-     * 
-     *        Features:
-     *          - C++20 codebase for modern programming features and improved readability.
-     *          - Uses Preferences library for non-volatile storage of pairing information.
-     *          - Implements a simple state machine to manage node states (unpaired, pairing, paired, etc.).
-     *          - Controls 4 relays via GPIO pins and reports their state back to the gateway.
-     *          - Monitors a pairing button with debounce logic and long-press detection for entering pairing mode.
-     *          - Uses a WS2812B LED to indicate node status (e.g., unpaired, paired, error states).
-     *          - Implements a simple touch input handling for toggling relays, with debounce logic.
-     * 
-     *        Note: This code is intended as a starting point and may require adjustments based on specific hardware configurations and requirements.
- * @version 1.1.1
+    *        Designed for use with a central gateway node that manages pairing and communication.
+    * 
+    *        Features:
+    *          - C++20 codebase for modern programming features and improved readability.
+    *          - Uses Preferences library for non-volatile storage of pairing information.
+    *          - Implements a simple state machine to manage node states (unpaired, pairing, paired, etc.).
+    *          - Controls 4 relays via GPIO pins and reports their state back to the gateway.
+    *          - Monitors a pairing button with debounce logic and long-press detection for entering pairing mode.
+    *          - Uses a WS2812B LED to indicate node status (e.g., unpaired, paired, error states).
+    *          - Implements a simple touch input handling for toggling relays, with debounce logic.
+    * 
+    *        Note: This code is intended as a starting point and may require adjustments based on specific hardware configurations and requirements.
+    * @version 1.2.0
     * @author Mrinal (@atechofficials)
  */
-#define FW_VERSION "1.1.1"
+#define FW_VERSION "1.2.0"
 #define HW_CONFIG_ID "0x1A"
 
 #include <Arduino.h>
@@ -44,6 +44,7 @@
 #define PAIR_BTN_PIN    16    // Pairing button GPIO pin (active-LOW, uses internal pull-up)
 #define LED_PIN         5     // WS2812B data pin
 #define LED_COUNT       1     
+#define RELAY_COUNT     4
 #define TOUCH_DEBOUNCE_MS 35
 bool relay_active_high = false; // Set to true if your relay module is active HIGH, false if active LOW
 
@@ -59,10 +60,10 @@ static bool     hasMaster    = false;
 static bool     masterAcked  = false;
 static unsigned long lastReReg = 0;
 
-static bool relayState[NODE_MAX_ACTUATORS] = {0,0,0,0};
-static uint8_t lastRelayState[NODE_MAX_ACTUATORS] = {255,255,255,255};
-static const uint8_t relayPins[NODE_MAX_ACTUATORS] = {RELAY1_PIN, RELAY2_PIN, RELAY3_PIN, RELAY4_PIN};
-static const uint8_t touchPins[NODE_MAX_ACTUATORS] = {TOUCH1_PIN, TOUCH2_PIN, TOUCH3_PIN, TOUCH4_PIN};
+static bool relayState[RELAY_COUNT] = {0,0,0,0};
+static uint8_t lastRelayState[RELAY_COUNT] = {255,255,255,255};
+static const uint8_t relayPins[RELAY_COUNT] = {RELAY1_PIN, RELAY2_PIN, RELAY3_PIN, RELAY4_PIN};
+static const uint8_t touchPins[RELAY_COUNT] = {TOUCH1_PIN, TOUCH2_PIN, TOUCH3_PIN, TOUCH4_PIN};
 
 static Adafruit_NeoPixel led(LED_COUNT, LED_PIN, NEO_GRB + NEO_KHZ800);
 static Preferences       prefs;
@@ -83,12 +84,12 @@ static unsigned long lastBeacon      = 0;
 
 // Timing state
 static unsigned long lastHeartbeat   = 0;
-static bool          touchRawState[NODE_MAX_ACTUATORS] = {0,0,0,0};
-static bool          touchStableState[NODE_MAX_ACTUATORS] = {0,0,0,0};
-static unsigned long touchChangedAt[NODE_MAX_ACTUATORS] = {0,0,0,0};
+static bool          touchRawState[RELAY_COUNT] = {0,0,0,0};
+static bool          touchStableState[RELAY_COUNT] = {0,0,0,0};
+static unsigned long touchChangedAt[RELAY_COUNT] = {0,0,0,0};
 
 // Node Settings
-static char relayLabel[4][16] =
+static char relayLabel[RELAY_COUNT][16] =
 {
   "Relay 1",
   "Relay 2",
@@ -216,7 +217,7 @@ static void saveRelayState(uint8_t id, bool state)
 
 void setRelay(uint8_t id, bool state, bool persistState = true)
 {
-    if(id >= NODE_MAX_ACTUATORS) return;
+    if(id >= RELAY_COUNT) return;
 
     relayState[id] = state;
     const uint8_t pin = relayPins[id];
@@ -240,7 +241,7 @@ void setRelay(uint8_t id, bool state, bool persistState = true)
 static void handleTouchInputs() {
     const unsigned long now = millis();
 
-    for (uint8_t i = 0; i < NODE_MAX_ACTUATORS; i++) {
+    for (uint8_t i = 0; i < RELAY_COUNT; i++) {
         const bool rawActive = (digitalRead(touchPins[i]) == HIGH);
 
         if (rawActive != touchRawState[i]) {
@@ -406,29 +407,11 @@ static uint8_t getActuatorDefs(ActuatorDef out[NODE_MAX_ACTUATORS])
 {
     uint8_t i = 0;
 
-    // Relay 1
-    out[i].id = 0;
-    strncpy(out[i].label, relayLabel[0], ACTUATOR_LABEL_LEN - 1);
-    out[i].label[ACTUATOR_LABEL_LEN - 1] = '\0';
-    i++;
-
-    // Relay 2
-    out[i].id = 1;
-    strncpy(out[i].label, relayLabel[1], ACTUATOR_LABEL_LEN - 1);
-    out[i].label[ACTUATOR_LABEL_LEN - 1] = '\0';
-    i++;
-
-    // Relay 3
-    out[i].id = 2;
-    strncpy(out[i].label, relayLabel[2], ACTUATOR_LABEL_LEN - 1);
-    out[i].label[ACTUATOR_LABEL_LEN - 1] = '\0';
-    i++;
-
-    // Relay 4
-    out[i].id = 3;
-    strncpy(out[i].label, relayLabel[3], ACTUATOR_LABEL_LEN - 1);
-    out[i].label[ACTUATOR_LABEL_LEN - 1] = '\0';
-    i++;
+    for (; i < RELAY_COUNT; i++) {
+        out[i].id = i;
+        strncpy(out[i].label, relayLabel[i], ACTUATOR_LABEL_LEN - 1);
+        out[i].label[ACTUATOR_LABEL_LEN - 1] = '\0';
+    }
 
     // For Debugging: print loaded actuator definitions to Serial Monitor
     Serial.printf("[ACTUATOR] Defined %d actuators.\n", i);
@@ -488,6 +471,7 @@ static void sendRegistration() {
     reg.fw_version[7] = '\0';
     strncpy(reg.hw_config_id, HW_CONFIG_ID, sizeof(reg.hw_config_id) - 1);
     reg.hw_config_id[sizeof(reg.hw_config_id) - 1] = '\0';
+    reg.capabilities = NODE_CAP_ACTUATORS;
     esp_now_send(masterMac, (uint8_t*)&reg, sizeof(reg));
     // For Debugging: print sent registration info to Serial Monitor
     Serial.printf("[MSG]  Registration sent to master.\n Waiting for ACK...\n");
@@ -497,7 +481,7 @@ static void sendActuatorState()
 {
     if (!hasMaster || myNodeId == 0) return;
 
-    const uint8_t count = 4;
+    const uint8_t count = RELAY_COUNT;
 
     bool changed = false;
 
@@ -923,7 +907,7 @@ static void processRxQueue() {
                 savePreferences();
                 txFailCount = 0;
                 nodeState = STATE_PAIRED;
-                for (uint8_t i = 0; i < NODE_MAX_ACTUATORS; i++) lastRelayState[i] = 255;
+                for (uint8_t i = 0; i < RELAY_COUNT; i++) lastRelayState[i] = 255;
                 sendActuatorState();
                 Serial.printf("[PAIR]  Paired!  id=%d  ch=%d  master=%02X:%02X:%02X:%02X:%02X:%02X\n",
                               myNodeId, myChannel,
@@ -1011,7 +995,7 @@ static void processRxQueue() {
                 if (changed) {
                     saveSettings();
                     if (ss->id == SETTING_ID_RELAY_PERSIST && sRelayPersist) {
-                        for (uint8_t i = 0; i < 4; i++) saveRelayState(i, relayState[i]);
+                        for (uint8_t i = 0; i < RELAY_COUNT; i++) saveRelayState(i, relayState[i]);
                     }
                     updateLed();
                     Serial.printf("[CFG] Setting %d set to %d\n", ss->id, ss->value);
@@ -1085,7 +1069,7 @@ void setup() {
     pinMode(TOUCH2_PIN, INPUT);
     pinMode(TOUCH3_PIN, INPUT);
     pinMode(TOUCH4_PIN, INPUT);
-    for (uint8_t i = 0; i < NODE_MAX_ACTUATORS; i++) {
+    for (uint8_t i = 0; i < RELAY_COUNT; i++) {
         const bool rawActive = (digitalRead(touchPins[i]) == HIGH);
         touchRawState[i] = rawActive;
         touchStableState[i] = rawActive;
@@ -1105,7 +1089,7 @@ void setup() {
     if(sRelayPersist)
     {
         prefs.begin("relay", true);
-        for(int i=0;i<4;i++)
+        for(int i=0;i<RELAY_COUNT;i++)
         {
             char key[8];
             buildRelayStateKey(i, key, sizeof(key));
@@ -1113,7 +1097,7 @@ void setup() {
         }
         prefs.end();
 
-        for(int i=0;i<4;i++)
+        for(int i=0;i<RELAY_COUNT;i++)
         {
             setRelay(i, relayState[i], false);
             // For Debugging: print loaded relay states to Serial Monitor

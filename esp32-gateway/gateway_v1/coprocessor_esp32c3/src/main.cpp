@@ -1,7 +1,7 @@
 /**
     * @file [main.cpp]
     * @brief Main source file for the (ESP32-C3) Gateway Coprocessor firmware
-    * @version 0.1.0
+    * @version 0.1.1
     * @author Mrinal (@atechofficials)
  */
 
@@ -13,7 +13,7 @@
 #include "coproc_ota_protocol.h"
 #include "mesh_protocol.h"
 
-#define FW_VERSION "0.1.0"
+#define FW_VERSION "0.1.1"
 #define UART_RX_PIN 0
 #define UART_TX_PIN 1
 #define UART_BAUD 230400
@@ -25,7 +25,8 @@
 #define OTA_AP_GW IPAddress(192, 168, 4, 1)
 #define OTA_AP_MASK IPAddress(255, 255, 255, 0)
 #define FRAME_MAX_PAYLOAD sizeof(CoprocUploadChunkPayload)
-#define USB_SERIAL_WAIT_MS 2500
+// Bring up the UART link quickly even when no USB serial monitor is attached.
+#define USB_SERIAL_WAIT_MS 250
 
 static HardwareSerial linkUart(1);
 static WebServer server(80);
@@ -468,14 +469,3 @@ void loop() {
 
     delay(2);
 }
-
-
-
-
-
-
-
-
-
-
-

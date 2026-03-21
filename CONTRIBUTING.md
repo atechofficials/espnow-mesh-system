@@ -2,7 +2,7 @@
 
 Thank you for contributing to the ESPNow Mesh System.
 
-This project is an ESP32-based mesh platform built around an ESP32-S3 gateway, an ESP32-C3 gateway coprocessor, schema-driven sensor nodes, and actuator nodes such as relay controllers. Contributions are welcome across firmware, protocol design, dashboard UX, documentation, and hardware support.
+This project is an ESP32-based mesh platform built around an ESP32-S3 gateway, an ESP32-C3 gateway coprocessor, schema-driven sensor nodes, actuator nodes such as relay controllers, and Hybrid nodes that combine multiple capabilities in one firmware image. Contributions are welcome across firmware, protocol design, dashboard UX, documentation, and hardware support.
 
 ---
 
@@ -19,6 +19,7 @@ This project is an ESP32-based mesh platform built around an ESP32-S3 gateway, a
 - [Working on the Web Interface](#working-on-the-web-interface)
 - [Working on Sensor Nodes](#working-on-sensor-nodes)
 - [Working on Actuator Nodes](#working-on-actuator-nodes)
+- [Working on Hybrid Nodes](#working-on-hybrid-nodes)
 - [Changing mesh_protocol.h](#changing-mesh_protocolh)
 - [Changing coproc_ota_protocol.h](#changing-coproc_ota_protocolh)
 - [Versioning Guidelines](#versioning-guidelines)
@@ -33,20 +34,21 @@ Current file versions:
 
 | Component | Current Version |
 |----------|-----------------|
-| ESP32-S3 Gateway firmware `main.cpp` | `v2.0.1` |
-| ESP32-C3 Gateway Coprocessor firmware `main.cpp` | `v0.1.0` |
-| ESP32 Sensor Node firmware `main.cpp` | `v2.1.1` |
-| ESP32 Actuator Relay Node firmware `main.cpp` | `v1.1.1` |
-| `mesh_protocol.h` | `v3.2.1` |
+| ESP32-S3 Gateway firmware `main.cpp` | `v2.1.0` |
+| ESP32-C3 Gateway Coprocessor firmware `main.cpp` | `v0.1.1` |
+| ESP32 Sensor Node firmware `main.cpp` | `v2.1.2` |
+| ESP32 Actuator Relay Node firmware `main.cpp` | `v1.2.0` |
+| ESP32 Hybrid Relay Node firmware `main.cpp` | `v0.1.0` |
+| `mesh_protocol.h` | `v3.3.0` |
 | `coproc_ota_protocol.h` | `v1.0.0` |
 | `index.html` | `v3.7` |
-| `app.js` | `v4.0` |
-| `style.css` | `v3.5` |
+| `app.js` | `v4.1` |
+| `style.css` | `v3.6` |
 
 Current supported node categories:
 - Sensor nodes
 - Actuator nodes
-- Hybrid nodes are reserved in the protocol for future development
+- Hybrid nodes
 
 The current Node OTA system has been validated with:
 - same-version reflashing
@@ -54,6 +56,7 @@ The current Node OTA system has been validated with:
 - firmware downgrades
 - sensor-node OTA
 - relay-node OTA
+- hybrid-node OTA
 - node-role mismatch rejection
 - node hardware-config mismatch rejection
 - gateway hardware-config mismatch rejection
@@ -94,9 +97,16 @@ espnow-mesh-system/
     |       |-- include/mesh_protocol.h
     |       |-- platformio.ini
     |       `-- README.md
-    `-- actuator_nodes/
+    |-- actuator_nodes/
+    |   |-- README.md
+    |   `-- esp32_relay_node_v1/
+    |       |-- src/main.cpp
+    |       |-- include/mesh_protocol.h
+    |       |-- platformio.ini
+    |       `-- README.md
+    `-- hybrid_nodes/
         |-- README.md
-        `-- esp32_relay_node_v1/
+        `-- esp32_hybrid_relay_node_v1/
             |-- src/main.cpp
             |-- include/mesh_protocol.h
             |-- platformio.ini
@@ -173,6 +183,16 @@ pio run --target upload
 pio device monitor
 ```
 
+### Hybrid node
+
+From the specific hybrid node directory:
+
+```bash
+pio run --target erase
+pio run --target upload
+pio device monitor
+```
+
 ---
 
 ## Architecture Guidelines
@@ -187,6 +207,7 @@ This file is the protocol contract and must remain identical across:
 - gateway firmware
 - sensor node firmware
 - actuator node firmware
+- hybrid node firmware
 
 The current OTA-safety extension also depends on node registration carrying `hw_config_id`, so contributors must keep that field aligned everywhere the shared protocol is copied.
 
@@ -234,10 +255,11 @@ Useful contribution areas include:
 |------|----------|
 | Gateway firmware | pairing reliability, reconnect logic, Node OTA coordination, NVS robustness, diagnostics |
 | Gateway coprocessor | helper AP behavior, staged firmware serving, transport resilience, helper diagnostics |
-| Web Interface | mobile improvements, cleaner UX, node status views, Node OTA feedback, better actuator controls |
+| Web Interface | mobile improvements, cleaner UX, Hybrid node controls, RFID UX, Node OTA feedback, better actuator controls |
 | Sensor nodes | new hardware integrations, better power handling, schema-driven readings, node OTA robustness |
-| Actuator nodes | relay boards, dimmers, motor control, valve control, hybrid nodes, node OTA robustness |
-| Protocol | new messages, future hybrid support, compatibility improvements |
+| Actuator nodes | relay boards, dimmers, motor control, valve control, node OTA robustness |
+| Hybrid nodes | combined actuator/sensor devices, RFID workflows, mixed-capability nodes, node OTA robustness |
+| Protocol | new messages, hybrid capability support, compatibility improvements |
 | Documentation | setup guides, flash instructions, version notes, troubleshooting |
 | Tooling | CI builds, release packaging, flashing helpers |
 
@@ -383,9 +405,37 @@ Actuator nodes should never assume the Web Interface can guess real hardware sta
 
 ---
 
+## Working on Hybrid Nodes
+
+Hybrid nodes combine multiple capability families in one firmware image. The first production example is:
+
+- `esp32-nodes/hybrid_nodes/esp32_hybrid_relay_node_v1/`
+
+Typical hybrid-node responsibilities:
+- report the correct `NODE_HYBRID` role and capability flags during registration
+- expose actuator schema and current actuator state reliably
+- expose any hybrid-specific configuration such as RFID card mappings
+- keep auxiliary hardware features from breaking the existing pairing, reboot, persistence, or OTA flows
+- maintain the node-side OTA downloader/finalization path
+
+When adding or extending a hybrid node:
+1. Start from the closest existing actuator or sensor implementation
+2. Keep node capabilities explicit and aligned with `mesh_protocol.h`
+3. Preserve actuator-state reporting so the gateway and dashboard stay synchronized
+4. Test the mixed-capability Web Interface paths on real hardware
+5. Preserve the node OTA metadata/descriptor handling
+6. Define a unique `HW_CONFIG_ID` for the actual hardware build and preserve the `NODEHWCFG` marker/reporting path
+7. Document every exposed setting and hybrid-specific workflow in that node's README
+8. Update `esp32-nodes/hybrid_nodes/README.md`
+
+Important:
+Hybrid nodes should be capability-driven, not hardcoded in the gateway or dashboard by one board name.
+
+---
+
 ## Changing mesh_protocol.h
 
-Current version: `v3.2.1`
+Current version: `v3.3.0`
 
 File locations must stay synchronized:
 - `esp32-gateway/gateway_v1/include/mesh_protocol.h`
@@ -506,6 +556,7 @@ Before opening a PR:
   - web assets
   - sensor nodes
   - actuator nodes
+  - hybrid nodes
   - protocol compatibility
 
 Recommended PR structure:

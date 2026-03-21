@@ -79,6 +79,3 @@ typedef struct {
 } CoprocStatusPayload;
 
 #pragma pack(pop)
-
-
-

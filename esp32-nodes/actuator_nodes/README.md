@@ -12,7 +12,7 @@ Supported actuator-node firmwares can also be updated through the **gateway-mana
 
 | Node | Actuator Type | Description |
 |------|---------------|-------------|
-| `esp32_relay_node_v1/` | 4-channel relay control + TTP224 Touch Sensor | Controls up to 4 active-LOW relays independently from the Web Interface |
+| `esp32_relay_node_v1/` | 4-channel relay control + TTP224 Touch Sensor | Controls up to 4 active-LOW relays independently from the Web Interface (`v1.2.0`) |
 
 ---
 
@@ -33,7 +33,7 @@ Supported actuator-node firmwares can also be updated through the **gateway-mana
 
 ## Protocol Notes
 
-Actuator nodes use the shared `mesh_protocol.h` definitions and the actuator messaging available in protocol version **v3.2.1**.
+Actuator nodes use the shared `mesh_protocol.h` definitions and the actuator messaging available in protocol version **v3.3.0**.
 
 ### Actuator-related message types
 
@@ -47,7 +47,7 @@ Actuator nodes use the shared `mesh_protocol.h` definitions and the actuator mes
 - `NODE_SENSOR`
 - `NODE_ACTUATOR`
 - `NODE_HYBRID`
-  Reserved for future development of nodes that combine both sensing and actuation in one device.
+  Used by Hybrid-node firmwares that combine capabilities such as actuators plus RFID or sensors plus actuators in one device.
 
 ---
 
@@ -62,6 +62,8 @@ Actuator nodes are designed to work much like sensor nodes, but instead of mainl
 5. Participate in the gateway-managed Node OTA workflow when a compatible firmware image is uploaded from the dashboard
 
 Current actuator-node firmwares also report their `HW_CONFIG_ID` during registration so the gateway can block incompatible actuator firmware before OTA delivery begins.
+
+Hybrid nodes that also expose actuator behavior are now documented separately under `../hybrid_nodes/`, but they share the same gateway-side actuator schema/state handling model.
 
 This keeps the gateway and Web Interface synchronized after:
 - actuator toggles
@@ -97,7 +99,11 @@ This directory is intended to grow with additional actuator node types, for exam
 - dimmer nodes
 - motor control nodes
 - valve/solenoid controller nodes
-- hybrid sensor + actuator nodes
+- higher-channel relay nodes
+
+Hybrid sensor + actuator boards now have a dedicated sibling directory:
+
+- `../hybrid_nodes/`
 
 ---
 

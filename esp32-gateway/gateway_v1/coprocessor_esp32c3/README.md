@@ -1,11 +1,13 @@
 # ESP32-C3 Gateway Coprocessor
 
-Firmware version: **0.1.0**
+Firmware version: **0.1.1**
 Target board: `dfrobot_beetle_esp32c3`
 
 This firmware runs on the **ESP32-C3 coprocessor** attached to the ESP32-S3 gateway. It is not a standalone mesh node. Its main job is to help the gateway perform **Node OTA updates** by staging node firmware, creating a temporary helper access point, serving the staged `firmware.bin` over HTTP, and sending helper status back to the gateway over UART.
 
 The helper does not decide firmware compatibility by itself. The ESP32-S3 gateway now validates node role and hardware-config compatibility before the helper staging flow is allowed to begin.
+
+Current helper releases are used for sensor-node, actuator-node, and hybrid-node OTA jobs. The `v0.1.1` line keeps the helper aligned with the Hybrid-node-capable gateway release and improves the helper handshake/readiness flow used by the ESP32-S3 gateway.
 
 ---
 

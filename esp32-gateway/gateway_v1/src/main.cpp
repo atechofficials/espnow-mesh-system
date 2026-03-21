@@ -1,10 +1,10 @@
 /**
     * @file [main.cpp]
     * @brief Main source file for the ESP32 Mesh Gateway firmware
- * @version 2.0.1
+    * @version 2.1.0
     * @author Mrinal (@atechofficials)
  */
-#define FW_VERSION "2.0.1"
+#define FW_VERSION "2.1.0"
 #define HW_CONFIG_ID "0x0A"
 
 #include <Arduino.h>
@@ -65,6 +65,8 @@
 #define COPROC_RESET_PIN 1
 #define COPROC_LINK_PING_MS 5000UL
 #define COPROC_ACK_TIMEOUT_MS 3000UL
+#define COPROC_RECOVERY_REBOOT_MS 8000UL
+#define COPROC_RECOVERY_COOLDOWN_MS 15000UL
 #define COPROC_ACK_RETRY_LIMIT 3
 #define COPROC_FRAME_MAX_PAYLOAD sizeof(CoprocUploadChunkPayload)
 
@@ -85,11 +87,20 @@ static std::set<uint32_t> authWsClients;  // authenticated WS client IDs
 #define WS_META_MS       10000
 #define GW_LED_PIN       38
 #define MAX_DISCOVERED   10
+#define RFID_UID_HEX_MAX_LEN ((RFID_UID_MAX_LEN * 2) + 1)
 
 // Node Registry
+struct GatewayRfidSlot {
+    bool     enabled = false;
+    uint8_t  uidLen = 0;
+    uint16_t relayMask = 0;
+    uint8_t  uid[RFID_UID_MAX_LEN] = {0};
+};
+
 struct NodeRecord {
     uint8_t       mac[6];
     NodeType      type;
+    uint32_t      capabilities;
     char          name[16];
     char          fw_version[8];  // reported by node in MSG_REGISTER
     char          hw_config_id[HW_CONFIG_ID_LEN];  // reported by node in MSG_REGISTER
@@ -97,6 +108,7 @@ struct NodeRecord {
     bool          online;
     uint32_t      uptime;
     uint8_t actuatorMask;
+    uint8_t       actuatorCount;
     // Per-node dynamic settings schema (populated by MSG_SETTINGS_DATA)
     uint8_t       settingsCount;                     // 0 = not yet received
     SettingDef    settings[NODE_MAX_SETTINGS];        // schema + current values
@@ -106,10 +118,21 @@ struct NodeRecord {
     uint8_t       sensorCount;                       // 0 = schema not yet received
     SensorDef     sensorSchema[NODE_MAX_SENSORS];    // descriptor for each sensor channel
     float         sensorValues[NODE_MAX_SENSORS];    // last received value per channel
+    ActuatorDef   actuatorSchema[NODE_MAX_ACTUATORS];
     char          relayLabels[NODE_MAX_ACTUATORS][RELAY_LABEL_MAX_LEN];
+    bool          rfidConfigReady;
+    GatewayRfidSlot rfidSlots[RFID_MAX_SLOTS];
+    uint8_t       lastRfidUid[RFID_UID_MAX_LEN];
+    uint8_t       lastRfidUidLen;
+    int8_t        lastRfidMatchedSlot;
+    uint16_t      lastRfidAppliedMask;
+    unsigned long lastRfidSeenAt;
 };
 static NodeRecord nodes[MESH_MAX_NODES + 1];
 static uint8_t    nextId = 1;
+static bool       nodeRegistryDirty = false;
+static unsigned long nodeRegistryDirtyAtMs = 0;
+static constexpr unsigned long NODE_REGISTRY_FLUSH_MS = 750UL;
 
 // Discovered (beaconing) nodes - not yet paired
 struct DiscoveredNode {
@@ -301,6 +324,7 @@ static unsigned long lastCoprocHelloAt = 0;
 static bool coprocOnline = false;
 static unsigned long lastCoprocAckAt = 0;
 static unsigned long lastCoprocNoAckLogAt = 0;
+static unsigned long lastCoprocRecoveryPulseAt = 0;
 
 // *****************************************************************************
 // Gateway Status LED Helpers
@@ -391,7 +415,11 @@ static void buildRelayLabelPrefKey(const uint8_t* mac, char* key, size_t keySize
              mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
 }
 
-struct RelayLabelRecord {
+struct RelayLabelRecordV1 {
+    char labels[4][RELAY_LABEL_MAX_LEN];
+};
+
+struct RelayLabelRecordV2 {
     char labels[NODE_MAX_ACTUATORS][RELAY_LABEL_MAX_LEN];
 };
 
@@ -400,16 +428,28 @@ static void loadRelayLabelsForNode(uint8_t nodeId) {
     resetRelayLabels(nodes[nodeId].relayLabels);
     if (nodes[nodeId].mac[0] == 0 && nodes[nodeId].mac[1] == 0) return;
 
-    RelayLabelRecord rec{};
+    RelayLabelRecordV2 rec{};
     char key[13];
     buildRelayLabelPrefKey(nodes[nodeId].mac, key, sizeof(key));
 
     Preferences prefs;
     prefs.begin("gwrelay", true);
-    size_t got = prefs.getBytes(key, &rec, sizeof(rec));
+    const size_t blobLen = prefs.getBytesLength(key);
+    size_t got = 0;
+    if (blobLen == sizeof(RelayLabelRecordV2)) {
+        got = prefs.getBytes(key, &rec, sizeof(rec));
+    } else if (blobLen == sizeof(RelayLabelRecordV1)) {
+        RelayLabelRecordV1 legacy{};
+        got = prefs.getBytes(key, &legacy, sizeof(legacy));
+        if (got == sizeof(legacy)) {
+            for (uint8_t i = 0; i < 4; i++) {
+                memcpy(rec.labels[i], legacy.labels[i], sizeof(legacy.labels[i]));
+            }
+        }
+    }
     prefs.end();
 
-    if (got != sizeof(rec)) return;
+    if (got != sizeof(rec) && got != sizeof(RelayLabelRecordV1)) return;
 
     for (uint8_t i = 0; i < NODE_MAX_ACTUATORS; i++) {
         sanitizeRelayLabel(rec.labels[i], i, nodes[nodeId].relayLabels[i], RELAY_LABEL_MAX_LEN);
@@ -420,7 +460,7 @@ static void saveRelayLabelsForNode(uint8_t nodeId) {
     if (nodeId == 0 || nodeId > MESH_MAX_NODES) return;
     if (nodes[nodeId].mac[0] == 0 && nodes[nodeId].mac[1] == 0) return;
 
-    RelayLabelRecord rec{};
+    RelayLabelRecordV2 rec{};
     for (uint8_t i = 0; i < NODE_MAX_ACTUATORS; i++) {
         sanitizeRelayLabel(nodes[nodeId].relayLabels[i], i, rec.labels[i], RELAY_LABEL_MAX_LEN);
     }
@@ -458,6 +498,25 @@ static uint8_t findFreeSlot() {
     }
     if (nextId > MESH_MAX_NODES) return 0;
     return nextId++;
+}
+
+static uint32_t defaultCapabilitiesForType(NodeType type) {
+    switch (type) {
+        case NODE_SENSOR: return NODE_CAP_SENSOR_DATA;
+        case NODE_ACTUATOR: return NODE_CAP_ACTUATORS;
+        case NODE_HYBRID: return NODE_CAP_ACTUATORS;
+        default: return 0;
+    }
+}
+
+static uint8_t defaultActuatorCountForNode(const NodeRecord& node) {
+    if (node.actuatorCount > 0) return node.actuatorCount;
+    if (node.capabilities & NODE_CAP_ACTUATORS) return 4;
+    return 0;
+}
+
+static bool nodeSupportsCapability(const NodeRecord& node, uint32_t capability) {
+    return (node.capabilities & capability) != 0;
 }
 
 // *****************************************************************************
@@ -1175,6 +1234,7 @@ static void requestCoprocReboot() {
     digitalWrite(COPROC_RESET_PIN, HIGH);
     delay(80);
     digitalWrite(COPROC_RESET_PIN, LOW);
+    lastCoprocRecoveryPulseAt = millis();
     Serial.println("[C3]  Reboot pulse sent to coprocessor.");
 }
 
@@ -1184,6 +1244,14 @@ static void resetCoprocRx() {
 
 static void resetCoprocAck() {
     coprocAck = CoprocAckState{};
+}
+
+static void flushCoprocSerialInput() {
+    while (coprocSerial.available() > 0) {
+        coprocSerial.read();
+    }
+    resetCoprocRx();
+    resetCoprocAck();
 }
 
 static bool sendCoprocFrame(uint8_t type, const void* payload, size_t len) {
@@ -1412,7 +1480,7 @@ static void initCoprocLink() {
                   (unsigned)COPROC_RESET_PIN,
                   (unsigned)COPROC_UART_RX_BUFFER_SIZE,
                   (unsigned)COPROC_UART_TX_BUFFER_SIZE);
-    resetCoprocRx();
+    flushCoprocSerialInput();
     sendCoprocHello();
 }
 
@@ -1427,6 +1495,7 @@ static void processCoprocHeartbeat(unsigned long now) {
         coprocOnline = coprocAck.ok;
         lastCoprocAckAt = now;
         lastCoprocNoAckLogAt = 0;
+        if (coprocOnline) lastCoprocRecoveryPulseAt = 0;
         if (coprocOnline && !wasOnline) {
             Serial.println("[C3]  Coprocessor helper online.");
             broadcastMetaIfClientsConnected();
@@ -1438,6 +1507,17 @@ static void processCoprocHeartbeat(unsigned long now) {
         if (lastCoprocNoAckLogAt == 0 || (now - lastCoprocNoAckLogAt) > 5000UL) {
             Serial.println("[C3]  No HELLO response from coprocessor yet.");
             lastCoprocNoAckLogAt = now;
+        }
+
+        const unsigned long recoveryAge = (lastCoprocAckAt > 0) ? (now - lastCoprocAckAt) : (now - lastCoprocHelloAt);
+        if (!nodeOtaJob.active &&
+            recoveryAge >= COPROC_RECOVERY_REBOOT_MS &&
+            (lastCoprocRecoveryPulseAt == 0 ||
+             (now - lastCoprocRecoveryPulseAt) >= COPROC_RECOVERY_COOLDOWN_MS)) {
+            Serial.println("[C3]  Coprocessor still offline. Requesting helper reboot and resetting the UART parser.");
+            flushCoprocSerialInput();
+            requestCoprocReboot();
+            lastCoprocHelloAt = now;
         }
     }
 
@@ -1839,6 +1919,9 @@ static void saveApConfig(const char* ssid, const char* pass) {
 static bool addPeer(const uint8_t* mac, uint8_t channel = 0);
 static void sendSettingsGet(const uint8_t* mac, uint8_t nodeId, NodeType nodeType);
 static void sendSensorSchemaGet(const uint8_t* mac, uint8_t nodeId, NodeType nodeType);
+static void sendActuatorSchemaGet(const uint8_t* mac, uint8_t nodeId, NodeType nodeType);
+static void sendRfidConfigGet(const uint8_t* mac, uint8_t nodeId, NodeType nodeType);
+static void requestNodeDynamicData(uint8_t nodeId);
 struct NodeNvsRecordV1 {
     uint8_t  mac[6];
     NodeType type;
@@ -1854,6 +1937,17 @@ struct NodeNvsRecordV2 {
     char     hw_config_id[HW_CONFIG_ID_LEN];
 };  // current format: 43 bytes per node
 
+struct NodeNvsRecordV3 {
+    uint8_t  mac[6];
+    NodeType type;
+    char     name[16];
+    char     fw_version[8];
+    char     hw_config_id[HW_CONFIG_ID_LEN];
+    uint32_t capabilities;
+    uint8_t  actuator_mask;
+    uint8_t  reserved[3];
+};  // current format with capability flags
+
 static void saveNodesToNvs() {
     Preferences prefs;
     prefs.begin("gwnodes", false);
@@ -1865,17 +1959,26 @@ static void saveNodesToNvs() {
             prefs.remove(key);  // slot was freed - remove stale entry
             continue;
         }
-        NodeNvsRecordV2 rec = {};
+        NodeNvsRecordV3 rec = {};
         memcpy(rec.mac,        nodes[i].mac,        6);
         rec.type = nodes[i].type;
         memcpy(rec.name,       nodes[i].name,       16);
         memcpy(rec.fw_version, nodes[i].fw_version, 8);
         memcpy(rec.hw_config_id, nodes[i].hw_config_id, sizeof(rec.hw_config_id));
+        rec.capabilities = nodes[i].capabilities;
+        rec.actuator_mask = nodes[i].actuatorMask;
         prefs.putBytes(key, &rec, sizeof(rec));
     }
     prefs.end();
+    nodeRegistryDirty = false;
+    nodeRegistryDirtyAtMs = 0;
     // For Debugging: print the saved nodes to the Serial console
     Serial.printf("[MESH] Saved %d nodes to NVS. nextId=%d\n", nextId - 1, nextId);
+}
+
+static void markNodeRegistryDirty() {
+    nodeRegistryDirty = true;
+    nodeRegistryDirtyAtMs = millis();
 }
 
 // Called once from setup(), after ESP-NOW is initialised so addPeer() works.
@@ -1890,11 +1993,22 @@ static void loadNodesFromNvs() {
         char key[5];
         snprintf(key, sizeof(key), "n%d", i);
         const size_t blobLen = prefs.getBytesLength(key);
-        if (blobLen != sizeof(NodeNvsRecordV1) && blobLen != sizeof(NodeNvsRecordV2)) continue;
+        if (blobLen != sizeof(NodeNvsRecordV1) &&
+            blobLen != sizeof(NodeNvsRecordV2) &&
+            blobLen != sizeof(NodeNvsRecordV3)) continue;
 
-        NodeNvsRecordV2 rec = {};
-        if (blobLen == sizeof(NodeNvsRecordV2)) {
+        NodeNvsRecordV3 rec = {};
+        if (blobLen == sizeof(NodeNvsRecordV3)) {
             if (prefs.getBytes(key, &rec, sizeof(rec)) != sizeof(rec)) continue;
+        } else if (blobLen == sizeof(NodeNvsRecordV2)) {
+            NodeNvsRecordV2 legacyRec = {};
+            if (prefs.getBytes(key, &legacyRec, sizeof(legacyRec)) != sizeof(legacyRec)) continue;
+            memcpy(rec.mac, legacyRec.mac, sizeof(rec.mac));
+            rec.type = legacyRec.type;
+            memcpy(rec.name, legacyRec.name, sizeof(rec.name));
+            memcpy(rec.fw_version, legacyRec.fw_version, sizeof(rec.fw_version));
+            memcpy(rec.hw_config_id, legacyRec.hw_config_id, sizeof(rec.hw_config_id));
+            rec.capabilities = defaultCapabilitiesForType(rec.type);
         } else {
             NodeNvsRecordV1 legacyRec = {};
             if (prefs.getBytes(key, &legacyRec, sizeof(legacyRec)) != sizeof(legacyRec)) continue;
@@ -1902,6 +2016,7 @@ static void loadNodesFromNvs() {
             rec.type = legacyRec.type;
             memcpy(rec.name, legacyRec.name, sizeof(rec.name));
             memcpy(rec.fw_version, legacyRec.fw_version, sizeof(rec.fw_version));
+            rec.capabilities = defaultCapabilitiesForType(rec.type);
         }
         if (rec.mac[0] == 0 && rec.mac[1] == 0 && rec.mac[2] == 0) continue;
 
@@ -1910,9 +2025,11 @@ static void loadNodesFromNvs() {
         memcpy(nodes[i].name,       rec.name,       16);
         memcpy(nodes[i].fw_version, rec.fw_version, 8);
         memcpy(nodes[i].hw_config_id, rec.hw_config_id, sizeof(nodes[i].hw_config_id));
+        nodes[i].capabilities = rec.capabilities ? rec.capabilities : defaultCapabilitiesForType(rec.type);
         nodes[i].lastSeen      = millis();  // avoid instant NODE_TIMEOUT
         nodes[i].online        = false;     // marked offline until first message
-        nodes[i].actuatorMask = 0;
+        nodes[i].actuatorMask = rec.actuator_mask;
+        nodes[i].actuatorCount = 0;
         nodes[i].settingsCount = 0;         // re-fetched when node responds
 
         addPeer(rec.mac);  // re-register ESP-NOW peer
@@ -1941,8 +2058,7 @@ static void loadNodesFromNvs() {
     // node so the dashboard and settings panel repopulate as soon as each node replies.
     for (uint8_t i = 1; i < nextId; i++) {
         if (nodes[i].mac[0] == 0 && nodes[i].mac[1] == 0) continue;
-        sendSettingsGet(nodes[i].mac, i, nodes[i].type);
-        sendSensorSchemaGet(nodes[i].mac, i, nodes[i].type);
+        requestNodeDynamicData(i);
     }
 }
 
@@ -2055,6 +2171,44 @@ static void sendSensorSchemaGet(const uint8_t* mac, uint8_t nodeId, NodeType nod
     esp_now_send(mac, (uint8_t*)&msg, sizeof(msg));
 }
 
+static void sendActuatorSchemaGet(const uint8_t* mac, uint8_t nodeId, NodeType nodeType) {
+    MsgActuatorSchemaGet msg;
+    msg.hdr.type      = MSG_ACTUATOR_SCHEMA_GET;
+    msg.hdr.node_id   = nodeId;
+    msg.hdr.node_type = nodeType;
+
+    Serial.printf("[MESH] Requesting actuator schema from node #%d (%s)\n",
+                  nodeId, macToStr(mac).c_str());
+    esp_now_send(mac, (uint8_t*)&msg, sizeof(msg));
+}
+
+static void sendRfidConfigGet(const uint8_t* mac, uint8_t nodeId, NodeType nodeType) {
+    MsgRfidConfigGet msg;
+    msg.hdr.type      = MSG_RFID_CONFIG_GET;
+    msg.hdr.node_id   = nodeId;
+    msg.hdr.node_type = nodeType;
+
+    Serial.printf("[MESH] Requesting RFID config from node #%d (%s)\n",
+                  nodeId, macToStr(mac).c_str());
+    esp_now_send(mac, (uint8_t*)&msg, sizeof(msg));
+}
+
+static void requestNodeDynamicData(uint8_t nodeId) {
+    if (nodeId == 0 || nodeId >= nextId) return;
+    if (nodes[nodeId].mac[0] == 0) return;
+
+    sendSettingsGet(nodes[nodeId].mac, nodeId, nodes[nodeId].type);
+    if (nodes[nodeId].capabilities & NODE_CAP_SENSOR_DATA) {
+        sendSensorSchemaGet(nodes[nodeId].mac, nodeId, nodes[nodeId].type);
+    }
+    if (nodes[nodeId].capabilities & NODE_CAP_ACTUATORS) {
+        sendActuatorSchemaGet(nodes[nodeId].mac, nodeId, nodes[nodeId].type);
+    }
+    if (nodes[nodeId].capabilities & NODE_CAP_RFID) {
+        sendRfidConfigGet(nodes[nodeId].mac, nodeId, nodes[nodeId].type);
+    }
+}
+
 static void sendSettingsSet(const uint8_t* mac, uint8_t nodeId, NodeType nodeType,
                             uint8_t settingId, int16_t value) {
     
@@ -2076,12 +2230,13 @@ static void sendSettingsSet(const uint8_t* mac, uint8_t nodeId, NodeType nodeTyp
 static bool sendActuatorCmd(uint8_t nodeId, uint8_t actuatorId, uint8_t state)
 {
     if (nodeId == 0 || nodeId >= nextId) return false;
+    if (!(nodes[nodeId].capabilities & NODE_CAP_ACTUATORS)) return false;
 
     MsgActuatorSet cmd;
 
     cmd.hdr.type      = MSG_ACTUATOR_SET;
     cmd.hdr.node_id   = nodeId;
-    cmd.hdr.node_type = NODE_ACTUATOR;
+    cmd.hdr.node_type = nodes[nodeId].type;
 
     cmd.actuator_id = actuatorId;
     cmd.state       = state;
@@ -2217,8 +2372,17 @@ static String buildNodesJson() {
             n["uptime"]     = nodes[i].uptime;
             n["fw_version"] = nodes[i].fw_version;
             n["hw_config_id"] = nodes[i].hw_config_id;
+            n["capabilities"] = nodes[i].capabilities;
+            n["has_sensor_data"] = nodeSupportsCapability(nodes[i], NODE_CAP_SENSOR_DATA);
+            n["has_actuators"] = nodeSupportsCapability(nodes[i], NODE_CAP_ACTUATORS);
+            n["has_rfid"] = nodeSupportsCapability(nodes[i], NODE_CAP_RFID);
+            n["settings_ready"] = (nodes[i].settingsCount > 0);
+            n["sensor_schema_ready"] = (nodes[i].sensorCount > 0);
+            n["actuator_schema_ready"] = (nodes[i].actuatorCount > 0);
+            n["actuator_count"] = defaultActuatorCountForNode(nodes[i]);
+            n["rfid_ready"] = nodes[i].rfidConfigReady;
 
-            if (nodes[i].type == NODE_SENSOR) {
+            if (nodeSupportsCapability(nodes[i], NODE_CAP_SENSOR_DATA)) {
                 // sensor_schema_ready mirrors sensorCount > 0, used by the JS client
                 // to decide whether to request the schema via node_sensor_schema_get.
                 n["sensor_schema_ready"] = (nodes[i].sensorCount > 0);
@@ -2228,17 +2392,19 @@ static String buildNodesJson() {
                     r["id"]    = nodes[i].sensorSchema[j].id;
                     r["value"] = nodes[i].sensorValues[j];
                 }
-            } else {
+            }
+
+            if (nodeSupportsCapability(nodes[i], NODE_CAP_ACTUATORS)) {
                 n["actuator_mask"] = nodes[i].actuatorMask;
                 n["relay_mask"]    = nodes[i].actuatorMask;  // backward-compatible alias for older UI code
                 JsonArray labels = n["relay_labels"].to<JsonArray>();
-                for (uint8_t j = 0; j < NODE_MAX_ACTUATORS; j++) {
+                const uint8_t relayCount = defaultActuatorCountForNode(nodes[i]);
+                for (uint8_t j = 0; j < relayCount; j++) {
                     labels.add(nodes[i].relayLabels[j][0]
                         ? nodes[i].relayLabels[j]
                         : String("Relay ") + String(j + 1));
                 }
             }
-            n["settings_ready"] = (nodes[i].settingsCount > 0);
         }
         xSemaphoreGive(nodesMutex);
     }
@@ -2366,6 +2532,142 @@ static String buildNodeSensorSchemaJson(uint8_t nodeId) {
     return out;
 }
 
+static String bytesToHexString(const uint8_t* data, uint8_t len) {
+    static const char* hex = "0123456789ABCDEF";
+    String out;
+    out.reserve(len * 2);
+    for (uint8_t i = 0; i < len; i++) {
+        out += hex[(data[i] >> 4) & 0x0F];
+        out += hex[data[i] & 0x0F];
+    }
+    return out;
+}
+
+static int hexNibble(char ch) {
+    if (ch >= '0' && ch <= '9') return ch - '0';
+    if (ch >= 'A' && ch <= 'F') return 10 + (ch - 'A');
+    if (ch >= 'a' && ch <= 'f') return 10 + (ch - 'a');
+    return -1;
+}
+
+static bool parseRfidUidHex(const char* text, uint8_t* outUid, uint8_t* outLen) {
+    if (!text || !outUid || !outLen) return false;
+    uint8_t bytes[RFID_UID_MAX_LEN] = {0};
+    uint8_t nibbleCount = 0;
+    int hi = -1;
+    while (*text != '\0') {
+        const char ch = *text++;
+        if (ch == ' ' || ch == ':' || ch == '-' || ch == '.') continue;
+        int nibble = hexNibble(ch);
+        if (nibble < 0) return false;
+        if (hi < 0) {
+            hi = nibble;
+        } else {
+            if ((nibbleCount / 2) >= RFID_UID_MAX_LEN) return false;
+            bytes[nibbleCount / 2] = (uint8_t)((hi << 4) | nibble);
+            nibbleCount += 2;
+            hi = -1;
+        }
+    }
+    if (hi >= 0) return false;
+    const uint8_t uidLen = nibbleCount / 2;
+    if (!(uidLen == 4 || uidLen == 7 || uidLen == 10)) return false;
+    memcpy(outUid, bytes, uidLen);
+    *outLen = uidLen;
+    return true;
+}
+
+static String buildNodeActuatorSchemaJson(uint8_t nodeId) {
+    JsonDocument doc;
+    doc["type"] = "node_actuator_schema";
+    doc["node_id"] = nodeId;
+    JsonArray arr = doc["actuators"].to<JsonArray>();
+
+    if (nodeId == 0 || nodeId >= nextId) {
+        String out; serializeJson(doc, out); return out;
+    }
+
+    if (xSemaphoreTake(nodesMutex, pdMS_TO_TICKS(100)) == pdTRUE) {
+        const NodeRecord& n = nodes[nodeId];
+        doc["count"] = n.actuatorCount;
+        for (uint8_t i = 0; i < n.actuatorCount; i++) {
+            JsonObject obj = arr.add<JsonObject>();
+            obj["id"] = n.actuatorSchema[i].id;
+            obj["label"] = n.actuatorSchema[i].label;
+        }
+        xSemaphoreGive(nodesMutex);
+    }
+
+    String out;
+    serializeJson(doc, out);
+    return out;
+}
+
+static String buildNodeRfidConfigJson(uint8_t nodeId) {
+    JsonDocument doc;
+    doc["type"] = "node_rfid_config";
+    doc["node_id"] = nodeId;
+
+    if (nodeId == 0 || nodeId >= nextId) {
+        String out; serializeJson(doc, out); return out;
+    }
+
+    if (xSemaphoreTake(nodesMutex, pdMS_TO_TICKS(100)) == pdTRUE) {
+        const NodeRecord& n = nodes[nodeId];
+        doc["ready"] = n.rfidConfigReady;
+        doc["actuator_count"] = defaultActuatorCountForNode(n);
+        JsonArray slots = doc["slots"].to<JsonArray>();
+        for (uint8_t i = 0; i < RFID_MAX_SLOTS; i++) {
+            const GatewayRfidSlot& slot = n.rfidSlots[i];
+            JsonObject obj = slots.add<JsonObject>();
+            obj["slot"] = i;
+            obj["enabled"] = slot.enabled;
+            obj["uid"] = slot.uidLen ? bytesToHexString(slot.uid, slot.uidLen) : "";
+            obj["uid_len"] = slot.uidLen;
+            obj["relay_mask"] = slot.relayMask;
+        }
+        doc["last_uid"] = n.lastRfidUidLen ? bytesToHexString(n.lastRfidUid, n.lastRfidUidLen) : "";
+        doc["last_uid_len"] = n.lastRfidUidLen;
+        doc["last_matched_slot"] = n.lastRfidMatchedSlot;
+        doc["last_relay_mask"] = n.lastRfidAppliedMask;
+        doc["last_seen_ms"] = n.lastRfidSeenAt;
+        xSemaphoreGive(nodesMutex);
+    }
+
+    String out;
+    serializeJson(doc, out);
+    return out;
+}
+
+static String buildRfidConfigAckJson(uint8_t nodeId, bool ok, const char* err = nullptr) {
+    JsonDocument doc;
+    doc["type"] = "node_rfid_config_ack";
+    doc["node_id"] = nodeId;
+    doc["ok"] = ok;
+    if (!ok && err) doc["err"] = err;
+    String out;
+    serializeJson(doc, out);
+    return out;
+}
+
+static String buildRfidScanEventJson(uint8_t nodeId) {
+    JsonDocument doc;
+    doc["type"] = "rfid_scan_event";
+    doc["node_id"] = nodeId;
+    if (nodeId > 0 && nodeId < nextId && xSemaphoreTake(nodesMutex, pdMS_TO_TICKS(100)) == pdTRUE) {
+        const NodeRecord& n = nodes[nodeId];
+        doc["uid"] = n.lastRfidUidLen ? bytesToHexString(n.lastRfidUid, n.lastRfidUidLen) : "";
+        doc["uid_len"] = n.lastRfidUidLen;
+        doc["matched_slot"] = n.lastRfidMatchedSlot;
+        doc["relay_mask"] = n.lastRfidAppliedMask;
+        doc["seen_ms"] = n.lastRfidSeenAt;
+        xSemaphoreGive(nodesMutex);
+    }
+    String out;
+    serializeJson(doc, out);
+    return out;
+}
+
 static String buildDiscoveredJson() {
     JsonDocument doc;
     doc["type"] = "discovered";
@@ -2438,6 +2740,7 @@ static void processRxQueue() {
                 if (xSemaphoreTake(nodesMutex, pdMS_TO_TICKS(50)) == pdTRUE) {
                     memcpy(nodes[assignId].mac, pkt.mac, 6);
                     nodes[assignId].type     = hdr->node_type;
+                    nodes[assignId].capabilities = defaultCapabilitiesForType(hdr->node_type);
                     memcpy(nodes[assignId].name, reg->name, 15);
                     nodes[assignId].name[15] = '\0';
                     strncpy(nodes[assignId].fw_version, reg->fw_version, 7);
@@ -2447,9 +2750,18 @@ static void processRxQueue() {
                         strncpy(nodes[assignId].hw_config_id, reg->hw_config_id,
                                 sizeof(nodes[assignId].hw_config_id) - 1);
                     }
+                    if (pkt.len >= MSG_REGISTER_CAPS_LEN) {
+                        nodes[assignId].capabilities = reg->capabilities;
+                    }
                     nodes[assignId].lastSeen = millis();
                     nodes[assignId].online   = true;
-                    if (isNew) nodes[assignId].settingsCount = 0;  // clear stale schema on fresh slot
+                    if (isNew) {
+                        nodes[assignId].settingsCount = 0;
+                        nodes[assignId].sensorCount = 0;
+                        nodes[assignId].rfidConfigReady = false;
+                        memset(nodes[assignId].rfidSlots, 0, sizeof(nodes[assignId].rfidSlots));
+                    }
+                    if (isNew) nodes[assignId].actuatorCount = 0;
                     xSemaphoreGive(nodesMutex);
                 }
 
@@ -2491,11 +2803,9 @@ static void processRxQueue() {
 
                 addPeer(pkt.mac);
                 sendRegisterAck(pkt.mac, assignId, hdr->node_type);
-                // Request both the settings schema and the sensor schema immediately
-                // after ACK so the dashboard and settings panel populate as soon as
-                // the node replies.
-                sendSettingsGet(pkt.mac, assignId, hdr->node_type);
-                sendSensorSchemaGet(pkt.mac, assignId, hdr->node_type);
+                // Request dynamic node data according to the capability flags
+                // advertised by the node.
+                requestNodeDynamicData(assignId);
                 // Persist every registration so firmware/version/hardware metadata
                 // survives gateway restarts and older saved records get upgraded.
                 saveNodesToNvs();
@@ -2607,7 +2917,10 @@ static void processRxQueue() {
                 }
 
                 if (xSemaphoreTake(nodesMutex, pdMS_TO_TICKS(50)) == pdTRUE) {
-                    nodes[id].actuatorMask = mask;
+                    if (nodes[id].actuatorMask != mask) {
+                        nodes[id].actuatorMask = mask;
+                        markNodeRegistryDirty();
+                    }
                     nodes[id].lastSeen = millis();
                     nodes[id].online   = true;
                     xSemaphoreGive(nodesMutex);
@@ -2617,6 +2930,104 @@ static void processRxQueue() {
 
                 Serial.printf("[MESH] Node #%d actuator mask: 0x%02X\n", id, mask);
 
+                break;
+            }
+
+            case MSG_ACTUATOR_SCHEMA: {
+                if (pkt.len < (int)sizeof(MeshHeader) + 1) break;
+                const uint8_t id = hdr->node_id;
+                if (id == 0 || id >= nextId) break;
+                if (nodes[id].mac[0] == 0) break;
+
+                auto* as = (MsgActuatorSchema*)pkt.data;
+                uint8_t count = as->count;
+                if (count > NODE_MAX_ACTUATORS) count = NODE_MAX_ACTUATORS;
+                const size_t expectedLen = sizeof(MeshHeader) + 1 + count * sizeof(ActuatorDef);
+                if ((size_t)pkt.len < expectedLen) break;
+
+                if (xSemaphoreTake(nodesMutex, pdMS_TO_TICKS(50)) == pdTRUE) {
+                    nodes[id].actuatorCount = count;
+                    for (uint8_t i = 0; i < count; i++) {
+                        nodes[id].actuatorSchema[i] = as->actuators[i];
+                    }
+                    nodes[id].lastSeen = millis();
+                    nodes[id].online = true;
+                    xSemaphoreGive(nodesMutex);
+                }
+
+                Serial.printf("[ACT]  Node #%d: %u actuator(s) registered\n", id, count);
+                wsBroadcast(buildNodeActuatorSchemaJson(id));
+                wsBroadcast(buildNodesJson());
+                break;
+            }
+
+            case MSG_RFID_CONFIG_DATA: {
+                if (pkt.len < (int)sizeof(MeshHeader) + 1) break;
+                const uint8_t id = hdr->node_id;
+                if (id == 0 || id >= nextId) break;
+                if (nodes[id].mac[0] == 0) break;
+
+                auto* rd = (MsgRfidConfigData*)pkt.data;
+                uint8_t count = rd->count;
+                if (count > RFID_MAX_SLOTS) count = RFID_MAX_SLOTS;
+                const size_t expectedLen = sizeof(MeshHeader) + 1 + count * sizeof(RfidSlotDef);
+                if ((size_t)pkt.len < expectedLen) break;
+
+                if (xSemaphoreTake(nodesMutex, pdMS_TO_TICKS(50)) == pdTRUE) {
+                    memset(nodes[id].rfidSlots, 0, sizeof(nodes[id].rfidSlots));
+                    for (uint8_t i = 0; i < count; i++) {
+                        const RfidSlotDef& slot = rd->slots[i];
+                        if (slot.slot >= RFID_MAX_SLOTS) continue;
+                        GatewayRfidSlot& dst = nodes[id].rfidSlots[slot.slot];
+                        dst.enabled = slot.enabled != 0;
+                        dst.uidLen = (slot.uid_len <= RFID_UID_MAX_LEN) ? slot.uid_len : 0;
+                        dst.relayMask = slot.relay_mask;
+                        if (dst.uidLen > 0) memcpy(dst.uid, slot.uid, dst.uidLen);
+                    }
+                    nodes[id].rfidConfigReady = true;
+                    nodes[id].lastSeen = millis();
+                    nodes[id].online = true;
+                    xSemaphoreGive(nodesMutex);
+                }
+
+                Serial.printf("[RFID]  Node #%d: RFID config updated (%u slot payload entries)\n", id, count);
+                wsBroadcast(buildNodeRfidConfigJson(id));
+                wsBroadcast(buildNodesJson());
+                break;
+            }
+
+            case MSG_RFID_SCAN_EVENT: {
+                if (pkt.len < (int)sizeof(MsgRfidScanEvent)) break;
+                const uint8_t id = hdr->node_id;
+                if (id == 0 || id >= nextId) break;
+                if (nodes[id].mac[0] == 0) break;
+                auto* ev = (MsgRfidScanEvent*)pkt.data;
+                const uint8_t uidLen = (ev->uid_len <= RFID_UID_MAX_LEN) ? ev->uid_len : 0;
+
+                if (xSemaphoreTake(nodesMutex, pdMS_TO_TICKS(50)) == pdTRUE) {
+                    nodes[id].lastRfidUidLen = uidLen;
+                    memset(nodes[id].lastRfidUid, 0, sizeof(nodes[id].lastRfidUid));
+                    if (uidLen > 0) memcpy(nodes[id].lastRfidUid, ev->uid, uidLen);
+                    nodes[id].lastRfidMatchedSlot = (ev->matched_slot == 0xFF) ? -1 : (int8_t)ev->matched_slot;
+                    nodes[id].lastRfidAppliedMask = ev->applied_relay_mask;
+                    nodes[id].lastRfidSeenAt = millis();
+                    nodes[id].lastSeen = nodes[id].lastRfidSeenAt;
+                    nodes[id].online = true;
+                    const uint8_t nextMask = (uint8_t)(ev->applied_relay_mask & 0xFF);
+                    if (nodes[id].actuatorMask != nextMask) {
+                        nodes[id].actuatorMask = nextMask;
+                        markNodeRegistryDirty();
+                    }
+                    xSemaphoreGive(nodesMutex);
+                }
+
+                Serial.printf("[RFID]  Node #%d scanned UID=%s slot=%d mask=0x%02X\n",
+                              id,
+                              bytesToHexString(ev->uid, uidLen).c_str(),
+                              (ev->matched_slot == 0xFF) ? -1 : ev->matched_slot,
+                              ev->applied_relay_mask);
+                wsBroadcast(buildRfidScanEventJson(id));
+                wsBroadcast(buildNodesJson());
                 break;
             }
 
@@ -2839,8 +3250,12 @@ static void onWsEvent(AsyncWebSocket*, AsyncWebSocketClient* client,
                 bool ok = sendActuatorCmd(nodeId, actuatorId, state);
                 if (ok) {
                     if (xSemaphoreTake(nodesMutex, pdMS_TO_TICKS(50)) == pdTRUE) {
+                        const uint8_t prevMask = nodes[nodeId].actuatorMask;
                         if (state) nodes[nodeId].actuatorMask |= (1u << actuatorId);
                         else        nodes[nodeId].actuatorMask &= ~(1u << actuatorId);
+                        if (nodes[nodeId].actuatorMask != prevMask) {
+                            markNodeRegistryDirty();
+                        }
                         xSemaphoreGive(nodesMutex);
                     }
                     wsBroadcast(buildNodesJson());
@@ -3038,6 +3453,31 @@ static void onWsEvent(AsyncWebSocket*, AsyncWebSocketClient* client,
                     client->text(buildNodeSensorSchemaJson(nodeId));
                 }
 
+            } else if (strcmp(msgType, "node_actuator_schema_get") == 0) {
+                uint8_t nodeId = doc["node_id"] | 0;
+                if (nodeId == 0 || nodeId >= nextId) break;
+                if (nodes[nodeId].mac[0] == 0) break;
+                if (!(nodes[nodeId].capabilities & NODE_CAP_ACTUATORS)) break;
+
+                if (nodes[nodeId].actuatorCount > 0) {
+                    client->text(buildNodeActuatorSchemaJson(nodeId));
+                } else {
+                    if (nodes[nodeId].online)
+                        sendActuatorSchemaGet(nodes[nodeId].mac, nodeId, nodes[nodeId].type);
+                    client->text(buildNodeActuatorSchemaJson(nodeId));
+                }
+
+            } else if (strcmp(msgType, "node_rfid_config_get") == 0) {
+                uint8_t nodeId = doc["node_id"] | 0;
+                if (nodeId == 0 || nodeId >= nextId) break;
+                if (nodes[nodeId].mac[0] == 0) break;
+                if (!(nodes[nodeId].capabilities & NODE_CAP_RFID)) break;
+
+                if (!nodes[nodeId].rfidConfigReady && nodes[nodeId].online) {
+                    sendRfidConfigGet(nodes[nodeId].mac, nodeId, nodes[nodeId].type);
+                }
+                client->text(buildNodeRfidConfigJson(nodeId));
+
             // Node settings: apply a single setting change
             } else if (strcmp(msgType, "node_settings_set") == 0) {
                 uint8_t nodeId    = doc["node_id"]    | 0;
@@ -3063,6 +3503,64 @@ static void onWsEvent(AsyncWebSocket*, AsyncWebSocketClient* client,
                 Serial.printf("[CFG]  Node #%d setting %d -> %d\n", nodeId, settingId, value);
                 wsBroadcast(buildNodeSettingsJson(nodeId));
 
+            } else if (strcmp(msgType, "node_rfid_config_set") == 0) {
+                uint8_t nodeId = doc["node_id"] | 0;
+                uint8_t slotIndex = doc["slot"] | 0xFF;
+                bool enabled = doc["enabled"] | false;
+                const char* uidText = doc["uid"] | "";
+                uint16_t relayMask = (uint16_t)(doc["relay_mask"] | 0);
+
+                if (nodeId == 0 || nodeId >= nextId || nodes[nodeId].mac[0] == 0) {
+                    client->text(buildRfidConfigAckJson(nodeId, false, "Invalid node"));
+                    break;
+                }
+                if (!(nodes[nodeId].capabilities & NODE_CAP_RFID)) {
+                    client->text(buildRfidConfigAckJson(nodeId, false, "Selected node does not support RFID actions"));
+                    break;
+                }
+                if (slotIndex >= RFID_MAX_SLOTS) {
+                    client->text(buildRfidConfigAckJson(nodeId, false, "Invalid RFID slot"));
+                    break;
+                }
+                if (!nodes[nodeId].online) {
+                    client->text(buildRfidConfigAckJson(nodeId, false, "Node must be online to update RFID actions"));
+                    break;
+                }
+
+                MsgRfidConfigSet msg{};
+                msg.hdr.type = MSG_RFID_CONFIG_SET;
+                msg.hdr.node_id = nodeId;
+                msg.hdr.node_type = nodes[nodeId].type;
+                msg.slot.slot = slotIndex;
+                msg.slot.enabled = enabled ? 1 : 0;
+                msg.slot.relay_mask = relayMask;
+
+                if (enabled) {
+                    if (!parseRfidUidHex(uidText, msg.slot.uid, &msg.slot.uid_len)) {
+                        client->text(buildRfidConfigAckJson(nodeId, false, "RFID UID must be 4, 7, or 10 bytes of hexadecimal data"));
+                        break;
+                    }
+                }
+
+                if (esp_now_send(nodes[nodeId].mac, (uint8_t*)&msg, sizeof(msg)) != ESP_OK) {
+                    client->text(buildRfidConfigAckJson(nodeId, false, "Failed to send RFID configuration to node"));
+                    break;
+                }
+
+                if (xSemaphoreTake(nodesMutex, pdMS_TO_TICKS(50)) == pdTRUE) {
+                    GatewayRfidSlot& slot = nodes[nodeId].rfidSlots[slotIndex];
+                    memset(&slot, 0, sizeof(slot));
+                    slot.enabled = enabled;
+                    slot.uidLen = msg.slot.uid_len;
+                    slot.relayMask = relayMask;
+                    if (slot.uidLen > 0) memcpy(slot.uid, msg.slot.uid, slot.uidLen);
+                    nodes[nodeId].rfidConfigReady = true;
+                    xSemaphoreGive(nodesMutex);
+                }
+
+                wsBroadcast(buildNodeRfidConfigJson(nodeId));
+                client->text(buildRfidConfigAckJson(nodeId, true));
+
             } else if (strcmp(msgType, "relay_labels_set") == 0) {
                 uint8_t nodeId = doc["node_id"] | 0;
                 if (nodeId == 0 || nodeId >= nextId) {
@@ -3073,8 +3571,8 @@ static void onWsEvent(AsyncWebSocket*, AsyncWebSocketClient* client,
                     client->text(buildRelayLabelsAckJson(nodeId, false, "Node not found"));
                     break;
                 }
-                if (nodes[nodeId].type != NODE_ACTUATOR) {
-                    client->text(buildRelayLabelsAckJson(nodeId, false, "Relay labels only apply to actuator nodes"));
+                if (!(nodes[nodeId].capabilities & NODE_CAP_ACTUATORS)) {
+                    client->text(buildRelayLabelsAckJson(nodeId, false, "Relay labels only apply to actuator-capable nodes"));
                     break;
                 }
 
@@ -3576,6 +4074,10 @@ void loop() {
         Serial.println("[OTA]  Rebooting into updated gateway firmware.");
         delay(100);
         ESP.restart();
+    }
+
+    if (nodeRegistryDirty && (now - nodeRegistryDirtyAtMs) >= NODE_REGISTRY_FLUSH_MS) {
+        saveNodesToNvs();
     }
 
     // Pending pair: retry PAIR_CMD until MSG_REGISTER arrives or timeout expires

@@ -1,11 +1,11 @@
 /**
     * @file [main.cpp]
-    * @brief Main source file for the ESP32 Mesh Sensor Node firmware
-    * @version 2.1.2
+    * @brief Main source file for the ESP32 Mesh Hybrid Node firmware
+    * @version 0.1.0
     * @author Mrinal (@atechofficials)
  */
-#define FW_VERSION "2.1.2"
-#define HW_CONFIG_ID "0x0B"
+#define FW_VERSION "0.1.0"
+#define HW_CONFIG_ID "0x2A"
 
 #include <Arduino.h>
 #include <WiFi.h>
@@ -13,26 +13,39 @@
 #include <esp_now.h>
 #include <esp_wifi.h>
 #include <Preferences.h>
-#include <Wire.h>
-#include <Adafruit_BMP280.h>
-#include <DHT.h>
 #include <Adafruit_NeoPixel.h>
 #include <Update.h>
+#include <SPI.h>
+#define MFRC522_SPICLOCK 1000000u
+#include <MFRC522.h>
 #include <ArduinoJson.h>
+#include <driver/gpio.h>
+#include <driver/rtc_io.h>
 #include "mesh_protocol.h"
 
 // User config
-#define NODE_NAME       "BMP280-Node-1"   // change per node (max 15 chars)
-#define BMP_I2C_SDA     21
-#define BMP_I2C_SCL     22
-#define BMP_ADDR_PRIM   0x76
-#define BMP_ADDR_SEC    0x77
-#define DHT_PIN         16    // DHT22 data pin
-#define DHT_TYPE        DHT22
-#define TEMT6000_PIN    36    // TEMT6000 analog output (ADC1_CH0 - input only)
-#define PAIR_BTN_PIN    27    // Pairing button GPIO - active-LOW, uses internal pull-up
+#define NODE_NAME       "RFID-Hybrid-Node-1"   // change per node (max 15 chars)
+#define RELAY1_PIN      26    // Active LOW relay control pins - adjust as needed for your hardware setup
+#define RELAY2_PIN      27
+#define RELAY3_PIN      32
+#define RELAY4_PIN      33
+#define TOUCH1_PIN      25    // TTP224 touch sensor 1 (channels 1-4) - active HIGH, with external pull-downs to GND. Adjust pin numbers as needed for your hardware setup.
+#define TOUCH2_PIN      4     // TTP224 touch sensor 2
+#define TOUCH3_PIN      13    // TTP224 touch sensor 3
+#define TOUCH4_PIN      14    // TTP224 touch sensor 4
+#define PAIR_BTN_PIN    16    // Pairing button GPIO pin (active-LOW, uses internal pull-up)
 #define LED_PIN         5     // WS2812B data pin
-#define LED_COUNT       1
+#define LED_COUNT       1     
+#define RELAY_COUNT     4
+#define TOUCH_DEBOUNCE_MS 35
+#define SPI_CLK 18
+#define SPI_MOSI 23
+#define SPI_MISO 19
+#define RFID_CS_PIN 17
+// RC522 reset line is wired to GPIO2 on this hardware revision.
+#define RFID_RST_PIN 2
+#define RFID_INIT_RETRY_MS 5000UL
+bool relay_active_high = false; // Set to true if your relay module is active HIGH, false if active LOW
 
 // Node state machine
 enum NodeState { STATE_UNPAIRED, STATE_PAIRING, STATE_PAIRED, STATE_DISC_PEND, STATE_GW_LOST };
@@ -46,15 +59,14 @@ static bool     hasMaster    = false;
 static bool     masterAcked  = false;
 static unsigned long lastReReg = 0;
 
-static Adafruit_BMP280   bmp;
-static DHT               dht(DHT_PIN, DHT_TYPE);
+static bool relayState[RELAY_COUNT] = {0,0,0,0};
+static uint8_t lastRelayState[RELAY_COUNT] = {255,255,255,255};
+static const uint8_t relayPins[RELAY_COUNT] = {RELAY1_PIN, RELAY2_PIN, RELAY3_PIN, RELAY4_PIN};
+static const uint8_t touchPins[RELAY_COUNT] = {TOUCH1_PIN, TOUCH2_PIN, TOUCH3_PIN, TOUCH4_PIN};
+
 static Adafruit_NeoPixel led(LED_COUNT, LED_PIN, NEO_GRB + NEO_KHZ800);
 static Preferences       prefs;
-
-// Sensor presence - set during setup(), read-only thereafter
-static bool bmpOk  = false;
-static bool dhtOk  = false;
-static bool temtOk = false;
+static MFRC522           rfidReader(RFID_CS_PIN, RFID_RST_PIN);
 
 // LED state
 static uint32_t     ledCurrent    = 0xDEADBEEF;
@@ -70,26 +82,46 @@ static unsigned long pairingStarted  = 0;
 static uint8_t       pairingChannel  = 1;
 static unsigned long lastBeacon      = 0;
 
-// Timing
-static unsigned long lastSensor      = 0;
+// Timing state
 static unsigned long lastHeartbeat   = 0;
+static bool          touchRawState[RELAY_COUNT] = {0,0,0,0};
+static bool          touchStableState[RELAY_COUNT] = {0,0,0,0};
+static unsigned long touchChangedAt[RELAY_COUNT] = {0,0,0,0};
 
 // Node Settings
-#define SETTING_ID_TEMP_UNIT   0
-#define SETTING_ID_SEND_INTVL  1
-#define SETTING_ID_LED_EN      2
-#define SETTING_ID_TEMT_SENS   3
-
-static uint8_t  sSettingTempUnit  = 0;
-static uint16_t sSettingSendIntvl = SENSOR_INTERVAL / 1000;
-static bool     sSettingLedEn     = true;
-static uint8_t  sSettingTemtSens  = 4;
-static const char kNodeFirmwareRoleMarker[] = "NODETYPE:SENSOR";
+static char relayLabel[RELAY_COUNT][16] =
+{
+  "Relay 1",
+  "Relay 2",
+  "Relay 3",
+  "Relay 4"
+};
+static const char kNodeFirmwareRoleMarker[] = "NODETYPE:HYBRID";
 static const char kNodeFirmwareVersionMarker[] = "NODEFWVER:" FW_VERSION;
 static const char kNodeHardwareConfigMarker[] = "NODEHWCFG:" HW_CONFIG_ID;
 static volatile uint32_t gNodeFirmwareMarkerChecksum = 0;
+#define SETTING_ID_RELAY_PERSIST 0
+#define SETTING_ID_LED_EN 1
 
-// Gateway-loss detection
+static bool sRelayPersist = false;
+static bool sSettingLedEn = true;
+
+struct HybridRfidSlot {
+    bool     enabled = false;
+    uint8_t  uidLen = 0;
+    uint16_t relayMask = 0;
+    uint8_t  uid[RFID_UID_MAX_LEN] = {0};
+};
+
+static HybridRfidSlot rfidSlots[RFID_MAX_SLOTS];
+static bool rfidReaderReady = false;
+static bool rfidCardPresent = false;
+static uint8_t rfidActiveUid[RFID_UID_MAX_LEN] = {0};
+static uint8_t rfidActiveUidLen = 0;
+static unsigned long rfidLastSeenAt = 0;
+static unsigned long lastRfidInitAttempt = 0;
+
+// Gateway-loss detection 
 #define GW_LOST_THRESHOLD   3
 static volatile uint8_t txFailCount = 0;
 
@@ -118,6 +150,10 @@ static void touchFirmwareMarkers() {
 // RX queue
 struct RxPacket { uint8_t mac[6]; uint8_t data[250]; int len; };
 static QueueHandle_t rxQueue;
+static void sendActuatorState();
+static void sendRfidConfigData();
+static void pollRfidReader();
+static void initRelayOutputs();
 
 // *****************************************************************************
 //  LED helpers
@@ -177,6 +213,90 @@ static void updateLed() {
         }
     }
 }
+// *****************************************************************************
+//  Relay helpers
+// *****************************************************************************
+// Saves the state of a relay to NVS for persistence across reboots.
+static void buildRelayStateKey(uint8_t id, char* key, size_t keyLen)
+{
+    snprintf(key, keyLen, "r%u", (unsigned)id);
+}
+
+static void initRelayOutputs() {
+    const int offLevel = relay_active_high ? LOW : HIGH;
+    for (uint8_t i = 0; i < RELAY_COUNT; i++) {
+        const gpio_num_t gpio = (gpio_num_t)relayPins[i];
+
+        // Relay pins live on RTC-capable GPIOs on ESP32. Explicitly release any
+        // RTC/DAC ownership so they behave as normal digital outputs.
+        rtc_gpio_deinit(gpio);
+        gpio_reset_pin(gpio);
+        pinMode(relayPins[i], OUTPUT);
+        digitalWrite(relayPins[i], offLevel);
+    }
+}
+
+static void saveRelayState(uint8_t id, bool state)
+{
+    char key[8];
+    buildRelayStateKey(id, key, sizeof(key));
+    prefs.begin("relay", false);
+    prefs.putBool(key, state);
+    prefs.end();
+    // For Debugging: print saved relay state info to Serial Monitor
+    Serial.printf("[NVS]  Saved relay %d state: %s\n", id, state ? "ON" : "OFF");
+}
+
+void setRelay(uint8_t id, bool state, bool persistState = true)
+{
+    if(id >= RELAY_COUNT) return;
+
+    relayState[id] = state;
+    const uint8_t pin = relayPins[id];
+    
+    if (relay_active_high) {
+        digitalWrite(pin, state ? HIGH : LOW); // active HIGH relay
+    } 
+    else {
+        digitalWrite(pin, state ? LOW : HIGH); // active LOW relay
+    }
+
+    if (persistState && sRelayPersist) {
+        // For Debugging: print relay state persistence info to Serial Monitor
+        Serial.printf("[RELAY STATE]  Relay State Peristence Enabled - Saving state of Relay %d: %s\n", id, state ? "ON" : "OFF");
+        saveRelayState(id, state);
+    }
+    // For Debugging: print relay output change info to Serial Monitor
+    Serial.printf("[RELAY STATE]  Set Relay %d to %s\n", id, state ? "ON" : "OFF");
+}
+
+static void handleTouchInputs() {
+    const unsigned long now = millis();
+
+    for (uint8_t i = 0; i < RELAY_COUNT; i++) {
+        const bool rawActive = (digitalRead(touchPins[i]) == HIGH);
+
+        if (rawActive != touchRawState[i]) {
+            touchRawState[i] = rawActive;
+            touchChangedAt[i] = now;
+        }
+
+        if ((now - touchChangedAt[i]) < TOUCH_DEBOUNCE_MS) continue;
+        if (touchStableState[i] == touchRawState[i]) continue;
+
+        touchStableState[i] = touchRawState[i];
+        if (!touchStableState[i]) continue;  // Toggle only on touch press, not release
+
+        const bool newState = !relayState[i];
+        setRelay(i, newState);
+        Serial.printf("[TOUCH]  Touch %d toggled Relay %d -> %s\n",
+                      i + 1, i + 1, newState ? "ON" : "OFF");
+
+        if (nodeState == STATE_PAIRED || nodeState == STATE_DISC_PEND || nodeState == STATE_GW_LOST) {
+            sendActuatorState();
+        }
+    }
+}
 
 // *****************************************************************************
 //  ESP-NOW callbacks
@@ -218,14 +338,20 @@ static void onDataSent(const wifi_tx_info_t* /*txInfo*/, esp_now_send_status_t s
 //  NVS helpers
 // *****************************************************************************
 static bool loadPreferences() {
-    prefs.begin("mesh", true); // read-only
-    myNodeId  = prefs.getUChar("node_id",  0);
-    myChannel = prefs.getUChar("channel",  0);
-    size_t ml = prefs.getBytes("master_mac", masterMac, 6);
-    prefs.end();
-    // For Debugging: print loaded preferences to Serial Monitor
-    Serial.printf("[NVS] Loaded: id=%d  ch=%d\n", myNodeId, myChannel);
-    return (myNodeId > 0 && myChannel > 0 && ml == 6);
+  prefs.begin("mesh", true); // read-only
+  myNodeId  = prefs.getUChar("node_id",  0);
+  myChannel = prefs.getUChar("channel",  0);
+  size_t ml = prefs.getBytes("master_mac", masterMac, sizeof(masterMac));
+  prefs.end();
+  bool macValid = false;
+  for (int i = 0; i < 6; i++) {
+    if (masterMac[i] != 0) { 
+      macValid = true;
+    }
+  }
+  // For Debugging: print loaded preferences to Serial Monitor
+  Serial.printf("[NVS] Loaded: id=%d  ch=%d\n", myNodeId, myChannel);
+  return (myNodeId > 0 && myChannel > 0 && ml == 6 && macValid);
 }
 
 static void savePreferences() {
@@ -235,7 +361,7 @@ static void savePreferences() {
     prefs.putBytes("master_mac", masterMac, 6);
     prefs.end();
     // For Debugging: print saved preferences to Serial Monitor
-    Serial.printf("[NVS]  Saved: id=%d  ch=%d\n", myNodeId, myChannel);
+    Serial.printf("[NVS] Saved: id=%d  ch=%d\n", myNodeId, myChannel);
 }
 
 static void clearPreferences() {
@@ -243,138 +369,318 @@ static void clearPreferences() {
     prefs.clear();
     prefs.end();
     // For Debugging: print cleared preferences info to Serial Monitor
-    Serial.println("[NVS]  Cleared.");
+    Serial.println("[NVS] Cleared.");
 }
 
 // *****************************************************************************
-//  Settings — NVS load / save and definition helpers
+//  Settings NVS load / save and definition helpers
 // *****************************************************************************
 static void loadSettings() {
     prefs.begin("nodeconf", true);
-    sSettingTempUnit  = prefs.getUChar("temp_unit",   0);
-    sSettingSendIntvl = prefs.getUShort("send_intvl", SENSOR_INTERVAL / 1000);
-    sSettingLedEn     = prefs.getBool("led_en",       true);
-    sSettingTemtSens  = prefs.getUChar("temt_sens",   5);
+
+    sRelayPersist = prefs.getBool("relay_persist", false);
+    sSettingLedEn = prefs.getBool("led_en", true);
+  
     prefs.end();
-    if (sSettingSendIntvl < 5)  sSettingSendIntvl = 5;
-    if (sSettingSendIntvl > 60) sSettingSendIntvl = 60;
-    if (sSettingTemtSens < 1)   sSettingTemtSens = 1;
-    if (sSettingTemtSens > 10)  sSettingTemtSens = 10;
     // For Debugging: print loaded settings to Serial Monitor
-    Serial.printf("[CFG]  Settings Loaded: temp_unit=%d  send_intvl=%ds  led_en=%d  temt_sens=%d\n",
-                  sSettingTempUnit, sSettingSendIntvl, (int)sSettingLedEn, sSettingTemtSens);
+    Serial.printf("[CFG] Settings Loaded: relay_persist=%d led_en=%d\n", 
+                  (int)sRelayPersist, (int)sSettingLedEn);
 }
 
 static void saveSettings() {
     prefs.begin("nodeconf", false);
-    prefs.putUChar("temp_unit",  sSettingTempUnit);
-    prefs.putUShort("send_intvl", sSettingSendIntvl);
-    prefs.putBool("led_en",      sSettingLedEn);
-    prefs.putUChar("temt_sens",  sSettingTemtSens);
+    
+    prefs.putBool("relay_persist", sRelayPersist);
+    prefs.putBool("led_en", sSettingLedEn);
+
     prefs.end();
     // For Debugging: print saved settings to Serial Monitor
-    Serial.printf("[CFG]  Settings saved. Current values: temp_unit=%d  send_intvl=%ds  led_en=%d  temt_sens=%d\n",
-                  sSettingTempUnit, sSettingSendIntvl, (int)sSettingLedEn, sSettingTemtSens);
+    Serial.printf("[CFG] Settings saved. Current values: relay_persist=%d led_en=%d\n", 
+                  (int)sRelayPersist, (int)sSettingLedEn);
 }
 
 static uint8_t getSettingsDefs(SettingDef out[NODE_MAX_SETTINGS]) {
     uint8_t i = 0;
 
-    out[i].id        = SETTING_ID_TEMP_UNIT;
-    out[i].type      = SETTING_ENUM;
-    strncpy(out[i].label, "Temp Unit", SETTING_LABEL_LEN - 1);
+    // Relay State Persistence
+    if (i >= NODE_MAX_SETTINGS) return i;
+    out[i].id = SETTING_ID_RELAY_PERSIST;
+    out[i].type = SETTING_BOOL;
+    strncpy(out[i].label, "StatePersist", SETTING_LABEL_LEN - 1);
     out[i].label[SETTING_LABEL_LEN - 1] = '\0';
-    out[i].current   = (int16_t)sSettingTempUnit;
-    out[i].i_min     = 0; out[i].i_max = 0; out[i].i_step = 0;
-    out[i].opt_count = 2;
-    strncpy(out[i].opts[0], "\xC2\xB0""C", SETTING_OPT_LEN - 1); out[i].opts[0][SETTING_OPT_LEN-1] = '\0';
-    strncpy(out[i].opts[1], "\xC2\xB0""F", SETTING_OPT_LEN - 1); out[i].opts[1][SETTING_OPT_LEN-1] = '\0';
-    i++;
-
-    out[i].id        = SETTING_ID_SEND_INTVL;
-    out[i].type      = SETTING_INT;
-    strncpy(out[i].label, "Send Intvl", SETTING_LABEL_LEN - 1);
-    out[i].label[SETTING_LABEL_LEN - 1] = '\0';
-    out[i].current   = (int16_t)sSettingSendIntvl;
-    out[i].i_min     = 5; out[i].i_max = 60; out[i].i_step = 5;
+    out[i].current = sRelayPersist ? 1 : 0;
+    out[i].i_min = 0;
+    out[i].i_max = 0;
+    out[i].i_step = 0;
     out[i].opt_count = 0;
     memset(out[i].opts, 0, sizeof(out[i].opts));
     i++;
 
-    out[i].id        = SETTING_ID_LED_EN;
-    out[i].type      = SETTING_BOOL;
+    // Node Status LED
+    if (i >= NODE_MAX_SETTINGS) return i;
+    out[i].id = SETTING_ID_LED_EN;
+    out[i].type = SETTING_BOOL;
     strncpy(out[i].label, "Status LED", SETTING_LABEL_LEN - 1);
     out[i].label[SETTING_LABEL_LEN - 1] = '\0';
-    out[i].current   = sSettingLedEn ? 1 : 0;
-    out[i].i_min     = 0; out[i].i_max = 0; out[i].i_step = 0;
+    out[i].current = sSettingLedEn ? 1 : 0;
+    out[i].i_min = 0; 
+    out[i].i_max = 0; 
+    out[i].i_step = 0;
     out[i].opt_count = 0;
     memset(out[i].opts, 0, sizeof(out[i].opts));
     i++;
-
-    if (temtOk) {
-        out[i].id        = SETTING_ID_TEMT_SENS;
-        out[i].type      = SETTING_INT;
-        strncpy(out[i].label, "Light Sens", SETTING_LABEL_LEN - 1);
-        out[i].label[SETTING_LABEL_LEN - 1] = '\0';
-        out[i].current   = (int16_t)sSettingTemtSens;
-        out[i].i_min     = 1; out[i].i_max = 10; out[i].i_step = 1;
-        out[i].opt_count = 0;
-        memset(out[i].opts, 0, sizeof(out[i].opts));
-        i++;
-    }
 
     // For Debugging: print settings definitions to Serial Monitor
     Serial.printf("[CFG] Defined %d settings.\n", i);
     return i;
 }
 
-static uint8_t getSensorDefs(SensorDef out[NODE_MAX_SENSORS]) {
+static uint8_t getActuatorDefs(ActuatorDef out[NODE_MAX_ACTUATORS])
+{
     uint8_t i = 0;
-    const char* tempUnit = (sSettingTempUnit == 1) ? "\xC2\xB0""F" : "\xC2\xB0""C";
 
-    if (bmpOk) {
-        out[i].id        = 0;
-        out[i].precision = 1;
-        strncpy(out[i].label, "Temperature", SENSOR_LABEL_LEN - 1);
-        out[i].label[SENSOR_LABEL_LEN - 1] = '\0';
-        strncpy(out[i].unit, tempUnit, SENSOR_UNIT_LEN - 1);
-        out[i].unit[SENSOR_UNIT_LEN - 1] = '\0';
-        i++;
-
-        out[i].id        = 1;
-        out[i].precision = 1;
-        strncpy(out[i].label, "Atm.Pressure", SENSOR_LABEL_LEN - 1);
-        out[i].label[SENSOR_LABEL_LEN - 1] = '\0';
-        strncpy(out[i].unit, "hPa", SENSOR_UNIT_LEN - 1);
-        out[i].unit[SENSOR_UNIT_LEN - 1] = '\0';
-        i++;
+    for (; i < RELAY_COUNT; i++) {
+        out[i].id = i;
+        strncpy(out[i].label, relayLabel[i], ACTUATOR_LABEL_LEN - 1);
+        out[i].label[ACTUATOR_LABEL_LEN - 1] = '\0';
     }
 
-    if (dhtOk) {
-        out[i].id        = 2;
-        out[i].precision = 1;
-        strncpy(out[i].label, "Humidity", SENSOR_LABEL_LEN - 1);
-        out[i].label[SENSOR_LABEL_LEN - 1] = '\0';
-        strncpy(out[i].unit, "%", SENSOR_UNIT_LEN - 1);
-        out[i].unit[SENSOR_UNIT_LEN - 1] = '\0';
-        i++;
-    }
-
-    if (temtOk) {
-        out[i].id        = 3;
-        out[i].precision = 0;
-        strncpy(out[i].label, "Ambi. Light", SENSOR_LABEL_LEN - 1);
-        out[i].label[SENSOR_LABEL_LEN - 1] = '\0';
-        strncpy(out[i].unit, "%", SENSOR_UNIT_LEN - 1);
-        out[i].unit[SENSOR_UNIT_LEN - 1] = '\0';
-        i++;
-    }
-
-    // For Debugging: print sensor definitions to Serial Monitor
-    Serial.printf("[SENS] Defined %d sensors.\n", i);
+    // For Debugging: print loaded actuator definitions to Serial Monitor
+    Serial.printf("[ACTUATOR] Defined %d actuators.\n", i);
     return i;
 }
 
+static uint16_t getRelayMask() {
+    uint16_t mask = 0;
+    for (uint8_t i = 0; i < RELAY_COUNT; i++) {
+        if (relayState[i]) mask |= (1u << i);
+    }
+    return mask;
+}
+
+static void applyRelayMask(uint16_t mask) {
+    for (uint8_t i = 0; i < RELAY_COUNT; i++) {
+        setRelay(i, ((mask >> i) & 0x01u) != 0);
+    }
+}
+
+static bool sameUid(const uint8_t* a, uint8_t aLen, const uint8_t* b, uint8_t bLen) {
+    if (aLen != bLen) return false;
+    return (aLen == 0) || memcmp(a, b, aLen) == 0;
+}
+
+static int8_t findRfidSlot(const uint8_t* uid, uint8_t uidLen) {
+    for (uint8_t i = 0; i < RFID_MAX_SLOTS; i++) {
+        if (!rfidSlots[i].enabled) continue;
+        if (sameUid(rfidSlots[i].uid, rfidSlots[i].uidLen, uid, uidLen)) {
+            return (int8_t)i;
+        }
+    }
+    return -1;
+}
+
+static void clearRfidSlot(uint8_t slotIndex) {
+    if (slotIndex >= RFID_MAX_SLOTS) return;
+    rfidSlots[slotIndex] = HybridRfidSlot{};
+    char key[8];
+    snprintf(key, sizeof(key), "c%u", (unsigned)slotIndex);
+    prefs.begin("rfidcfg", false);
+    prefs.remove(key);
+    prefs.end();
+}
+
+static void saveRfidSlot(uint8_t slotIndex) {
+    if (slotIndex >= RFID_MAX_SLOTS) return;
+    char key[8];
+    snprintf(key, sizeof(key), "c%u", (unsigned)slotIndex);
+    prefs.begin("rfidcfg", false);
+    prefs.putBytes(key, &rfidSlots[slotIndex], sizeof(HybridRfidSlot));
+    prefs.end();
+}
+
+static void loadRfidSlots() {
+    memset(rfidSlots, 0, sizeof(rfidSlots));
+    prefs.begin("rfidcfg", true);
+    for (uint8_t i = 0; i < RFID_MAX_SLOTS; i++) {
+        char key[8];
+        snprintf(key, sizeof(key), "c%u", (unsigned)i);
+        if (prefs.getBytesLength(key) == sizeof(HybridRfidSlot)) {
+            prefs.getBytes(key, &rfidSlots[i], sizeof(HybridRfidSlot));
+            if (rfidSlots[i].uidLen > RFID_UID_MAX_LEN) {
+                rfidSlots[i] = HybridRfidSlot{};
+            }
+            rfidSlots[i].relayMask &= ((1u << RELAY_COUNT) - 1u);
+        }
+    }
+    prefs.end();
+}
+
+static void sendRfidScanEvent(const uint8_t* uid, uint8_t uidLen, int8_t matchedSlot, uint16_t appliedRelayMask) {
+    if (!hasMaster || myNodeId == 0) return;
+
+    MsgRfidScanEvent msg{};
+    msg.hdr.type = MSG_RFID_SCAN_EVENT;
+    msg.hdr.node_id = myNodeId;
+    msg.hdr.node_type = NODE_HYBRID;
+    msg.uid_len = uidLen;
+    msg.matched_slot = (matchedSlot >= 0) ? (uint8_t)matchedSlot : 0xFF;
+    msg.applied_relay_mask = appliedRelayMask;
+    if (uid && uidLen > 0) memcpy(msg.uid, uid, uidLen);
+
+    const size_t payloadLen =
+        sizeof(MeshHeader) +
+        sizeof(msg.uid_len) +
+        sizeof(msg.matched_slot) +
+        sizeof(msg.applied_relay_mask) +
+        RFID_UID_MAX_LEN;
+
+    esp_err_t r = esp_now_send(masterMac, reinterpret_cast<uint8_t*>(&msg), payloadLen);
+    Serial.printf("[RFID]  Scan event sent. slot=%d mask=0x%02X -> %s\n",
+                  (int)matchedSlot,
+                  (unsigned)appliedRelayMask,
+                  r == ESP_OK ? "ok" : "error");
+}
+
+static void sendRfidConfigData() {
+    if (!hasMaster || myNodeId == 0) return;
+
+    MsgRfidConfigData msg{};
+    msg.hdr.type = MSG_RFID_CONFIG_DATA;
+    msg.hdr.node_id = myNodeId;
+    msg.hdr.node_type = NODE_HYBRID;
+    msg.count = RFID_MAX_SLOTS;
+
+    for (uint8_t i = 0; i < RFID_MAX_SLOTS; i++) {
+        msg.slots[i].slot = i;
+        msg.slots[i].enabled = rfidSlots[i].enabled ? 1 : 0;
+        msg.slots[i].uid_len = rfidSlots[i].uidLen;
+        msg.slots[i].relay_mask = rfidSlots[i].relayMask;
+        memcpy(msg.slots[i].uid, rfidSlots[i].uid, RFID_UID_MAX_LEN);
+    }
+
+    esp_err_t r = esp_now_send(masterMac, reinterpret_cast<uint8_t*>(&msg), sizeof(msg));
+    Serial.printf("[RFID]  Sent RFID config (%u slot(s)) -> %s\n",
+                  (unsigned)msg.count,
+                  r == ESP_OK ? "ok" : "error");
+}
+
+static bool isSupportedRfidVersion(uint8_t version) {
+    switch (version) {
+        case 0x88: // FM17522 clone
+        case 0x90: // v0.0
+        case 0x91: // v1.0
+        case 0x92: // v2.0
+        case 0x12: // counterfeit chip commonly reported by the library
+            return true;
+        default:
+            return false;
+    }
+}
+
+static bool initRfidReader() {
+    lastRfidInitAttempt = millis();
+    rfidReaderReady = false;
+
+    // Reinitialize the SPI bus on each probe so a slow-starting RC522 can
+    // recover without forcing a full node reboot.
+    SPI.end();
+    delay(5);
+    SPI.begin(SPI_CLK, SPI_MISO, SPI_MOSI, RFID_CS_PIN);
+    pinMode(RFID_CS_PIN, OUTPUT);
+    digitalWrite(RFID_CS_PIN, HIGH);
+    pinMode(RFID_RST_PIN, OUTPUT);
+    digitalWrite(RFID_RST_PIN, LOW);
+    delay(5);
+    digitalWrite(RFID_RST_PIN, HIGH);
+    delay(5);
+
+    rfidReader.PCD_Init(RFID_CS_PIN, RFID_RST_PIN);
+    delay(50);
+
+    uint8_t version = 0x00;
+    for (uint8_t attempt = 0; attempt < 3; attempt++) {
+        version = rfidReader.PCD_ReadRegister(MFRC522::VersionReg);
+        if (isSupportedRfidVersion(version)) {
+            rfidReaderReady = true;
+            break;
+        }
+        rfidReader.PCD_Reset();
+        delay(25);
+    }
+
+    if (rfidReaderReady) {
+        rfidReader.PCD_AntennaOn();
+        rfidReader.PCD_SetAntennaGain(MFRC522::RxGain_max);
+        Serial.printf("[RFID] Reader ready. Version=0x%02X CS=%d RST=%d\n",
+                      version,
+                      RFID_CS_PIN,
+                      (int)RFID_RST_PIN);
+    } else {
+        Serial.printf("[RFID] Reader probe failed. VersionReg=0x%02X CS=%d RST=%d. "
+                      "Check RC522 power/SPI wiring and confirm the module reset line "
+                      "is really connected to GPIO%d.\n",
+                      version,
+                      RFID_CS_PIN,
+                      (int)RFID_RST_PIN,
+                      (int)RFID_RST_PIN);
+    }
+    return rfidReaderReady;
+}
+
+static void pollRfidReader() {
+    const unsigned long now = millis();
+    if (!rfidReaderReady) {
+        if ((now - lastRfidInitAttempt) >= RFID_INIT_RETRY_MS) {
+            Serial.println("[RFID] Retrying reader initialization...");
+            initRfidReader();
+        }
+        return;
+    }
+    if (!hasMaster || myNodeId == 0) return;
+
+    if (!rfidReader.PICC_IsNewCardPresent()) {
+        if (rfidCardPresent && (now - rfidLastSeenAt) > 400UL) {
+            rfidCardPresent = false;
+            rfidActiveUidLen = 0;
+            memset(rfidActiveUid, 0, sizeof(rfidActiveUid));
+            Serial.println("[RFID] Card removed.");
+        }
+        return;
+    }
+
+    if (!rfidReader.PICC_ReadCardSerial()) return;
+
+    const uint8_t uidLen = (rfidReader.uid.size <= RFID_UID_MAX_LEN)
+        ? rfidReader.uid.size
+        : RFID_UID_MAX_LEN;
+    uint8_t uid[RFID_UID_MAX_LEN] = {0};
+    memcpy(uid, rfidReader.uid.uidByte, uidLen);
+
+    const bool sameCardStillPresent =
+        rfidCardPresent && sameUid(uid, uidLen, rfidActiveUid, rfidActiveUidLen);
+    rfidCardPresent = true;
+    rfidLastSeenAt = now;
+    memcpy(rfidActiveUid, uid, uidLen);
+    rfidActiveUidLen = uidLen;
+
+    rfidReader.PICC_HaltA();
+    rfidReader.PCD_StopCrypto1();
+
+    if (sameCardStillPresent) return;
+
+    const int8_t slotIndex = findRfidSlot(uid, uidLen);
+    if (slotIndex >= 0) {
+        const uint16_t relayMask = rfidSlots[slotIndex].relayMask;
+        Serial.printf("[RFID]  Known card matched slot %d. Applying relay mask 0x%02X\n",
+                      (int)slotIndex, (unsigned)relayMask);
+        applyRelayMask(relayMask);
+        sendActuatorState();
+        sendRfidScanEvent(uid, uidLen, slotIndex, relayMask);
+    } else {
+        Serial.println("[RFID]  Unknown card scanned.");
+        sendRfidScanEvent(uid, uidLen, -1, getRelayMask());
+    }
+}
 // *****************************************************************************
 //  ESP-NOW peer helpers
 // *****************************************************************************
@@ -409,7 +715,7 @@ static void sendBeacon() {
     MsgBeacon b;
     b.hdr.type      = MSG_BEACON;
     b.hdr.node_id   = 0;
-    b.hdr.node_type = NODE_SENSOR;
+    b.hdr.node_type = NODE_HYBRID;
     strncpy(b.name, NODE_NAME, 15);
     b.name[15]      = '\0';
     b.tx_channel    = pairingChannel;
@@ -422,93 +728,91 @@ static void sendRegistration() {
     MsgRegister reg{};
     reg.hdr.type      = MSG_REGISTER;
     reg.hdr.node_id   = myNodeId;
-    reg.hdr.node_type = NODE_SENSOR;
+    reg.hdr.node_type = NODE_HYBRID;
     strncpy(reg.name, NODE_NAME, 15);
     reg.name[15] = '\0';
     strncpy(reg.fw_version, FW_VERSION, 7);
     reg.fw_version[7] = '\0';
     strncpy(reg.hw_config_id, HW_CONFIG_ID, sizeof(reg.hw_config_id) - 1);
     reg.hw_config_id[sizeof(reg.hw_config_id) - 1] = '\0';
-    reg.capabilities = NODE_CAP_SENSOR_DATA;
+    reg.capabilities = NODE_CAP_ACTUATORS | NODE_CAP_RFID;
     esp_now_send(masterMac, (uint8_t*)&reg, sizeof(reg));
     // For Debugging: print sent registration info to Serial Monitor
     Serial.printf("[MSG]  Registration sent to master.\n Waiting for ACK...\n");
 }
 
-static void sendSensorData() {
+static void sendActuatorState()
+{
     if (!hasMaster || myNodeId == 0) return;
 
-    MsgSensorData sd;
-    sd.hdr.type      = MSG_SENSOR_DATA;
-    sd.hdr.node_id   = myNodeId;
-    sd.hdr.node_type = NODE_SENSOR;
-    sd.uptime_sec    = millis() / 1000;
-    sd.count         = 0;
+    const uint8_t count = RELAY_COUNT;
 
-    if (bmpOk) {
-        float tempC = bmp.readTemperature();
-        float tempOut = (sSettingTempUnit == 1) ? (tempC * 9.0f / 5.0f + 32.0f) : tempC;
-        sd.readings[sd.count++] = { .id = 0, .value = tempOut };
-        sd.readings[sd.count++] = { .id = 1, .value = bmp.readPressure() / 100.0f };
-    }
+    bool changed = false;
 
-    if (dhtOk) {
-        float h = dht.readHumidity();
-        if (!isnan(h)) {
-            sd.readings[sd.count++] = { .id = 2, .value = h };
+    for (uint8_t i = 0; i < count; i++)
+    {
+        if (relayState[i] != lastRelayState[i])
+        {
+            changed = true;
+            break;
         }
     }
 
-    if (temtOk) {
-        // ESP32 ADC is corrupted by WiFi/ESP-NOW TX bursts, producing spurious
-        // zeros. Simple averaging still returns 0 when most samples land during
-        // a TX window. Fix: collect 64 samples, discard zeros, average the rest.
-        // This isolates only valid ADC conversions regardless of TX timing.
-        const int SAMPLES = 64;
-        long sum = 0;
-        int  valid = 0;
-        for (int s = 0; s < SAMPLES; s++) {
-            int v = analogRead(TEMT6000_PIN);
-            if (v > 0) { sum += v; valid++; }
-        }
-        int raw = (valid > 0) ? (int)(sum / valid) : 0;
-        // Logarithmic scaling: lux is perceptually logarithmic, so a linear
-        // formula maps indoor light to near-zero even though it looks bright.
-        // log10(1+raw)/log10(4096) gives ~40% for typical room light (raw≈30)
-        // and 100% for direct bright light (raw≈4095) at default sensitivity=5.
-        // Sensitivity shifts the entire curve: sens=1 → dim, sens=10 → very sensitive.
-        float normalized = (raw > 0) ? (log10f(1.0f + raw) / log10f(4096.0f)) : 0.0f;
-        float pct = normalized * (sSettingTemtSens / 5.0f) * 100.0f;
-        if (pct > 100.0f) pct = 100.0f;
-        sd.readings[sd.count++] = { .id = 3, .value = pct };
+    if (!changed)
+        return;
+
+    MsgActuatorState msg{};
+
+    msg.hdr.type = MSG_ACTUATOR_STATE;
+    msg.hdr.node_id = myNodeId;
+    msg.hdr.node_type = NODE_HYBRID;
+
+    msg.count = count;
+
+    for (uint8_t i = 0; i < count; i++)
+    {
+        msg.states[i].id = i;
+        msg.states[i].state = relayState[i];
+        lastRelayState[i] = relayState[i];
     }
 
-    size_t payloadLen = sizeof(MeshHeader) + sizeof(uint32_t) + 1
-                        + sd.count * sizeof(SensorReading);
-    esp_err_t r = esp_now_send(masterMac, (uint8_t*)&sd, payloadLen);
+    const size_t payloadLen =
+        sizeof(MeshHeader) +
+        sizeof(msg.count) +
+        (count * sizeof(ActuatorState));
+
+    esp_err_t r = esp_now_send(masterMac, (uint8_t*)&msg, payloadLen);
     // Flash LED on successful send only if LED is enabled in Node settings
     if (r == ESP_OK && sSettingLedEn) flashLed();
 
-    Serial.printf("[SENS] Sent %u reading(s) (%u B) ->", sd.count, (unsigned)payloadLen);
-    for (uint8_t i = 0; i < sd.count; i++)
-        Serial.printf("  [%d]=%.2f", sd.readings[i].id, sd.readings[i].value);
+    // For Debugging: print sent actuator state info to Serial Monitor
+    Serial.printf("[ACTUATOR]  Actuator state sent to master. %d relays, (%u B)\n", count, (unsigned)payloadLen);
+    
     Serial.printf("  %s\n", r == ESP_OK ? "ok" : "error");
 }
 
-static void sendSensorSchemaData() {
-    if (!hasMaster || myNodeId == 0) return;
+static void sendActuatorSchemaData()
+{
+    if(!hasMaster || myNodeId == 0) return;
 
-    MsgSensorSchema msg;
-    msg.hdr.type      = MSG_SENSOR_SCHEMA;
-    msg.hdr.node_id   = myNodeId;
-    msg.hdr.node_type = NODE_SENSOR;
-    msg.count         = getSensorDefs(msg.sensors);
+    MsgActuatorSchema msg{};
 
-    size_t payloadLen = sizeof(MeshHeader) + 1 + msg.count * sizeof(SensorDef);
+    msg.hdr.type = MSG_ACTUATOR_SCHEMA;
+    msg.hdr.node_id = myNodeId;
+    msg.hdr.node_type = NODE_HYBRID;
+    msg.count = getActuatorDefs(msg.actuators);
+
+    const size_t payloadLen =
+        sizeof(MeshHeader) +
+        sizeof(msg.count) +
+        msg.count * sizeof(ActuatorDef);
+
     esp_err_t r = esp_now_send(masterMac, (uint8_t*)&msg, payloadLen);
-    Serial.printf("[SENS] Sent schema: %d sensor(s) (%u B) -> %s\n",
-                  msg.count, (unsigned)payloadLen,
-                  r == ESP_OK ? "ok" : "error");
+
+    // For Debugging: print sent actuator schema info to Serial Monitor
+    Serial.printf("[ACTUATOR]  Sent actuator schema to master. %d actuator(s), (%u B) ->\n", msg.count, (unsigned)payloadLen);
+
+    Serial.printf("  %s\n", r == ESP_OK ? "ok" : "error");
 }
 
 static void sendHeartbeat() {
@@ -516,13 +820,13 @@ static void sendHeartbeat() {
     MsgHeartbeat hb;
     hb.hdr.type      = MSG_HEARTBEAT;
     hb.hdr.node_id   = myNodeId;
-    hb.hdr.node_type = NODE_SENSOR;
+    hb.hdr.node_type = NODE_HYBRID;
     hb.uptime_sec    = millis() / 1000;
     
     esp_err_t r = esp_now_send(masterMac, (uint8_t*)&hb, sizeof(hb));
     // Flash LED on successful send only if LED is enabled in Node settings
     if (r == ESP_OK && sSettingLedEn) flashLed();
-
+    
     // For Debugging: print sent heartbeat info to Serial Monitor
     Serial.printf("[ACTUATOR]  Heartbeat sent to master (uptime: %d sec) ->\n", hb.uptime_sec);
     Serial.printf("  %s\n", r == ESP_OK ? "ok" : "error");
@@ -534,14 +838,13 @@ static void sendSettingsData() {
     MsgSettingsData msg;
     msg.hdr.type      = MSG_SETTINGS_DATA;
     msg.hdr.node_id   = myNodeId;
-    msg.hdr.node_type = NODE_SENSOR;
+    msg.hdr.node_type = NODE_HYBRID;
     msg.count         = getSettingsDefs(msg.settings);
 
     size_t payloadLen = sizeof(MeshHeader) + 1 + msg.count * sizeof(SettingDef);
     esp_err_t r = esp_now_send(masterMac, (uint8_t*)&msg, payloadLen);
-    Serial.printf("[CFG]  Sent %d settings (%u B) -> %s\n",
-                  msg.count, (unsigned)payloadLen,
-                  r == ESP_OK ? "ok" : "error");
+    Serial.printf("[CFG]  Sent %d settings (%u B) ->\n", msg.count, (unsigned)payloadLen);
+    Serial.printf("  %s\n", r == ESP_OK ? "ok" : "error");
 }
 
 static uint32_t crc32Update(uint32_t crc, const uint8_t* data, size_t len) {
@@ -561,7 +864,7 @@ static void sendOtaStatusNow(uint8_t phase, uint8_t progress, uint8_t errorCode,
     MsgNodeOtaStatus status{};
     status.hdr.type = MSG_NODE_OTA_STATUS;
     status.hdr.node_id = myNodeId;
-    status.hdr.node_type = NODE_SENSOR;
+    status.hdr.node_type = NODE_HYBRID;
     status.session_id = pendingOta.sessionId;
     status.phase = phase;
     status.progress = progress;
@@ -576,7 +879,7 @@ static bool postOtaStatusToHelper(uint8_t phase, uint8_t progress, uint8_t error
     WiFiClient client;
     client.setTimeout(2000);
     HTTPClient http;
-    const String url = String("http://192.168.4.1:") + String(pendingOta.port) + "/status";
+    String url = String("http://192.168.4.1:") + String(pendingOta.port) + "/status";
     if (!http.begin(client, url)) return false;
     http.setTimeout(2000);
     http.useHTTP10(true);
@@ -755,7 +1058,7 @@ static void doDisconnect() {
         MsgUnpairCmd msg;
         msg.hdr.type      = MSG_UNPAIR_CMD;
         msg.hdr.node_id   = myNodeId;
-        msg.hdr.node_type = NODE_SENSOR;
+        msg.hdr.node_type = NODE_HYBRID;
         esp_now_send(masterMac, (uint8_t*)&msg, sizeof(msg));
         delay(80);
         esp_now_del_peer(masterMac);
@@ -868,6 +1171,8 @@ static void processRxQueue() {
                 savePreferences();
                 txFailCount = 0;
                 nodeState = STATE_PAIRED;
+                for (uint8_t i = 0; i < RELAY_COUNT; i++) lastRelayState[i] = 255;
+                sendActuatorState();
                 Serial.printf("[PAIR]  Paired!  id=%d  ch=%d  master=%02X:%02X:%02X:%02X:%02X:%02X\n",
                               myNodeId, myChannel,
                               masterMac[0], masterMac[1], masterMac[2],
@@ -902,55 +1207,105 @@ static void processRxQueue() {
                 break;
             }
 
-            case MSG_SENSOR_SCHEMA_GET: {
+            case MSG_ACTUATOR_SCHEMA_GET: {
                 if (nodeState != STATE_PAIRED && nodeState != STATE_DISC_PEND) break;
-                Serial.println("[SENS]  Sensor schema GET received - sending schema.");
-                sendSensorSchemaData();
+                Serial.println("[ACTUATOR]  Actuator schema GET received - sending schema.");
+                sendActuatorSchemaData();
+                break;
+            }
+
+            case MSG_RFID_CONFIG_GET: {
+                if (nodeState != STATE_PAIRED && nodeState != STATE_DISC_PEND) break;
+                Serial.println("[RFID]  RFID config GET received - sending slot table.");
+                sendRfidConfigData();
+                break;
+            }
+
+            case MSG_ACTUATOR_SET: {
+                if(pkt.len < (int)sizeof(MsgActuatorSet)) break;
+                auto* cmd = (MsgActuatorSet*)pkt.data;
+
+                Serial.printf("[CMD] Actuator %d -> state %d\n",
+                              cmd->actuator_id, cmd->state);
+
+                setRelay(cmd->actuator_id, cmd->state);
+                
+                sendActuatorState();
+
+                Serial.printf("[ACT] Relay %d -> state %d\n", cmd->actuator_id, cmd->state);
+
+                break;
+            }
+
+            case MSG_RFID_CONFIG_SET: {
+                if (pkt.len < (int)sizeof(MsgRfidConfigSet)) break;
+                if (nodeState != STATE_PAIRED && nodeState != STATE_DISC_PEND) break;
+
+                auto* cfg = (MsgRfidConfigSet*)pkt.data;
+                const uint8_t slotIndex = cfg->slot.slot;
+                if (slotIndex >= RFID_MAX_SLOTS) {
+                    Serial.printf("[RFID]  Invalid slot index %u ignored.\n", (unsigned)slotIndex);
+                    break;
+                }
+
+                if (!cfg->slot.enabled || cfg->slot.uid_len == 0) {
+                    clearRfidSlot(slotIndex);
+                    Serial.printf("[RFID]  Cleared card slot %u.\n", (unsigned)slotIndex);
+                } else {
+                    HybridRfidSlot& slot = rfidSlots[slotIndex];
+                    slot = HybridRfidSlot{};
+                    slot.enabled = true;
+                    slot.uidLen = (cfg->slot.uid_len <= RFID_UID_MAX_LEN) ? cfg->slot.uid_len : RFID_UID_MAX_LEN;
+                    slot.relayMask = cfg->slot.relay_mask & ((1u << RELAY_COUNT) - 1u);
+                    memcpy(slot.uid, cfg->slot.uid, slot.uidLen);
+                    saveRfidSlot(slotIndex);
+                    Serial.printf("[RFID]  Saved card slot %u uidLen=%u relayMask=0x%02X\n",
+                                  (unsigned)slotIndex,
+                                  (unsigned)slot.uidLen,
+                                  (unsigned)slot.relayMask);
+                }
+
+                sendRfidConfigData();
                 break;
             }
 
             case MSG_SETTINGS_SET: {
+                // Validate packet size before accessing payload
                 if (pkt.len < (int)sizeof(MsgSettingsSet)) break;
                 if (nodeState != STATE_PAIRED && nodeState != STATE_DISC_PEND) break;
+
                 auto* ss = (MsgSettingsSet*)pkt.data;
 
-                bool changed     = false;
-                bool unitChanged = false;
+                bool changed = false;
+
                 switch (ss->id) {
-                    case SETTING_ID_TEMP_UNIT:
-                        if (ss->value == 0 || ss->value == 1) {
-                            sSettingTempUnit = (uint8_t)ss->value;
-                            changed     = true;
-                            unitChanged = true;
-                        }
+
+                    case SETTING_ID_RELAY_PERSIST:
+                        sRelayPersist = (ss->value != 0);
+                        changed = true;
                         break;
-                    case SETTING_ID_SEND_INTVL:
-                        if (ss->value >= 5 && ss->value <= 60) {
-                            sSettingSendIntvl = (uint16_t)ss->value;
-                            changed = true;
-                        }
-                        break;
+
                     case SETTING_ID_LED_EN:
                         sSettingLedEn = (ss->value != 0);
                         changed = true;
                         break;
-                    case SETTING_ID_TEMT_SENS:
-                        if (ss->value >= 1 && ss->value <= 10) {
-                            sSettingTemtSens = (uint8_t)ss->value;
-                            changed = true;
-                        }
-                        break;
+
                     default:
-                        Serial.printf("[CFG]  Unknown setting id %d - ignored\n", ss->id);
+                        Serial.printf("[CFG] Unknown setting id %d - ignored\n", ss->id);
                         break;
                 }
 
                 if (changed) {
                     saveSettings();
-                    Serial.printf("[CFG]  Setting %d set to %d\n", ss->id, ss->value);
+                    if (ss->id == SETTING_ID_RELAY_PERSIST && sRelayPersist) {
+                        for (uint8_t i = 0; i < RELAY_COUNT; i++) saveRelayState(i, relayState[i]);
+                    }
+                    updateLed();
+                    Serial.printf("[CFG] Setting %d set to %d\n", ss->id, ss->value);
                     sendSettingsData();
-                    if (unitChanged) sendSensorSchemaData();
+                    sendActuatorSchemaData();   // keeps UI in sync
                 }
+
                 break;
             }
 
@@ -996,37 +1351,56 @@ void setup() {
     delay(300);
 
     pinMode(PAIR_BTN_PIN, INPUT_PULLUP);
+    
+    initRelayOutputs();
 
-    // BMP280
-    Wire.begin(BMP_I2C_SDA, BMP_I2C_SCL);
-    bmpOk = bmp.begin(BMP_ADDR_PRIM);
-    if (!bmpOk) bmpOk = bmp.begin(BMP_ADDR_SEC);
-    if (!bmpOk) {
-        Serial.println("[BMP]  WARNING: sensor not found - check wiring!");
-    } else {
-        bmp.setSampling(Adafruit_BMP280::MODE_NORMAL,
-                        Adafruit_BMP280::SAMPLING_X2,
-                        Adafruit_BMP280::SAMPLING_X16,
-                        Adafruit_BMP280::FILTER_X4,
-                        Adafruit_BMP280::STANDBY_MS_250);
-        Serial.println("[BMP]  Sensor ready.");
+    // TTP224 outputs are digital push-pull lines. Keep a pulldown enabled so
+    // a weak or disconnected line does not intermittently toggle a relay.
+    pinMode(TOUCH1_PIN, INPUT_PULLDOWN);
+    pinMode(TOUCH2_PIN, INPUT_PULLDOWN);
+    pinMode(TOUCH3_PIN, INPUT_PULLDOWN);
+    pinMode(TOUCH4_PIN, INPUT_PULLDOWN);
+    for (uint8_t i = 0; i < RELAY_COUNT; i++) {
+        const bool rawActive = (digitalRead(touchPins[i]) == HIGH);
+        touchRawState[i] = rawActive;
+        touchStableState[i] = rawActive;
+        touchChangedAt[i] = millis();
     }
 
-    // DHT22
-    dht.begin();
-    delay(2000);
-    float testH = dht.readHumidity();
-    dhtOk = !isnan(testH);
-    Serial.printf("[DHT]  %s\n", dhtOk ? "Sensor ready." : "WARNING: no valid reading - check wiring!");
+    // Default relay labels
+    strcpy(relayLabel[0], "Relay 1");
+    strcpy(relayLabel[1], "Relay 2");
+    strcpy(relayLabel[2], "Relay 3");
+    strcpy(relayLabel[3], "Relay 4");
 
-    // TEMT6000
-    analogSetAttenuation(ADC_11db);
-    analogRead(TEMT6000_PIN);
-    temtOk = true;
-    Serial.println("[TEMT] TEMT6000 ADC ready.");
+    loadRfidSlots();
+    initRfidReader();
 
     // Load settings, init ESP-NOW and attempt to pair with master if preferences are found in NVS
     loadSettings();
+
+    // If relay state persistence is enabled, load the last known states and apply them to the relays
+    if(sRelayPersist)
+    {
+        prefs.begin("relay", true);
+        for(int i=0;i<RELAY_COUNT;i++)
+        {
+            char key[8];
+            buildRelayStateKey(i, key, sizeof(key));
+            relayState[i] = prefs.getBool(key, false);
+        }
+        prefs.end();
+
+        for(int i=0;i<RELAY_COUNT;i++)
+        {
+            setRelay(i, relayState[i], false);
+            // For Debugging: print loaded relay states to Serial Monitor
+            Serial.printf("[NVS]  Loaded relay %d state: %s\n", i, relayState[i] ? "ON" : "OFF");
+        }
+        // For Debugging: print loaded relay states to Serial Monitor
+        Serial.println("[NVS]  Loaded relay states from NVS Complete.");
+    }
+
     rxQueue = xQueueCreate(10, sizeof(RxPacket));
     WiFi.mode(WIFI_STA);
     WiFi.disconnect();
@@ -1059,7 +1433,6 @@ void setup() {
 
     Serial.println("[BOOT] Setup complete.\n");
 }
-
 // *****************************************************************************
 // LOOP
 // *****************************************************************************
@@ -1068,6 +1441,8 @@ void loop() {
 
     runPendingOta();
     handleButton();
+    handleTouchInputs();
+    pollRfidReader();
     processRxQueue();
 
     if (nodeState == STATE_PAIRED && txFailCount >= GW_LOST_THRESHOLD) {
@@ -1096,10 +1471,6 @@ void loop() {
     }
 
     if (nodeState == STATE_PAIRED || nodeState == STATE_DISC_PEND) {
-        if (now - lastSensor >= (unsigned long)sSettingSendIntvl * 1000UL) {
-            lastSensor = now;
-            sendSensorData();
-        }
         if (now - lastHeartbeat >= HEARTBEAT_INTERVAL) {
             lastHeartbeat = now;
             sendHeartbeat();

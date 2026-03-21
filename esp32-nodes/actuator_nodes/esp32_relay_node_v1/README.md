@@ -1,6 +1,6 @@
 # ESP32 Relay Node v1
 
-Firmware version: **1.1.1**
+Firmware version: **1.2.0**
 Target board: `esp32dev`
 
 ## Firmware Changelog
@@ -11,6 +11,7 @@ Target board: `esp32dev`
 | v1.0.2 | Added capacitive touch sensor support to the ESP32 Relay Node with relay-state sync for the web interface |
 | v1.1.0 | Added gateway-managed Node OTA support, helper-AP download handling, OTA finalization/reboot flow, and validated relay-node OTA reconnect behavior |
 | v1.1.1 | Added `HW_CONFIG_ID` reporting/firmware markers so the gateway can reject incompatible actuator firmware during Node OTA |
+| v1.2.0 | Updated to the `mesh_protocol.h v3.3.0` line with capability-aware registration and actuator-schema compatibility for the newer Hybrid-capable gateway/dashboard release |
 
 ## Hardware
 
@@ -124,7 +125,7 @@ After the initial USB flash, future compatible firmware builds can be delivered 
 5. The gateway detects the beacon and completes the handshake automatically
 6. The LED turns solid green - the node is now paired and transmitting
 
-At pair time the node sends its actuator state, settings data, firmware version, and hardware configuration ID to the gateway so the dashboard can stay synchronized without extra manual configuration.
+At pair time the node sends its actuator state, settings data, firmware version, and hardware configuration ID to the gateway so the dashboard can stay synchronized without extra manual configuration. The current gateway line also uses the same actuator-schema/state path for both pure actuator nodes and Hybrid nodes.
 
 ---
 

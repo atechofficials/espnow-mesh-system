@@ -34,7 +34,7 @@ Change node settings such as:
 - Sensor-specific options
 
 ### Gateway-managed Node OTA
-Upload compatible sensor-node or actuator-node firmware from the gateway web interface and let the gateway update the selected node without connecting that node to your home Wi-Fi. The gateway now validates both the node role and the node hardware configuration ID before delivery begins.
+Upload compatible sensor-node, actuator-node, or hybrid-node firmware from the gateway web interface and let the gateway update the selected node without connecting that node to your home Wi-Fi. The gateway now validates both the node role and the node hardware configuration ID before delivery begins.
 
 ### Automatic recovery
 If the gateway or node reboots, the system reconnects automatically and restores state where supported.
@@ -43,7 +43,7 @@ If the gateway or node reboots, the system reconnects automatically and restores
 
 ## Current Project Status
 
-The project already supports both **sensor nodes** and **actuator nodes**.
+The project already supports **sensor nodes**, **actuator nodes**, and **hybrid nodes**.
 
 ### Available right now
 
@@ -53,6 +53,7 @@ The project already supports both **sensor nodes** and **actuator nodes**.
 | Gateway Helper | ESP32-C3 Coprocessor | Working |
 | Sensor Node | Envo Mini v1 | Working |
 | Actuator Node | ESP32 Relay Node v1 | Working |
+| Hybrid Node | ESP32 Hybrid Relay Node v1 | Working |
 
 ### Current node capabilities
 
@@ -68,11 +69,19 @@ The project already supports both **sensor nodes** and **actuator nodes**.
 - Relay state persistence across reboot
 - Status LED setting from dashboard
 
+**ESP32 Hybrid Relay Node v1**
+- 4 independent relay outputs
+- 4 TTP224 touch inputs
+- RC522 RFID card reader support
+- RFID card actions that apply saved relay scenes
+- Relay control, state sync, and RFID management from the dashboard
+
 ### Current OTA capabilities
 
 - Gateway self-OTA from the browser with gateway hardware-config ID validation
 - Gateway-managed OTA for supported sensor nodes with role and hardware-config ID validation
 - Gateway-managed OTA for supported actuator nodes with role and hardware-config ID validation
+- Gateway-managed OTA for supported hybrid nodes with role and hardware-config ID validation
 
 ---
 
@@ -134,6 +143,10 @@ For **Node OTA**, the gateway temporarily hands firmware delivery to the on-boar
 ### Actuator node reference output
 - 4-channel active-LOW relay module
 
+### Hybrid node reference add-ons
+- TTP224 4-way touch sensor
+- RC522 RFID reader module
+
 ---
 
 ## Quick Start
@@ -156,6 +169,9 @@ Sensor node:
 Actuator node:
 [`esp32-nodes/actuator_nodes/esp32_relay_node_v1/README.md`](esp32-nodes/actuator_nodes/esp32_relay_node_v1/README.md)
 
+Hybrid node:
+[`esp32-nodes/hybrid_nodes/esp32_hybrid_relay_node_v1/README.md`](esp32-nodes/hybrid_nodes/esp32_hybrid_relay_node_v1/README.md)
+
 ### 3. Power on the gateway
 On first boot, the gateway helps you connect it to your home Wi-Fi.
 
@@ -174,6 +190,7 @@ The current dashboard supports:
 - viewing all paired nodes
 - seeing live sensor readings
 - controlling relay outputs
+- managing Hybrid-node RFID card actions
 - opening node settings
 - renaming nodes
 - rebooting nodes remotely
@@ -202,6 +219,7 @@ You want a modular ESP32 project with:
 - gateway firmware
 - sensor firmware
 - actuator firmware
+- hybrid node firmware
 - a shared protocol
 - a live dashboard
 - room for future expansion
@@ -215,6 +233,7 @@ The project is already structured for further development.
 If you want to:
 - add new sensor nodes
 - add new actuator nodes
+- add new hybrid nodes
 - improve the gateway
 - improve the dashboard
 - extend the protocol
@@ -244,7 +263,7 @@ espnow-mesh-system/
   Gateway documentation and firmware
 
 - [`esp32-nodes/`](esp32-nodes/)  
-  Sensor and actuator node firmware
+  Sensor, actuator, and hybrid node firmware
 
 ---
 
@@ -260,6 +279,7 @@ If you're building hardware:
 - Gateway firmware guide: [`esp32-gateway/gateway_v1/README.md`](esp32-gateway/gateway_v1/README.md)
 - Sensor node guide: [`esp32-nodes/sensor_nodes/envo_mini_v1/README.md`](esp32-nodes/sensor_nodes/envo_mini_v1/README.md)
 - Relay node guide: [`esp32-nodes/actuator_nodes/esp32_relay_node_v1/README.md`](esp32-nodes/actuator_nodes/esp32_relay_node_v1/README.md)
+- Hybrid node guide: [`esp32-nodes/hybrid_nodes/esp32_hybrid_relay_node_v1/README.md`](esp32-nodes/hybrid_nodes/esp32_hybrid_relay_node_v1/README.md)
 
 If you're contributing code:
 
@@ -272,13 +292,14 @@ If you're contributing code:
 The project currently supports:
 - local sensor monitoring
 - local relay control
+- local RFID-driven relay scenes on Hybrid nodes
 - browser-based node management
-- gateway-managed Node OTA for supported sensor and relay nodes with role and hardware-config safety checks
+- gateway-managed Node OTA for supported sensor, actuator, and hybrid nodes with role and hardware-config safety checks
 
 Planned future growth may include:
 - more sensor node types
 - more actuator node types
-- hybrid sensor + actuator nodes
+- more hybrid sensor + actuator nodes
 - improved dashboard views and charts
 - cleaner onboarding and flashing experience
 

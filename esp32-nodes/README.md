@@ -16,7 +16,7 @@ Currently implemented:
 
 | Node | Sensors | Firmware |
 |------|---------|----------|
-| Envo Mini V1 Node | Bosch BMP280 (temperature + pressure) + DHT22 (humidity) + TEMT6000 (ambient light) | v2.1.1 |
+| Envo Mini V1 Node | Bosch BMP280 (temperature + pressure) + DHT22 (humidity) + TEMT6000 (ambient light) | v2.1.2 |
 
 ### Actuator Nodes (`actuator_nodes/`)
 
@@ -26,7 +26,17 @@ Currently implemented:
 
 | Node | Actuator | Firmware |
 |------|---------|----------|
-| ESP32 Relay Node v1 | 4-Relays | v1.1.1 |
+| ESP32 Relay Node v1 | 4 relays + 4 touch inputs | v1.2.0 |
+
+### Hybrid Nodes (`hybrid_nodes/`)
+
+Hybrid nodes combine more than one capability family in the same firmware image. The first implementation keeps the familiar 4-relay actuator workflow while adding RFID-driven relay scenes over an RC522 reader. The gateway and dashboard now treat these nodes as first-class `NODE_HYBRID` devices instead of forcing them into a sensor-only or actuator-only bucket.
+
+Currently implemented:
+
+| Node | Capabilities | Firmware |
+|------|--------------|----------|
+| ESP32 Hybrid Relay Node v1 | 4 relays + 4 touch inputs + RC522 RFID card actions | v0.1.0 |
 
 ---
 
@@ -66,6 +76,7 @@ This flow has now been validated with:
 
 - sensor-node OTA
 - relay-node OTA
+- hybrid-node OTA
 - version upgrades
 - version downgrades
 - same-version reflashing

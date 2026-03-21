@@ -1,18 +1,19 @@
 # Gateway v1 - Build, Flash, and OTA Guide
 
-Firmware version: **2.0.1**  
+Firmware version: **2.1.0**  
 Target board: `esp32-s3-devkitc1-n8r8`
 
-Gateway helper coprocessor: **ESP32-C3 firmware v0.1.0**
+Gateway helper coprocessor: **ESP32-C3 firmware v0.1.1**
 
 ---
 
-## Highlights in v2.0.1
+## Highlights in v2.1.0
 
-- Continues the **gateway-managed Node OTA** workflow introduced in v2.0.0 for supported sensor and actuator nodes
-- Adds OTA **hardware configuration ID** validation for both gateway OTA and node OTA
-- Persists node `HW_CONFIG_ID` metadata across gateway reboot so Node OTA still works after restart
-- Improves gateway and node OTA mismatch/error reporting in the web interface and serial logs
+- Continues the **gateway-managed Node OTA** workflow for supported sensor, actuator, and hybrid nodes
+- Adds first-class **Hybrid node** handling with capability-aware actuator/RFID synchronization
+- Supports the new **ESP32 Hybrid Relay Node v1** and its RFID card-action workflow in the dashboard
+- Preserves actuator state across gateway reboot so relay cards recover correctly after restart
+- Improves gateway OTA success/reboot feedback in the web interface
 - Continues support for the **ESP32-C3 gateway coprocessor**, `coproc_ota_protocol.h`, gateway web credentials, relay label assignment, gateway LED control, and schema-driven node settings
 
 ---
@@ -60,7 +61,7 @@ This layout is required for the web-based Gateway OTA update feature and leaves 
 
 ## First-Time Flash / Migration to the OTA-Capable Gateway Line
 
-If you are coming from an older gateway build that used the non-OTA partition table, the **first upgrade to the current v2.0.x gateway line must be done over USB**.
+If you are coming from an older gateway build that used the non-OTA partition table, the **first upgrade to the current OTA-capable gateway line must be done over USB**.
 
 Run these commands from the `gateway_v1/` directory:
 
@@ -180,7 +181,7 @@ pio run
 
 ## Node OTA Update from the Web Interface
 
-The gateway can also update a paired **sensor node** or **actuator node** from the dashboard.
+The gateway can also update a paired **sensor node**, **actuator node**, or **hybrid node** from the dashboard.
 
 ### Supported flow
 
@@ -193,7 +194,7 @@ The gateway can also update a paired **sensor node** or **actuator node** from t
 
 ### What the gateway checks
 
-- uploaded image role matches the selected node type
+- uploaded image role matches the selected node type (`SENSOR`, `ACTUATOR`, or `HYBRID`)
 - uploaded node hardware configuration marker matches the selected node's reported `HW_CONFIG_ID`
 - firmware metadata is readable before starting delivery
 - helper staging finishes successfully on the ESP32-C3
@@ -204,7 +205,7 @@ The gateway can also update a paired **sensor node** or **actuator node** from t
 - Upload **node `firmware.bin`** from the node project, not bootloader or partition files
 - The node does **not** need your home Wi-Fi credentials; it only joins the temporary helper AP for the OTA window
 - Wrong-role uploads, wrong-hardware uploads, and gateway firmware uploaded to the node OTA route are rejected before helper staging starts
-- Supported and verified flows now include same-version reflashing, upgrades, downgrades, sensor-node OTA, relay-node OTA, and node OTA after gateway reboot
+- Supported and verified flows now include same-version reflashing, upgrades, downgrades, sensor-node OTA, relay-node OTA, hybrid-node OTA, and node OTA after gateway reboot
 
 ---
 

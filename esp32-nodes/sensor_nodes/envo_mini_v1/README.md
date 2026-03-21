@@ -1,11 +1,11 @@
 # Envo Mini V1 Node
 
-Firmware version: **2.1.1**
+Firmware version: **2.1.2**
 Target board: `dfrobot_firebeetle2_esp32e`
 
 Reads temperature and barometric pressure from a **Bosch BMP280**, humidity from a **DHT22**, and ambient light level from a **TEMT6000** phototransistor. Transmits all readings to the gateway over ESP-NOW using the schema-driven sensor protocol, so the node self-describes its sensors to the gateway at pair time and no gateway changes are needed when sensors are added or removed.
 
-This node also supports the **gateway-managed Node OTA** workflow introduced with the ESP32-S3 gateway `v2.0.0` and ESP32-C3 helper firmware `v0.1.0`. Current releases also report this node's hardware configuration ID so the gateway can reject incompatible sensor firmware before the OTA session starts.
+This node also supports the **gateway-managed Node OTA** workflow introduced with the ESP32-S3 gateway `v2.0.0` and ESP32-C3 helper firmware `v0.1.0`. Current releases also report this node's hardware configuration ID so the gateway can reject incompatible sensor firmware before the OTA session starts, and remain fully compatible with the Hybrid-capable gateway/dashboard line built on `mesh_protocol.h v3.3.0`.
 
 ## Firmware Changelog
 | Version | Notes |
@@ -14,6 +14,7 @@ This node also supports the **gateway-managed Node OTA** workflow introduced wit
 | v2.0.1 | Added more serial-monitor debugging messages |
 | v2.1.0 | Added gateway-managed Node OTA support, helper-AP download handling, OTA finalization/reboot flow, and improved OTA status reporting |
 | v2.1.1 | Added `HW_CONFIG_ID` reporting/firmware markers for hardware-safe OTA validation and compatibility checks from the gateway |
+| v2.1.2 | Updated to the `mesh_protocol.h v3.3.0` line with capability-aware registration for compatibility with the Hybrid-node-capable gateway release while preserving existing sensor behavior |
 
 ---
 
