@@ -1,6 +1,6 @@
 # ESP32 Hybrid Relay Node v1
 
-Firmware version: **0.1.0**
+Firmware version: **0.1.1**
 Target board: `esp32dev`
 
 This is the first **Hybrid node** in the ESPNow Mesh System. It starts from the existing 4-relay actuator architecture, keeps the same touch-input and relay-control behavior, and adds an **RC522 RFID reader** so saved RFID cards can apply predefined relay scenes directly on the node.
@@ -11,6 +11,7 @@ The firmware registers itself as `NODE_HYBRID`, reports Hybrid capabilities to t
 | Version | Notes |
 |---------|-------|
 | v0.1.0 | Initial Hybrid Relay Node release with 4 relays, 4 TTP224 touch inputs, RC522 RFID card actions, dashboard RFID management, and gateway-managed Hybrid Node OTA support |
+| v0.1.1 | Added periodic RC522 health checks with automatic reader recovery after long-uptime stalls, and updated the recommended RC522 reset wiring to a safer GPIO for reliable USB flashing |
 
 ---
 
@@ -68,9 +69,11 @@ The firmware registers itself as `NODE_HYBRID`, reports Hybrid capabilities to t
 | SCK | GPIO 18 |
 | MOSI | GPIO 23 |
 | MISO | GPIO 19 |
-| RST | GPIO 2 |
+| RST | GPIO 21 |
 | 3.3V | 3.3V |
 | GND | GND |
+
+> **Note:** The current recommended RC522 `RST` wiring uses **GPIO21**. Earlier experiments with `GPIO2` could interfere with reliable USB flashing on some hardware setups while the RFID module remained connected.
 
 ---
 
@@ -106,7 +109,7 @@ Change these defines before flashing:
 | `PAIR_BTN_PIN` | `16` | Pairing button GPIO (active-LOW) |
 | `LED_PIN` | `5` | WS2812B data GPIO |
 | `RFID_CS_PIN` | `17` | RC522 chip-select pin |
-| `RFID_RST_PIN` | `2` | RC522 reset pin |
+| `RFID_RST_PIN` | `21` | RC522 reset pin |
 | `HW_CONFIG_ID` | `"0x2A"` | Hardware configuration ID embedded in firmware and reported to the gateway for OTA compatibility checks |
 
 When deploying multiple nodes, give each node a unique `NODE_NAME`.
@@ -128,6 +131,8 @@ pio run --target upload
 No LittleFS upload is needed for Hybrid nodes.
 
 After the initial USB flash, future compatible firmware builds can be delivered from the gateway web interface using **Node OTA**.
+
+If USB flashing fails while the RC522 reader is connected, double-check that the reader `RST` line is wired to the recommended non-strapping GPIO and not to an ESP32 boot-related pin on your hardware variant.
 
 ---
 
@@ -167,6 +172,8 @@ When that saved card is presented again, the node:
 - emits a scan event so the dashboard stays synchronized
 
 Unknown cards do not change relay state until a card action is saved for them.
+
+The current firmware also performs periodic RC522 health checks at runtime and will reinitialize the reader automatically if the RFID interface stalls after long uptime, reducing the need to manually reboot the node just to restore card detection.
 
 ---
 

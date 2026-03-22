@@ -1,10 +1,10 @@
 /**
     * @file [main.cpp]
     * @brief Main source file for the ESP32 Mesh Gateway firmware
-    * @version 2.1.1
+    * @version 2.1.2
     * @author Mrinal (@atechofficials)
  */
-#define FW_VERSION "2.1.1"
+#define FW_VERSION "2.1.2"
 #define HW_CONFIG_ID "0x0A"
 
 #include <Arduino.h>
@@ -58,8 +58,8 @@
 #define NODE_OTA_BEGIN_RETRY_MS 2000UL
 #define NODE_OTA_BEGIN_MAX_ATTEMPTS 10
 #define COPROC_UART_BAUD 230400
-#define COPROC_UART_TX_PIN 17
-#define COPROC_UART_RX_PIN 18
+#define COPROC_UART_TX_PIN 4
+#define COPROC_UART_RX_PIN 5
 #define COPROC_UART_RX_BUFFER_SIZE 4096
 #define COPROC_UART_TX_BUFFER_SIZE 4096
 #define COPROC_RESET_PIN 1

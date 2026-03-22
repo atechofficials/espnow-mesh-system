@@ -1,10 +1,10 @@
 /**
     * @file [main.cpp]
     * @brief Main source file for the ESP32 Mesh Hybrid Node firmware
-    * @version 0.1.0
+    * @version 0.1.1
     * @author Mrinal (@atechofficials)
  */
-#define FW_VERSION "0.1.0"
+#define FW_VERSION "0.1.1"
 #define HW_CONFIG_ID "0x2A"
 
 #include <Arduino.h>
@@ -42,9 +42,10 @@
 #define SPI_MOSI 23
 #define SPI_MISO 19
 #define RFID_CS_PIN 17
-// RC522 reset line is wired to GPIO2 on this hardware revision.
-#define RFID_RST_PIN 2
+#define RFID_RST_PIN 21
 #define RFID_INIT_RETRY_MS 5000UL
+#define RFID_HEALTH_CHECK_MS 5000UL
+#define RFID_READ_FAIL_RESET_THRESHOLD 3
 bool relay_active_high = false; // Set to true if your relay module is active HIGH, false if active LOW
 
 // Node state machine
@@ -120,6 +121,8 @@ static uint8_t rfidActiveUid[RFID_UID_MAX_LEN] = {0};
 static uint8_t rfidActiveUidLen = 0;
 static unsigned long rfidLastSeenAt = 0;
 static unsigned long lastRfidInitAttempt = 0;
+static unsigned long lastRfidHealthCheckAt = 0;
+static uint8_t rfidReadFailCount = 0;
 
 // Gateway-loss detection 
 #define GW_LOST_THRESHOLD   3
@@ -580,6 +583,7 @@ static bool isSupportedRfidVersion(uint8_t version) {
 static bool initRfidReader() {
     lastRfidInitAttempt = millis();
     rfidReaderReady = false;
+    rfidReadFailCount = 0;
 
     // Reinitialize the SPI bus on each probe so a slow-starting RC522 can
     // recover without forcing a full node reboot.
@@ -627,6 +631,35 @@ static bool initRfidReader() {
     return rfidReaderReady;
 }
 
+static void markRfidReaderUnavailable(const char* reason, uint8_t version = 0x00) {
+    rfidReaderReady = false;
+    rfidCardPresent = false;
+    rfidActiveUidLen = 0;
+    rfidReadFailCount = 0;
+    memset(rfidActiveUid, 0, sizeof(rfidActiveUid));
+    Serial.printf("[RFID] Reader stalled (%s). VersionReg=0x%02X. Scheduling reinit.\n",
+                  reason ? reason : "unknown", version);
+}
+
+static bool serviceRfidReaderHealth(unsigned long now) {
+    if (!rfidReaderReady) return false;
+    if ((now - lastRfidHealthCheckAt) < RFID_HEALTH_CHECK_MS) return true;
+
+    lastRfidHealthCheckAt = now;
+    const uint8_t version = rfidReader.PCD_ReadRegister(MFRC522::VersionReg);
+    if (!isSupportedRfidVersion(version)) {
+        markRfidReaderUnavailable("health check failed", version);
+        return false;
+    }
+
+    // Periodically re-arm the reader so it can recover from idle-state quirks
+    // without waiting for a full MCU reboot.
+    rfidReader.PCD_StopCrypto1();
+    rfidReader.PCD_AntennaOn();
+    rfidReader.PCD_SetAntennaGain(MFRC522::RxGain_max);
+    return true;
+}
+
 static void pollRfidReader() {
     const unsigned long now = millis();
     if (!rfidReaderReady) {
@@ -637,6 +670,7 @@ static void pollRfidReader() {
         return;
     }
     if (!hasMaster || myNodeId == 0) return;
+    if (!serviceRfidReaderHealth(now)) return;
 
     if (!rfidReader.PICC_IsNewCardPresent()) {
         if (rfidCardPresent && (now - rfidLastSeenAt) > 400UL) {
@@ -648,7 +682,13 @@ static void pollRfidReader() {
         return;
     }
 
-    if (!rfidReader.PICC_ReadCardSerial()) return;
+    if (!rfidReader.PICC_ReadCardSerial()) {
+        if (++rfidReadFailCount >= RFID_READ_FAIL_RESET_THRESHOLD) {
+            markRfidReaderUnavailable("card serial read failed repeatedly");
+        }
+        return;
+    }
+    rfidReadFailCount = 0;
 
     const uint8_t uidLen = (rfidReader.uid.size <= RFID_UID_MAX_LEN)
         ? rfidReader.uid.size

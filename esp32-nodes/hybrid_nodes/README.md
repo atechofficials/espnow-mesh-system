@@ -20,6 +20,7 @@ Like the other node families, Hybrid nodes use ESP-NOW for normal mesh traffic a
 - actuator schema reporting and live actuator-state sync
 - Hybrid-specific configuration exchange for RFID card actions
 - RFID scan events sent to the gateway/dashboard for scan-to-learn UX
+- periodic RC522 health checks with automatic reader reinitialization if the RFID interface stalls after long uptime
 - automatic re-registration after reboot or gateway restart
 - gateway-managed Node OTA with role and hardware-config validation
 
@@ -34,6 +35,8 @@ Hybrid nodes should be treated as capability-driven devices, not hardcoded one-o
 - Hybrid-specific sections such as RFID card actions
 
 This keeps the first Hybrid implementation simple while leaving room for future nodes that combine sensors, actuators, and other hardware features in one firmware image.
+
+For custom ESP32 hardware, Hybrid-node peripheral wiring should also avoid unnecessary use of ESP32 boot-strapping pins when safer GPIOs are available. The current RC522-based Hybrid reference now uses a non-strapping GPIO for the reader reset line so USB flashing remains reliable with the RFID module connected.
 
 ---
 

@@ -129,6 +129,14 @@ For **Node OTA**, the gateway temporarily hands firmware delivery to the on-boar
 - ESP32-S3-DevKitC-1-N8R8
 - ESP32-C3 helper coprocessor for Node OTA delivery and future gateway-side expansion
 
+### Gateway reference PCB
+- **ESP32 Mesh System Gateway v1.0A** hardware files are now included under `esp32-gateway/gateway_v1/hardware/`
+- Designed around off-the-shelf **ESP32-S3 Super Mini** and **ESP32-C3 Super Mini** development boards
+- Single-layer, thick-trace, THT-friendly layout intended to be easy to hand-assemble and home-fabricate
+- Uses the ESP32-S3 Super Mini's built-in **ARGB LED**, so no separate WS2812B is placed on the PCB
+- Includes a footprint/header position for a **BME280** gateway-side sensor module for future room-temperature / humidity support (**firmware support still in development**)
+- Includes an external **5V JST-style power connector**
+
 ### Sensor node reference board
 - DFRobot FireBeetle 2 ESP32-E
 
@@ -261,6 +269,8 @@ espnow-mesh-system/
 
 - [`esp32-gateway/`](esp32-gateway/)  
   Gateway documentation and firmware
+- [`esp32-gateway/gateway_v1/hardware/`](esp32-gateway/gateway_v1/hardware/)  
+  Gateway v1.0A PCB files, schematic PDFs, and development resources
 
 - [`esp32-nodes/`](esp32-nodes/)  
   Sensor, actuator, and hybrid node firmware
@@ -277,6 +287,7 @@ If you're just exploring:
 If you're building hardware:
 
 - Gateway firmware guide: [`esp32-gateway/gateway_v1/README.md`](esp32-gateway/gateway_v1/README.md)
+- Gateway v1.0A PCB files: [`esp32-gateway/gateway_v1/hardware/`](esp32-gateway/gateway_v1/hardware/)
 - Sensor node guide: [`esp32-nodes/sensor_nodes/envo_mini_v1/README.md`](esp32-nodes/sensor_nodes/envo_mini_v1/README.md)
 - Relay node guide: [`esp32-nodes/actuator_nodes/esp32_relay_node_v1/README.md`](esp32-nodes/actuator_nodes/esp32_relay_node_v1/README.md)
 - Hybrid node guide: [`esp32-nodes/hybrid_nodes/esp32_hybrid_relay_node_v1/README.md`](esp32-nodes/hybrid_nodes/esp32_hybrid_relay_node_v1/README.md)

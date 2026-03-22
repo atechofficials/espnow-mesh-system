@@ -15,6 +15,8 @@ The gateway is the heart of the ESPNow Mesh System. It runs on an **ESP32-S3** a
 | Status LED | WS2812B on GPIO 38 (on-board) |
 | Boot / Reset button | GPIO 0 (on-board BOOT button, used for factory reset) |
 
+The repository now also includes **ESP32 Mesh System Gateway v1.0A** PCB files under `gateway_v1/hardware/`. That hardware release is designed around off-the-shelf **ESP32-S3 Super Mini** and **ESP32-C3 Super Mini** development boards, uses the ESP32-S3 Super Mini's built-in ARGB LED instead of a separate WS2812B, provides a place for an external **BME280** module (firmware support still in progress), and adds an external **5V JST-style power connector**.
+
 ---
 
 ## Responsibilities
@@ -58,6 +60,7 @@ The gateway is the heart of the ESPNow Mesh System. It runs on an **ESP32-S3** a
 | v2.0.1 | Added OTA **hardware configuration ID** checks for both gateway OTA and node OTA, persisted node hardware IDs across gateway reboot, and improved OTA mismatch/error reporting in the serial logs and web UI |
 | v2.1.0 | Added first-class **Hybrid node** support, introduced the RFID-enabled Hybrid Relay Node flow, added capability-aware actuator/RFID handling, and improved relay-state restore plus gateway OTA UI feedback after reboot |
 | v2.1.1 | Improved the **web dashboard UX** with RFID scan toasts, mobile responsive layout fixes, custom reboot confirmation popup, better popup styling on small screens, overlay scroll-lock fixes, and improved UI asset refresh behavior |
+| v2.1.2 | Added documentation/support for the **Gateway v1.0A** PCB release, aligned the gateway-helper UART mapping with the new PCB layout, and kept the gateway firmware line in sync with the latest hardware release |
 ---
 
 ## Contents
@@ -86,14 +89,14 @@ gateway_v1/
 
 ## Current Release Notes
 
-- Gateway firmware version: **v2.1.0**
+- Gateway firmware version: **v2.1.2**
 - Gateway coprocessor firmware version: **v0.1.1**
 - Shared helper transport: `coproc_ota_protocol.h` **v1.0.0**
 - Shared mesh protocol: `mesh_protocol.h` **v3.3.0**
 - Web UI assets:
-  - `app.js` v4.1
-  - `index.html` v3.7
-  - `style.css` v3.6
+  - `app.js` v4.2
+  - `index.html` v3.8
+  - `style.css` v3.7
 - Active partition layout: **`partitions_8mb_ota.csv`**
 
 ---

@@ -34,11 +34,11 @@ Current file versions:
 
 | Component | Current Version |
 |----------|-----------------|
-| ESP32-S3 Gateway firmware `main.cpp` | `v2.1.1` |
+| ESP32-S3 Gateway firmware `main.cpp` | `v2.1.2` |
 | ESP32-C3 Gateway Coprocessor firmware `main.cpp` | `v0.1.1` |
 | ESP32 Sensor Node firmware `main.cpp` | `v2.1.2` |
 | ESP32 Actuator Relay Node firmware `main.cpp` | `v1.2.0` |
-| ESP32 Hybrid Relay Node firmware `main.cpp` | `v0.1.0` |
+| ESP32 Hybrid Relay Node firmware `main.cpp` | `v0.1.1` |
 | `mesh_protocol.h` | `v3.3.0` |
 | `coproc_ota_protocol.h` | `v1.0.0` |
 | `index.html` | `v3.8` |
@@ -76,6 +76,9 @@ espnow-mesh-system/
 |       |-- src/main.cpp
 |       |-- include/mesh_protocol.h
 |       |-- include/coproc_ota_protocol.h
+|       |-- hardware/
+|       |   |-- ESP32_Mesh_Gateway_v1A/
+|       |   `-- Development_Resources/
 |       |-- coprocessor_esp32c3/
 |       |   |-- src/main.cpp
 |       |   |-- include/coproc_ota_protocol.h
@@ -122,6 +125,8 @@ Requirements:
 - PlatformIO Core or the PlatformIO IDE extension for VS Code
 - One USB data cable per ESP32 device being flashed or monitored
 - Real hardware for validation
+
+For the gateway hardware release, the repository now also includes **ESP32 Mesh System Gateway v1.0A** KiCad files, schematic PDF, and development references under `esp32-gateway/gateway_v1/hardware/`.
 
 PlatformIO manages:
 - ESP32 toolchains
@@ -292,6 +297,7 @@ Before changing gateway logic:
 - do not hardcode node-specific behavior unless it is truly gateway-specific
 - retest end-to-end Node OTA when changing OTA job timing, status handling, or reconnect logic
 - preserve `GWHWCFG:` and `NODEHWCFG:` validation behavior when changing OTA upload parsing or firmware-marker scanning
+- keep UART pin definitions aligned with the actual gateway hardware variant being documented or built; the current Gateway v1.0A reference PCB routes **ESP32-S3 TX GPIO4 -> ESP32-C3 RX GPIO0** and **ESP32-S3 RX GPIO5 -> ESP32-C3 TX GPIO1**
 
 ---
 
@@ -314,6 +320,7 @@ Before changing helper logic:
 - keep the gateway and helper copies of `coproc_ota_protocol.h` synchronized
 - test the full S3 -> C3 -> node OTA flow on hardware
 - validate helper cleanup after OTA success and abort paths
+- keep the documented UART wiring aligned with the active gateway hardware release and the helper board actually being used on the PCB
 
 ---
 
@@ -430,6 +437,9 @@ When adding or extending a hybrid node:
 
 Important:
 Hybrid nodes should be capability-driven, not hardcoded in the gateway or dashboard by one board name.
+
+Hardware note:
+When wiring Hybrid-node peripherals on custom ESP32 boards, avoid using ESP32 boot-strapping pins for external modules when a safer GPIO is available. The current Hybrid Relay Node reference now places the RC522 `RST` line on **GPIO21** instead of `GPIO2` to keep USB flashing reliable while the RFID reader is connected.
 
 ---
 

@@ -1,11 +1,20 @@
 # Gateway v1 - Build, Flash, and OTA Guide
 
-Firmware version: **2.1.1**  
+Firmware version: **2.1.2**  
 Target board: `esp32-s3-devkitc1-n8r8`
 
 Gateway helper coprocessor: **ESP32-C3 firmware v0.1.1**
 
 ---
+
+## Highlights in v2.1.2
+
+- Adds the first **ESP32 Mesh System Gateway v1.0A** hardware release to the repository under `hardware/`
+- Documents a home-fabrication-friendly gateway PCB built around off-the-shelf **ESP32-S3 Super Mini** and **ESP32-C3 Super Mini** development boards
+- Aligns the documented ESP32-S3 <-> ESP32-C3 UART wiring with the new PCB layout:
+  - **ESP32-S3 TX GPIO4 -> ESP32-C3 RX GPIO0**
+  - **ESP32-S3 RX GPIO5 -> ESP32-C3 TX GPIO1**
+- Continues the current gateway OTA, Node OTA, Hybrid-node, and mobile-web-UI feature set from the v2.1.1 release line
 
 ## Highlights in v2.1.1
 
@@ -27,6 +36,24 @@ Gateway helper coprocessor: **ESP32-C3 firmware v0.1.1**
 - [PlatformIO Core](https://docs.platformio.org/en/latest/core/installation/index.html) or the PlatformIO IDE extension for VS Code
 - USB cable connected to the ESP32-S3-DevKitC-1-N8R8
 - USB cable connected to the ESP32-C3 coprocessor when flashing or debugging the Node OTA helper firmware
+
+The new **Gateway v1.0A** PCB release in `hardware/` instead uses off-the-shelf **ESP32-S3 Super Mini** and **ESP32-C3 Super Mini** boards soldered onto a single-layer carrier PCB.
+
+---
+
+## Gateway v1.0A Hardware Release
+
+The repository now includes the first gateway PCB release under `hardware/ESP32_Mesh_Gateway_v1A/`.
+
+Current board-level highlights:
+
+- uses off-the-shelf **ESP32-S3 Super Mini** and **ESP32-C3 Super Mini** development boards
+- single-layer, thick-trace layout intended to be easy to fabricate and hand-assemble
+- relies on the ESP32-S3 Super Mini's built-in **ARGB LED**, so no separate WS2812B is placed on the PCB
+- includes a place to connect a **BME280** module so the gateway can later report its own basic room temperature and humidity (**firmware support still in development**)
+- includes an external **5V JST-style power connector**
+
+The same `hardware/` tree also includes schematic PDFs and a `Development_Resources/` folder with dev-board pinouts and MCU reference documents.
 
 ---
 
@@ -120,6 +147,13 @@ During a node update, the gateway:
 5. waits for the node to download, flash, reboot, and re-register
 
 The coprocessor also reports OTA helper status back to the gateway so the web interface can show live progress.
+
+For the current **Gateway v1.0A** PCB release, the UART link is routed as:
+
+- **ESP32-S3 TX GPIO4 -> ESP32-C3 RX GPIO0**
+- **ESP32-S3 RX GPIO5 -> ESP32-C3 TX GPIO1**
+
+The `hardware/` directory also includes schematic PDFs, KiCad source files, and development-reference material for that board revision.
 
 Shared transport definitions between the gateway and helper live in:
 
@@ -272,6 +306,8 @@ All main tuneable constants are near the top of `src/main.cpp`.
 Timing constants shared with the nodes live in `include/mesh_protocol.h`.
 
 Node OTA transport and helper constants are shared with the ESP32-C3 helper through `include/coproc_ota_protocol.h`.
+
+If you are working against the Gateway v1.0A PCB instead of the original dev-kit wiring, keep the UART pin assignments in `src/main.cpp` aligned with the PCB routing described above.
 
 ---
 

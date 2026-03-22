@@ -36,7 +36,7 @@ Currently implemented:
 
 | Node | Capabilities | Firmware |
 |------|--------------|----------|
-| ESP32 Hybrid Relay Node v1 | 4 relays + 4 touch inputs + RC522 RFID card actions | v0.1.0 |
+| ESP32 Hybrid Relay Node v1 | 4 relays + 4 touch inputs + RC522 RFID card actions | v0.1.1 |
 
 ---
 
@@ -82,6 +82,8 @@ This flow has now been validated with:
 - same-version reflashing
 - role mismatch rejection
 - hardware-config mismatch rejection
+
+The current Hybrid-node line also includes improved RC522 runtime recovery so RFID scanning can recover from reader stalls without requiring a full node reboot.
 
 ---
 

@@ -40,6 +40,8 @@ This means incompatible uploads such as wrong-role firmware, wrong hardware-conf
 | Helper AP IP | `192.168.4.1` |
 | Helper HTTP port | `80` |
 
+On the **ESP32 Mesh System Gateway v1.0A** PCB release, the helper is hosted on an **ESP32-C3 Super Mini** footprint and is wired to the ESP32-S3 side as **RX=GPIO0** and **TX=GPIO1**. The firmware target remains the same helper role, but contributors should keep the documented board-level routing aligned with the current hardware release.
+
 ---
 
 ## Shared Protocol
