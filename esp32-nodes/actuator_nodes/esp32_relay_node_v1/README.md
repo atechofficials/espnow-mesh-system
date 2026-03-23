@@ -1,6 +1,6 @@
 # ESP32 Relay Node v1
 
-Firmware version: **1.2.0**
+Firmware version: **1.2.1**
 Target board: `esp32dev`
 
 ## Firmware Changelog
@@ -12,6 +12,9 @@ Target board: `esp32dev`
 | v1.1.0 | Added gateway-managed Node OTA support, helper-AP download handling, OTA finalization/reboot flow, and validated relay-node OTA reconnect behavior |
 | v1.1.1 | Added `HW_CONFIG_ID` reporting/firmware markers so the gateway can reject incompatible actuator firmware during Node OTA |
 | v1.2.0 | Updated to the `mesh_protocol.h v3.3.0` line with capability-aware registration and actuator-schema compatibility for the newer Hybrid-capable gateway/dashboard release |
+| v1.2.1 | Restores the node status RGB LED to enabled when the node is unpaired from the gateway and saves that LED state back to NVS so pairing/status indication is visible again when the node is later re-paired |
+
+---
 
 ## Hardware
 

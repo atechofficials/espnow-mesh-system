@@ -14,7 +14,7 @@ Current sensor-node firmwares also report a hardware configuration ID during reg
 
 | Directory | Sensors | Measurements | Board |
 |-----------|---------|--------------|-------|
-| `envo_mini_v1/` | Bosch BMP280 + DHT22 + TEMT6000 | Temperature, Atmospheric Pressure, Humidity, Ambient Light | DFRobot Firebeetle 2 ESP32-E (`v2.1.2`) |
+| `envo_mini_v1/` | Bosch BMP280 + DHT22 + TEMT6000 | Temperature, Atmospheric Pressure, Humidity, Ambient Light | DFRobot Firebeetle 2 ESP32-E (`v2.1.3`) |
 
 ---
 

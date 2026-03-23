@@ -1,10 +1,10 @@
 /**
     * @file [main.cpp]
     * @brief Main source file for the ESP32 Mesh Gateway firmware
-    * @version 2.1.2
+    * @version 2.1.3
     * @author Mrinal (@atechofficials)
  */
-#define FW_VERSION "2.1.2"
+#define FW_VERSION "2.1.3"
 #define HW_CONFIG_ID "0x0A"
 
 #include <Arduino.h>
@@ -498,6 +498,45 @@ static uint8_t findFreeSlot() {
     }
     if (nextId > MESH_MAX_NODES) return 0;
     return nextId++;
+}
+
+static uint8_t peekFreeSlot() {
+    uint8_t slot = 0;
+    if (xSemaphoreTake(nodesMutex, pdMS_TO_TICKS(50)) == pdTRUE) {
+        for (uint8_t i = 1; i < nextId; i++) {
+            if (nodes[i].mac[0] == 0 && nodes[i].mac[1] == 0) {
+                slot = i;
+                break;
+            }
+        }
+        if (slot == 0 && nextId <= MESH_MAX_NODES) slot = nextId;
+        xSemaphoreGive(nodesMutex);
+    }
+    return slot;
+}
+
+static uint8_t countRegisteredNodes() {
+    uint8_t count = 0;
+    if (xSemaphoreTake(nodesMutex, pdMS_TO_TICKS(50)) == pdTRUE) {
+        for (uint8_t i = 1; i < nextId; i++) {
+            if (nodes[i].mac[0] == 0 && nodes[i].mac[1] == 0) continue;
+            count++;
+        }
+        xSemaphoreGive(nodesMutex);
+    }
+    return count;
+}
+
+static String buildPairCapacityFullJson(const char* macStr = nullptr) {
+    JsonDocument doc;
+    doc["type"] = "pair_capacity_full";
+    doc["current_nodes"] = countRegisteredNodes();
+    doc["max_nodes"] = MESH_MAX_NODES;
+    if (macStr && *macStr) doc["mac"] = macStr;
+
+    String out;
+    serializeJson(doc, out);
+    return out;
 }
 
 static uint32_t defaultCapabilitiesForType(NodeType type) {
@@ -1988,8 +2027,14 @@ static void loadNodesFromNvs() {
     uint8_t savedNextId = prefs.getUChar("nextid", 1);
     if (savedNextId <= 1) { prefs.end(); return; }
 
+    const uint8_t runtimeNextIdLimit = MESH_MAX_NODES + 1;
+    if (savedNextId > runtimeNextIdLimit) {
+        Serial.printf("[MESH] Saved node registry nextId=%u exceeds configured MESH_MAX_NODES=%u. Restoring only slots 1..%u.\n",
+                      savedNextId, MESH_MAX_NODES, MESH_MAX_NODES);
+    }
+
     uint8_t restored = 0;
-    for (uint8_t i = 1; i < savedNextId; i++) {
+    for (uint8_t i = 1; i < savedNextId && i < runtimeNextIdLimit; i++) {
         char key[5];
         snprintf(key, sizeof(key), "n%d", i);
         const size_t blobLen = prefs.getBytesLength(key);
@@ -2044,6 +2089,7 @@ static void loadNodesFromNvs() {
         }
     }
     nextId = savedNextId;
+    if (nextId > runtimeNextIdLimit) nextId = runtimeNextIdLimit;
     prefs.end();
 
     if (restored == 0) return;
@@ -2733,6 +2779,14 @@ static void processRxQueue() {
                     assignId = findFreeSlot();
                     if (assignId == 0) {
                         Serial.println("[MESH] Max nodes reached");
+                        if (pendingPair.active && memcmp(pendingPair.mac, pkt.mac, 6) == 0) {
+                            char macStr[18];
+                            snprintf(macStr, sizeof(macStr), "%02X:%02X:%02X:%02X:%02X:%02X",
+                                     pkt.mac[0], pkt.mac[1], pkt.mac[2],
+                                     pkt.mac[3], pkt.mac[4], pkt.mac[5]);
+                            pendingPair.active = false;
+                            wsBroadcast(buildPairCapacityFullJson(macStr));
+                        }
                         break;
                     }
                 }
@@ -3273,6 +3327,13 @@ static void onWsEvent(AsyncWebSocket*, AsyncWebSocketClient* client,
                 // have multiple nodes in pairing mode at once or if a node fails 
                 // to clean up its peer entry on the gateway after a disconnect.
                 if (findNodeByMac(mac) != 0) break;
+
+                if (peekFreeSlot() == 0) {
+                    Serial.printf("[PAIR]  Rejecting pair for %s - max nodes reached (%u/%u)\n",
+                                  macStr, countRegisteredNodes(), MESH_MAX_NODES);
+                    client->text(buildPairCapacityFullJson(macStr));
+                    break;
+                }
 
                 // Always register peer with channel=0 (= gateway's current WiFi
                 // channel). The gateway is STA-locked to wifiChannel and ESP-NOW

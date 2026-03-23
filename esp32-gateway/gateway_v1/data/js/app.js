@@ -1,7 +1,7 @@
 /**
- * ESP32 Mesh Gateway Web Interface Client v4.2
+ * ESP32 Mesh Gateway Web Interface Client v4.3
  *
- * WS Inbound:  { type:"meta"|"update"|"discovered"|"pair_timeout"|"ap_config_ack"|
+ * WS Inbound:  { type:"meta"|"update"|"discovered"|"pair_timeout"|"pair_capacity_full"|"ap_config_ack"|
  *                     "gw_portal_starting"|"gw_factory_reset"|"gw_rebooting"|
  *                     "auth_required"|"auth_ok"|"auth_fail"|"session_expired"|
  *                     "web_creds_ack"|"node_settings"|"node_sensor_schema"|
@@ -625,6 +625,24 @@ function connect() {
         renderAvailable();
         showToast("⚠ Pairing timed out — node may have exited pairing mode.", "warn");
         break;
+      case "pair_capacity_full": {
+        const rejectedMac = msg.mac || "";
+        if (rejectedMac) pendingMacs.delete(rejectedMac);
+        else pendingMacs.clear();
+        renderAvailable();
+
+        const currentNodes = Number(msg.current_nodes ?? nodes.size ?? 0);
+        const maxNodes = Number(msg.max_nodes ?? currentNodes ?? 0);
+        showConfirm({
+          title: "Gateway Node Limit Reached",
+          body: `This gateway already has <strong>${currentNodes}</strong> paired node(s), which is the current maximum of <strong>${maxNodes}</strong>.<br><br>
+                 Disconnect an existing node first, then try pairing this device again.`,
+          okLabel: "Dismiss",
+          okClass: "warn",
+          hideCancel: true
+        });
+        break;
+      }
       case "ap_config_ack":
         if (msg.ok) {
           setApSaveNote("✓ Saved — takes effect next time the setup portal runs.", "ok");
@@ -1439,19 +1457,23 @@ function unlockConfirmPageScroll() {
   window.scrollTo(0, confirmScrollLockY);
 }
 
-function showConfirm({ title, body, okLabel = "Confirm", okClass = "", callback }) {
+function showConfirm({ title, body, okLabel = "Confirm", okClass = "", cancelLabel = "Cancel", hideCancel = false, callback }) {
   $confirmTitle.textContent = title;
   $confirmBody.innerHTML    = body;   // supports HTML for bold/line-breaks in warning text
   $confirmOkBtn.textContent = okLabel;
   $confirmOkBtn.className   = "confirm-ok-btn" + (okClass ? " " + okClass : "");
+  $confirmCancelBtn.textContent = cancelLabel;
+  $confirmCancelBtn.style.display = hideCancel ? "none" : "";
   _confirmCallback          = callback;
   lockConfirmPageScroll();
   $confirmOverlay.style.display = "";
-  $confirmCancelBtn.focus();
+  (hideCancel ? $confirmOkBtn : $confirmCancelBtn).focus();
 }
 function closeConfirm() {
   $confirmOverlay.style.display = "none";
   _confirmCallback = null;
+  $confirmCancelBtn.style.display = "";
+  $confirmCancelBtn.textContent = "Cancel";
   unlockConfirmPageScroll();
 }
 $confirmCancelBtn.addEventListener("click", closeConfirm);

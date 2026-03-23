@@ -1,10 +1,10 @@
 /**
     * @file [main.cpp]
     * @brief Main source file for the ESP32 Mesh Hybrid Node firmware
-    * @version 0.1.1
+    * @version 0.1.2
     * @author Mrinal (@atechofficials)
  */
-#define FW_VERSION "0.1.1"
+#define FW_VERSION "0.1.2"
 #define HW_CONFIG_ID "0x2A"
 
 #include <Arduino.h>
@@ -1230,6 +1230,8 @@ static void processRxQueue() {
                 hasMaster   = false;
                 masterAcked = false;
                 nodeState   = STATE_UNPAIRED;
+                sSettingLedEn = true; // Restore LED state on Node unpair
+                saveSettings(); // Save LED state in NVS
                 break;
             }
 

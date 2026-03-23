@@ -16,7 +16,7 @@ Currently implemented:
 
 | Node | Sensors | Firmware |
 |------|---------|----------|
-| Envo Mini V1 Node | Bosch BMP280 (temperature + pressure) + DHT22 (humidity) + TEMT6000 (ambient light) | v2.1.2 |
+| Envo Mini V1 Node | Bosch BMP280 (temperature + pressure) + DHT22 (humidity) + TEMT6000 (ambient light) | v2.1.3 |
 
 ### Actuator Nodes (`actuator_nodes/`)
 
@@ -26,7 +26,7 @@ Currently implemented:
 
 | Node | Actuator | Firmware |
 |------|---------|----------|
-| ESP32 Relay Node v1 | 4 relays + 4 touch inputs | v1.2.0 |
+| ESP32 Relay Node v1 | 4 relays + 4 touch inputs | v1.2.1 |
 
 ### Hybrid Nodes (`hybrid_nodes/`)
 
@@ -36,7 +36,7 @@ Currently implemented:
 
 | Node | Capabilities | Firmware |
 |------|--------------|----------|
-| ESP32 Hybrid Relay Node v1 | 4 relays + 4 touch inputs + RC522 RFID card actions | v0.1.1 |
+| ESP32 Hybrid Relay Node v1 | 4 relays + 4 touch inputs + RC522 RFID card actions | v0.1.2 |
 
 ---
 

@@ -1,11 +1,19 @@
 # Gateway v1 - Build, Flash, and OTA Guide
 
-Firmware version: **2.1.2**  
+Firmware version: **2.1.3**  
 Target board: `esp32-s3-devkitc1-n8r8`
 
 Gateway helper coprocessor: **ESP32-C3 firmware v0.1.1**
 
 ---
+
+## Highlights in v2.1.3
+
+- Adds a gateway-side **max node capacity** check before a new pairing flow is started
+- Shows a dismissible dashboard popup when the user tries to connect another node after the gateway is already full
+- Re-shows the capacity warning on repeated over-limit pairing attempts instead of silently failing
+- Hardens gateway node-registry restore so temporary low-`MESH_MAX_NODES` test builds do not corrupt runtime memory on boot
+- Continues support for the current **ESP32-C3 gateway coprocessor**, Hybrid-node handling, RFID dashboard flow, gateway OTA, and gateway-managed Node OTA
 
 ## Highlights in v2.1.2
 

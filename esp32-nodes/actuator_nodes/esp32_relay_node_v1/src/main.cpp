@@ -14,10 +14,10 @@
     *          - Implements a simple touch input handling for toggling relays, with debounce logic.
     * 
     *        Note: This code is intended as a starting point and may require adjustments based on specific hardware configurations and requirements.
-    * @version 1.2.0
+    * @version 1.2.1
     * @author Mrinal (@atechofficials)
  */
-#define FW_VERSION "1.2.0"
+#define FW_VERSION "1.2.1"
 #define HW_CONFIG_ID "0x1A"
 
 #include <Arduino.h>
@@ -926,6 +926,8 @@ static void processRxQueue() {
                 hasMaster   = false;
                 masterAcked = false;
                 nodeState   = STATE_UNPAIRED;
+                sSettingLedEn = true; // Restore LED state on Node unpair
+                saveSettings(); // Save LED state in NVS
                 break;
             }
 

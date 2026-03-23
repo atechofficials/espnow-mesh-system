@@ -34,15 +34,15 @@ Current file versions:
 
 | Component | Current Version |
 |----------|-----------------|
-| ESP32-S3 Gateway firmware `main.cpp` | `v2.1.2` |
+| ESP32-S3 Gateway firmware `main.cpp` | `v2.1.3` |
 | ESP32-C3 Gateway Coprocessor firmware `main.cpp` | `v0.1.1` |
-| ESP32 Sensor Node firmware `main.cpp` | `v2.1.2` |
-| ESP32 Actuator Relay Node firmware `main.cpp` | `v1.2.0` |
-| ESP32 Hybrid Relay Node firmware `main.cpp` | `v0.1.1` |
+| ESP32 Sensor Node firmware `main.cpp` | `v2.1.3` |
+| ESP32 Actuator Relay Node firmware `main.cpp` | `v1.2.1` |
+| ESP32 Hybrid Relay Node firmware `main.cpp` | `v0.1.2` |
 | `mesh_protocol.h` | `v3.3.0` |
 | `coproc_ota_protocol.h` | `v1.0.0` |
 | `index.html` | `v3.8` |
-| `app.js` | `v4.2` |
+| `app.js` | `v4.3` |
 | `style.css` | `v3.7` |
 
 Current supported node categories:

@@ -1,10 +1,10 @@
 /**
     * @file [main.cpp]
     * @brief Main source file for the ESP32 Mesh Sensor Node firmware
-    * @version 2.1.2
+    * @version 2.1.3
     * @author Mrinal (@atechofficials)
  */
-#define FW_VERSION "2.1.2"
+#define FW_VERSION "2.1.3"
 #define HW_CONFIG_ID "0x0B"
 
 #include <Arduino.h>
@@ -885,6 +885,8 @@ static void processRxQueue() {
                 hasMaster   = false;
                 masterAcked = false;
                 nodeState   = STATE_UNPAIRED;
+                sSettingLedEn = true; // Restore LED state on Node unpair
+                saveSettings(); // Save LED state in NVS
                 break;
             }
 
