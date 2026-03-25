@@ -62,6 +62,7 @@ The repository now also includes **ESP32 Mesh System Gateway v1.0A** PCB files u
 | v2.1.1 | Improved the **web dashboard UX** with RFID scan toasts, mobile responsive layout fixes, custom reboot confirmation popup, better popup styling on small screens, overlay scroll-lock fixes, and improved UI asset refresh behavior |
 | v2.1.2 | Added documentation/support for the **Gateway v1.0A** PCB release, aligned the gateway-helper UART mapping with the new PCB layout, and kept the gateway firmware line in sync with the latest hardware release |
 | v2.1.3 | Added gateway-side max-node pairing-capacity enforcement, added dismissible dashboard feedback when pairing is attempted after the gateway is already full, and hardened node-registry restore so reduced `MESH_MAX_NODES` test builds fail safely instead of corrupting memory |
+| v2.1.4 | Increased the shared node-name limit from 15 to 24 visible characters, updated gateway discovery/registry/rename handling for longer node names, added backward-compatible NVS restore support while saving new node records in the expanded-name format, and allowed fresh nodes to appear with MAC-suffixed default names for easier identification before manual rename |
 
 ---
 
@@ -91,12 +92,12 @@ gateway_v1/
 
 ## Current Release Notes
 
-- Gateway firmware version: **v2.1.2**
+- Gateway firmware version: **v2.1.4**
 - Gateway coprocessor firmware version: **v0.1.1**
 - Shared helper transport: `coproc_ota_protocol.h` **v1.0.0**
-- Shared mesh protocol: `mesh_protocol.h` **v3.3.0**
+- Shared mesh protocol: `mesh_protocol.h` **v3.3.1**
 - Web UI assets:
-  - `app.js` v4.2
+  - `app.js` v4.3
   - `index.html` v3.8
   - `style.css` v3.7
 - Active partition layout: **`partitions_8mb_ota.csv`**

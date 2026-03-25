@@ -1325,7 +1325,7 @@ function showInfoModal(nodeId) {
       <span class="mlbl">Name</span>
       <div class="modal-name-wrap">
         <input class="modal-name-input" id="rename-input"
-               value="${esc(n.name || "")}" maxlength="15"
+               value="${esc(n.name || "")}" maxlength="24"
                placeholder="Node name">
         <button class="modal-save-btn" id="rename-save" data-node-id="${nodeId}">Save</button>
       </div>
@@ -1373,7 +1373,7 @@ $modal.addEventListener("click", e => {
 
 // ── Rename ────────────────────────────────────────────────────────────────────
 function sendRename(nodeId, name) {
-  name = name.trim().substring(0, 15);
+  name = name.trim().substring(0, 24);
   if (!name) return;
   send({ type: "rename_node", node_id: nodeId, name });
   closeModal();

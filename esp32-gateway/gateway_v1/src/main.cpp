@@ -1,10 +1,10 @@
 /**
     * @file [main.cpp]
     * @brief Main source file for the ESP32 Mesh Gateway firmware
-    * @version 2.1.3
+    * @version 2.1.4
     * @author Mrinal (@atechofficials)
  */
-#define FW_VERSION "2.1.3"
+#define FW_VERSION "2.1.4"
 #define HW_CONFIG_ID "0x0A"
 
 #include <Arduino.h>
@@ -101,7 +101,7 @@ struct NodeRecord {
     uint8_t       mac[6];
     NodeType      type;
     uint32_t      capabilities;
-    char          name[16];
+    char          name[MESH_NODE_NAME_LEN];
     char          fw_version[8];  // reported by node in MSG_REGISTER
     char          hw_config_id[HW_CONFIG_ID_LEN];  // reported by node in MSG_REGISTER
     unsigned long lastSeen;
@@ -137,7 +137,7 @@ static constexpr unsigned long NODE_REGISTRY_FLUSH_MS = 750UL;
 // Discovered (beaconing) nodes - not yet paired
 struct DiscoveredNode {
     uint8_t       mac[6];
-    char          name[16];
+    char          name[MESH_NODE_NAME_LEN];
     NodeType      type;
     uint8_t       tx_channel;  // channel from last beacon
     unsigned long lastSeen;
@@ -1966,7 +1966,7 @@ struct NodeNvsRecordV1 {
     NodeType type;
     char     name[16];
     char     fw_version[8];
-};  // legacy format: 31 bytes per node
+};  // legacy format
 
 struct NodeNvsRecordV2 {
     uint8_t  mac[6];
@@ -1974,7 +1974,7 @@ struct NodeNvsRecordV2 {
     char     name[16];
     char     fw_version[8];
     char     hw_config_id[HW_CONFIG_ID_LEN];
-};  // current format: 43 bytes per node
+};  // legacy format with HW config ID
 
 struct NodeNvsRecordV3 {
     uint8_t  mac[6];
@@ -1985,7 +1985,18 @@ struct NodeNvsRecordV3 {
     uint32_t capabilities;
     uint8_t  actuator_mask;
     uint8_t  reserved[3];
-};  // current format with capability flags
+};  // legacy format with capability flags
+
+struct NodeNvsRecordV4 {
+    uint8_t  mac[6];
+    NodeType type;
+    char     name[MESH_NODE_NAME_LEN];
+    char     fw_version[8];
+    char     hw_config_id[HW_CONFIG_ID_LEN];
+    uint32_t capabilities;
+    uint8_t  actuator_mask;
+    uint8_t  reserved[3];
+};  // current format with expanded node names
 
 static void saveNodesToNvs() {
     Preferences prefs;
@@ -1998,10 +2009,10 @@ static void saveNodesToNvs() {
             prefs.remove(key);  // slot was freed - remove stale entry
             continue;
         }
-        NodeNvsRecordV3 rec = {};
+        NodeNvsRecordV4 rec = {};
         memcpy(rec.mac,        nodes[i].mac,        6);
         rec.type = nodes[i].type;
-        memcpy(rec.name,       nodes[i].name,       16);
+        memcpy(rec.name,       nodes[i].name,       sizeof(rec.name));
         memcpy(rec.fw_version, nodes[i].fw_version, 8);
         memcpy(rec.hw_config_id, nodes[i].hw_config_id, sizeof(rec.hw_config_id));
         rec.capabilities = nodes[i].capabilities;
@@ -2040,17 +2051,28 @@ static void loadNodesFromNvs() {
         const size_t blobLen = prefs.getBytesLength(key);
         if (blobLen != sizeof(NodeNvsRecordV1) &&
             blobLen != sizeof(NodeNvsRecordV2) &&
-            blobLen != sizeof(NodeNvsRecordV3)) continue;
+            blobLen != sizeof(NodeNvsRecordV3) &&
+            blobLen != sizeof(NodeNvsRecordV4)) continue;
 
-        NodeNvsRecordV3 rec = {};
-        if (blobLen == sizeof(NodeNvsRecordV3)) {
+        NodeNvsRecordV4 rec = {};
+        if (blobLen == sizeof(NodeNvsRecordV4)) {
             if (prefs.getBytes(key, &rec, sizeof(rec)) != sizeof(rec)) continue;
+        } else if (blobLen == sizeof(NodeNvsRecordV3)) {
+            NodeNvsRecordV3 legacyRec = {};
+            if (prefs.getBytes(key, &legacyRec, sizeof(legacyRec)) != sizeof(legacyRec)) continue;
+            memcpy(rec.mac, legacyRec.mac, sizeof(rec.mac));
+            rec.type = legacyRec.type;
+            memcpy(rec.name, legacyRec.name, sizeof(legacyRec.name));
+            memcpy(rec.fw_version, legacyRec.fw_version, sizeof(rec.fw_version));
+            memcpy(rec.hw_config_id, legacyRec.hw_config_id, sizeof(rec.hw_config_id));
+            rec.capabilities = legacyRec.capabilities;
+            rec.actuator_mask = legacyRec.actuator_mask;
         } else if (blobLen == sizeof(NodeNvsRecordV2)) {
             NodeNvsRecordV2 legacyRec = {};
             if (prefs.getBytes(key, &legacyRec, sizeof(legacyRec)) != sizeof(legacyRec)) continue;
             memcpy(rec.mac, legacyRec.mac, sizeof(rec.mac));
             rec.type = legacyRec.type;
-            memcpy(rec.name, legacyRec.name, sizeof(rec.name));
+            memcpy(rec.name, legacyRec.name, sizeof(legacyRec.name));
             memcpy(rec.fw_version, legacyRec.fw_version, sizeof(rec.fw_version));
             memcpy(rec.hw_config_id, legacyRec.hw_config_id, sizeof(rec.hw_config_id));
             rec.capabilities = defaultCapabilitiesForType(rec.type);
@@ -2059,7 +2081,7 @@ static void loadNodesFromNvs() {
             if (prefs.getBytes(key, &legacyRec, sizeof(legacyRec)) != sizeof(legacyRec)) continue;
             memcpy(rec.mac, legacyRec.mac, sizeof(rec.mac));
             rec.type = legacyRec.type;
-            memcpy(rec.name, legacyRec.name, sizeof(rec.name));
+            memcpy(rec.name, legacyRec.name, sizeof(legacyRec.name));
             memcpy(rec.fw_version, legacyRec.fw_version, sizeof(rec.fw_version));
             rec.capabilities = defaultCapabilitiesForType(rec.type);
         }
@@ -2067,7 +2089,7 @@ static void loadNodesFromNvs() {
 
         memcpy(nodes[i].mac,        rec.mac,        6);
         nodes[i].type = rec.type;
-        memcpy(nodes[i].name,       rec.name,       16);
+        memcpy(nodes[i].name,       rec.name,       sizeof(nodes[i].name));
         memcpy(nodes[i].fw_version, rec.fw_version, 8);
         memcpy(nodes[i].hw_config_id, rec.hw_config_id, sizeof(nodes[i].hw_config_id));
         nodes[i].capabilities = rec.capabilities ? rec.capabilities : defaultCapabilitiesForType(rec.type);
@@ -2336,8 +2358,8 @@ static bool updateDiscovered(const uint8_t* mac, const char* name,
         if (!discovered[i].active ||
             (now - discovered[i].lastSeen > DISCOVERED_TIMEOUT_MS)) {
             memcpy(discovered[i].mac, mac, 6);
-            strncpy(discovered[i].name, name, 15);
-            discovered[i].name[15]  = '\0';
+            strncpy(discovered[i].name, name, sizeof(discovered[i].name) - 1);
+            discovered[i].name[sizeof(discovered[i].name) - 1] = '\0';
             discovered[i].type      = type;
             discovered[i].tx_channel = txChannel;
             discovered[i].lastSeen  = now;
@@ -2795,8 +2817,8 @@ static void processRxQueue() {
                     memcpy(nodes[assignId].mac, pkt.mac, 6);
                     nodes[assignId].type     = hdr->node_type;
                     nodes[assignId].capabilities = defaultCapabilitiesForType(hdr->node_type);
-                    memcpy(nodes[assignId].name, reg->name, 15);
-                    nodes[assignId].name[15] = '\0';
+                    strncpy(nodes[assignId].name, reg->name, sizeof(nodes[assignId].name) - 1);
+                    nodes[assignId].name[sizeof(nodes[assignId].name) - 1] = '\0';
                     strncpy(nodes[assignId].fw_version, reg->fw_version, 7);
                     nodes[assignId].fw_version[7] = '\0';
                     memset(nodes[assignId].hw_config_id, 0, sizeof(nodes[assignId].hw_config_id));
@@ -3357,10 +3379,10 @@ static void onWsEvent(AsyncWebSocket*, AsyncWebSocketClient* client,
                 const char* newName = doc["name"] | "";
                 if (nodeId == 0 || nodeId >= nextId) break;
                 if (nodes[nodeId].mac[0] == 0) break;
-                if (strlen(newName) > 0 && strlen(newName) < 16) {
+                if (strlen(newName) > 0 && strlen(newName) < MESH_NODE_NAME_LEN) {
                     if (xSemaphoreTake(nodesMutex, pdMS_TO_TICKS(50)) == pdTRUE) {
-                        strncpy(nodes[nodeId].name, newName, 15);
-                        nodes[nodeId].name[15] = '\0';
+                        strncpy(nodes[nodeId].name, newName, sizeof(nodes[nodeId].name) - 1);
+                        nodes[nodeId].name[sizeof(nodes[nodeId].name) - 1] = '\0';
                         xSemaphoreGive(nodesMutex);
                     }
                     Serial.printf("[MESH] Node #%d renamed to \"%s\"\n", nodeId, newName);

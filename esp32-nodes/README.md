@@ -16,7 +16,7 @@ Currently implemented:
 
 | Node | Sensors | Firmware |
 |------|---------|----------|
-| Envo Mini V1 Node | Bosch BMP280 (temperature + pressure) + DHT22 (humidity) + TEMT6000 (ambient light) | v2.1.3 |
+| Envo Mini V1 Node | Bosch BMP280 (temperature + pressure) + DHT22 (humidity) + TEMT6000 (ambient light) | v2.1.4 |
 
 ### Actuator Nodes (`actuator_nodes/`)
 
@@ -26,7 +26,7 @@ Currently implemented:
 
 | Node | Actuator | Firmware |
 |------|---------|----------|
-| ESP32 Relay Node v1 | 4 relays + 4 touch inputs | v1.2.1 |
+| ESP32 Relay Node v1 | 4 relays + 4 touch inputs | v1.2.2 |
 
 ### Hybrid Nodes (`hybrid_nodes/`)
 
@@ -36,7 +36,7 @@ Currently implemented:
 
 | Node | Capabilities | Firmware |
 |------|--------------|----------|
-| ESP32 Hybrid Relay Node v1 | 4 relays + 4 touch inputs + RC522 RFID card actions | v0.1.2 |
+| ESP32 Hybrid Relay Node v1 | 4 relays + 4 touch inputs + RC522 RFID card actions | v0.1.3 |
 
 ---
 
@@ -49,7 +49,7 @@ Every node ships unpaired. To add a node to the mesh:
 3. The gateway detects the beacon, displays the node in the **"Available Nodes"** section of the dashboard, and initiates the handshake automatically
 4. Within a few seconds the node appears as **Online** in the Connected Nodes table
 
-Pairing data (gateway MAC, channel, assigned node ID) is saved to NVS on the node and survives power cycles.
+Pairing data (gateway MAC, channel, assigned node ID) is saved to NVS on the node and survives power cycles. Fresh, unrenamed nodes also advertise with the last 4 characters of their MAC address appended to the default node name so matching identical boards in the dashboard is easier before manual rename.
 
 ---
 

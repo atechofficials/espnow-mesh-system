@@ -4,7 +4,7 @@ Sensor nodes read physical measurements and transmit them to the gateway over ES
 
 Supported sensor-node firmwares can also be updated through the **gateway-managed Node OTA** flow. During that OTA window, the selected node temporarily joins the helper AP created by the gateway's ESP32-C3 coprocessor, downloads the staged firmware, flashes it, and then returns to normal ESP-NOW operation after reboot.
 
-As of the current mesh protocol (`v3.3.0`), nodes are **self-describing**. Each node sends a sensor schema to the gateway at pair time that defines the labels, units, and precision of its readings. The gateway and web dashboard have no hardcoded knowledge of any specific sensor type and adapt automatically. Adding a new sensor to a node still requires only node firmware changes when the schema contract is preserved.
+As of the current mesh protocol (`v3.3.1`), nodes are **self-describing**. Each node sends a sensor schema to the gateway at pair time that defines the labels, units, and precision of its readings. The gateway and web dashboard have no hardcoded knowledge of any specific sensor type and adapt automatically. Adding a new sensor to a node still requires only node firmware changes when the schema contract is preserved.
 
 Current sensor-node firmwares also report a hardware configuration ID during registration so the gateway can block incompatible Node OTA images before delivery starts. They continue to work unchanged with the newer Hybrid-capable gateway/dashboard release.
 
@@ -14,7 +14,7 @@ Current sensor-node firmwares also report a hardware configuration ID during reg
 
 | Directory | Sensors | Measurements | Board |
 |-----------|---------|--------------|-------|
-| `envo_mini_v1/` | Bosch BMP280 + DHT22 + TEMT6000 | Temperature, Atmospheric Pressure, Humidity, Ambient Light | DFRobot Firebeetle 2 ESP32-E (`v2.1.3`) |
+| `envo_mini_v1/` | Bosch BMP280 + DHT22 + TEMT6000 | Temperature, Atmospheric Pressure, Humidity, Ambient Light | DFRobot Firebeetle 2 ESP32-E (`v2.1.4`) |
 
 ---
 
@@ -24,7 +24,7 @@ Current sensor-node firmwares also report a hardware configuration ID during reg
 2. Add your sensor driver and initialisation logic in `setup()`
 3. Add a `SensorDef` entry for each new measurement in `getSensorDefs()` and define its `id`, `label`, `unit`, and `precision`
 4. Add the corresponding reading in `sendSensorData()` using the same `id`
-5. Update `NODE_NAME` at the top of `main.cpp`
+5. Update `NODE_NAME` at the top of `main.cpp` (fresh, unrenamed nodes append the last 4 MAC characters automatically, so keep the base name within the current 24 visible-character limit)
 6. Add per-node settings in `loadSettings()` / `saveSettings()` / `getSettingsDefs()` if needed; the gateway displays them automatically in the node settings panel
 7. Preserve the node OTA metadata, role/version information, and `HW_CONFIG_ID` marker/reporting used by the gateway when validating uploaded node firmware images
 

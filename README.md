@@ -25,7 +25,7 @@ Open the gateway's IP address in your browser to view live sensor readings from 
 Turn relays on and off directly from the dashboard.
 
 ### Easy pairing
-Put a node into pairing mode and the gateway can discover and register it automatically.
+Put a node into pairing mode and the gateway can discover and register it automatically. Fresh, unrenamed nodes now advertise with the last 4 characters of their MAC address appended to the default node name, making it easier to tell identical boards apart before you rename them from the dashboard.
 
 ### Node settings from the browser
 Change node settings such as:

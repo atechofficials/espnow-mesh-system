@@ -23,6 +23,7 @@ Like the other node families, Hybrid nodes use ESP-NOW for normal mesh traffic a
 - periodic RC522 health checks with automatic reader reinitialization if the RFID interface stalls after long uptime
 - automatic re-registration after reboot or gateway restart
 - gateway-managed Node OTA with role and hardware-config validation
+- MAC-suffixed default names on fresh nodes for easier dashboard identification before manual rename
 
 ---
 

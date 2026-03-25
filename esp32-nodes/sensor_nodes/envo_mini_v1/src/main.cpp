@@ -1,16 +1,17 @@
 /**
     * @file [main.cpp]
     * @brief Main source file for the ESP32 Mesh Sensor Node firmware
-    * @version 2.1.3
+    * @version 2.1.4
     * @author Mrinal (@atechofficials)
  */
-#define FW_VERSION "2.1.3"
+#define FW_VERSION "2.1.4"
 #define HW_CONFIG_ID "0x0B"
 
 #include <Arduino.h>
 #include <WiFi.h>
 #include <HTTPClient.h>
 #include <esp_now.h>
+#include <esp_mac.h>
 #include <esp_wifi.h>
 #include <Preferences.h>
 #include <Wire.h>
@@ -22,7 +23,7 @@
 #include "mesh_protocol.h"
 
 // User config
-#define NODE_NAME       "BMP280-Node-1"   // change per node (max 15 chars)
+#define NODE_NAME       "BMP280-Node"   // change per node (max 24 chars)
 #define BMP_I2C_SDA     21
 #define BMP_I2C_SCL     22
 #define BMP_ADDR_PRIM   0x76
@@ -69,6 +70,29 @@ static bool          phase2Shown     = false;
 static unsigned long pairingStarted  = 0;
 static uint8_t       pairingChannel  = 1;
 static unsigned long lastBeacon      = 0;
+
+// Runtime default name. We append the last two bytes of the Wi-Fi STA MAC
+// so newly flashed nodes are easier to distinguish during first pairing.
+static char gNodeName[MESH_NODE_NAME_LEN] = {0};
+
+static void buildDefaultNodeName() {
+    uint8_t mac[6] = {0};
+    if (esp_read_mac(mac, ESP_MAC_WIFI_STA) != ESP_OK) {
+        strncpy(gNodeName, NODE_NAME, sizeof(gNodeName) - 1);
+        gNodeName[sizeof(gNodeName) - 1] = '\0';
+        return;
+    }
+
+    char suffix[6];
+    snprintf(suffix, sizeof(suffix), "%02X:%02X", mac[4], mac[5]);
+
+    const size_t suffixLen = strlen(suffix);
+    const size_t maxBaseLen = (sizeof(gNodeName) - 1 > suffixLen + 1)
+        ? (sizeof(gNodeName) - 1 - suffixLen - 1)
+        : 0;
+
+    snprintf(gNodeName, sizeof(gNodeName), "%.*s-%s", static_cast<int>(maxBaseLen), NODE_NAME, suffix);
+}
 
 // Timing
 static unsigned long lastSensor      = 0;
@@ -410,8 +434,8 @@ static void sendBeacon() {
     b.hdr.type      = MSG_BEACON;
     b.hdr.node_id   = 0;
     b.hdr.node_type = NODE_SENSOR;
-    strncpy(b.name, NODE_NAME, 15);
-    b.name[15]      = '\0';
+    strncpy(b.name, gNodeName, sizeof(b.name) - 1);
+    b.name[sizeof(b.name) - 1] = '\0';
     b.tx_channel    = pairingChannel;
     uint8_t bcast[6] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
     esp_now_send(bcast, (uint8_t*)&b, sizeof(b));
@@ -423,8 +447,8 @@ static void sendRegistration() {
     reg.hdr.type      = MSG_REGISTER;
     reg.hdr.node_id   = myNodeId;
     reg.hdr.node_type = NODE_SENSOR;
-    strncpy(reg.name, NODE_NAME, 15);
-    reg.name[15] = '\0';
+    strncpy(reg.name, gNodeName, sizeof(reg.name) - 1);
+    reg.name[sizeof(reg.name) - 1] = '\0';
     strncpy(reg.fw_version, FW_VERSION, 7);
     reg.fw_version[7] = '\0';
     strncpy(reg.hw_config_id, HW_CONFIG_ID, sizeof(reg.hw_config_id) - 1);
@@ -989,7 +1013,8 @@ static void processRxQueue() {
 void setup() {
     Serial.begin(115200);
     delay(200);
-    Serial.printf("\n[BOOT] %s starting...\n", NODE_NAME);
+    buildDefaultNodeName();
+    Serial.printf("\n[BOOT] %s starting...\n", gNodeName);
     touchFirmwareMarkers();
 
     led.begin();

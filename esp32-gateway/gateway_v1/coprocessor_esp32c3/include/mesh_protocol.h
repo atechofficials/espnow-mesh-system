@@ -2,7 +2,7 @@
 /**
     * @file [mesh_protocol.h]
     * @brief Shared ESP-NOW message definitions for the ESP32 ESPNow Mesh System project
-    * @version 3.3.0
+    * @version 3.3.1
     * @author Mrinal (@atechofficials)
     * @details Shared ESP-NOW message definitions
         * Copy this file into the include/ folder of every node project.
@@ -40,7 +40,7 @@
 
 #include <stdint.h>
 
-#define SW_VERSION "3.3.0"
+#define SW_VERSION "3.3.1"
 
 // Message Types *****************************************************************************
 typedef enum : uint8_t {
@@ -123,6 +123,7 @@ typedef enum : uint8_t {
 
 // Hardware Configuration Constants *****************************************************************************
 #define HW_CONFIG_ID_LEN 12
+#define MESH_NODE_NAME_LEN 25   // 24 visible chars + NUL
 
 // Node OTA Constants *****************************************************************************
 #define NODE_OTA_SSID_LEN     16
@@ -151,13 +152,13 @@ typedef struct {
 
 typedef struct {
     MeshHeader hdr;
-    char       name[16];
+    char       name[MESH_NODE_NAME_LEN];
     char       fw_version[8];
     char       hw_config_id[HW_CONFIG_ID_LEN];
     uint32_t   capabilities;
 } MsgRegister;
 
-#define MSG_REGISTER_MIN_LEN   (sizeof(MeshHeader) + 16 + 8)
+#define MSG_REGISTER_MIN_LEN   (sizeof(MeshHeader) + MESH_NODE_NAME_LEN + 8)
 #define MSG_REGISTER_HWCFG_LEN (MSG_REGISTER_MIN_LEN + HW_CONFIG_ID_LEN)
 #define MSG_REGISTER_CAPS_LEN  (MSG_REGISTER_HWCFG_LEN + sizeof(uint32_t))
 
@@ -203,7 +204,7 @@ typedef struct {
 
 typedef struct {
     MeshHeader hdr;
-    char       name[16];
+    char       name[MESH_NODE_NAME_LEN];
     uint8_t    tx_channel;
 } MsgBeacon;
 

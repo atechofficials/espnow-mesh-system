@@ -1,6 +1,6 @@
 # ESP32 Relay Node v1
 
-Firmware version: **1.2.1**
+Firmware version: **1.2.2**
 Target board: `esp32dev`
 
 ## Firmware Changelog
@@ -13,6 +13,7 @@ Target board: `esp32dev`
 | v1.1.1 | Added `HW_CONFIG_ID` reporting/firmware markers so the gateway can reject incompatible actuator firmware during Node OTA |
 | v1.2.0 | Updated to the `mesh_protocol.h v3.3.0` line with capability-aware registration and actuator-schema compatibility for the newer Hybrid-capable gateway/dashboard release |
 | v1.2.1 | Restores the node status RGB LED to enabled when the node is unpaired from the gateway and saves that LED state back to NVS so pairing/status indication is visible again when the node is later re-paired |
+| v1.2.2 | Updated to the `mesh_protocol.h v3.3.1` line with support for 24-character node names and automatic first-boot default naming that appends the last 4 MAC characters for easier node identification without aggressive truncation |
 
 ---
 
@@ -80,7 +81,7 @@ Change these defines before flashing:
 
 | Constant | Default | Description |
 |----------|---------|-------------|
-| `NODE_NAME` | `"Relay-Node-1"` | Display name shown in the dashboard (max 15 chars) |
+| `NODE_NAME` | `"Relay-Node-1"` | Base display name shown in the dashboard (up to 24 visible chars; fresh unrenamed nodes append the last 4 MAC characters automatically) |
 | `RELAY1_PIN` | `26` | Relay-1 control GPIO |
 | `RELAY2_PIN` | `27` | Relay-2 control GPIO |
 | `RELAY3_PIN` | `32` | Relay-3 control GPIO |
@@ -94,7 +95,7 @@ Change these defines before flashing:
 | `relay_active_high` | `false` | Active-HIGH relay support flag |
 | `HW_CONFIG_ID` | `"0x1A"` | Hardware configuration ID embedded in firmware and reported to the gateway for OTA compatibility checks |
 
-When deploying multiple nodes, give each a unique `NODE_NAME`.
+When deploying multiple nodes, give each a unique `NODE_NAME` when practical. Fresh nodes already append the last 4 MAC characters automatically, and you can still rename them later from the gateway dashboard.
 
 ---
 

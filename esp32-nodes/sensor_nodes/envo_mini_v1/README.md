@@ -1,11 +1,11 @@
 # Envo Mini V1 Node
 
-Firmware version: **2.1.3**
+Firmware version: **2.1.4**
 Target board: `dfrobot_firebeetle2_esp32e`
 
 Reads temperature and barometric pressure from a **Bosch BMP280**, humidity from a **DHT22**, and ambient light level from a **TEMT6000** phototransistor. Transmits all readings to the gateway over ESP-NOW using the schema-driven sensor protocol, so the node self-describes its sensors to the gateway at pair time and no gateway changes are needed when sensors are added or removed.
 
-This node also supports the **gateway-managed Node OTA** workflow introduced with the ESP32-S3 gateway `v2.0.0` and ESP32-C3 helper firmware `v0.1.0`. Current releases also report this node's hardware configuration ID so the gateway can reject incompatible sensor firmware before the OTA session starts, and remain fully compatible with the Hybrid-capable gateway/dashboard line built on `mesh_protocol.h v3.3.0`.
+This node also supports the **gateway-managed Node OTA** workflow introduced with the ESP32-S3 gateway `v2.0.0` and ESP32-C3 helper firmware `v0.1.0`. Current releases also report this node's hardware configuration ID so the gateway can reject incompatible sensor firmware before the OTA session starts, remain fully compatible with the Hybrid-capable gateway/dashboard line built on `mesh_protocol.h v3.3.1`, and advertise clearer default names by appending the last 4 MAC characters on fresh, unrenamed nodes.
 
 ## Firmware Changelog
 | Version | Notes |
@@ -16,6 +16,7 @@ This node also supports the **gateway-managed Node OTA** workflow introduced wit
 | v2.1.1 | Added `HW_CONFIG_ID` reporting/firmware markers for hardware-safe OTA validation and compatibility checks from the gateway |
 | v2.1.2 | Updated to the `mesh_protocol.h v3.3.0` line with capability-aware registration for compatibility with the Hybrid-node-capable gateway release while preserving existing sensor behavior |
 | v2.1.3 | Restores the node status RGB LED to enabled when the node is unpaired from the gateway and saves that LED state back to NVS so pairing/status indication is visible again when the node is later re-paired |
+| v2.1.4 | Updated to the `mesh_protocol.h v3.3.1` line with support for 24-character node names and automatic first-boot default naming that appends the last 4 MAC characters for easier node identification without aggressive truncation |
 
 ---
 
@@ -86,7 +87,7 @@ Change these defines before flashing:
 
 | Constant | Default | Description |
 |----------|---------|-------------|
-| `NODE_NAME` | `"BMP280-Node-1"` | Display name shown in the dashboard (max 15 chars) |
+| `NODE_NAME` | `"BMP280-Node-1"` | Base display name shown in the dashboard (up to 24 visible chars; fresh unrenamed nodes append the last 4 MAC characters automatically) |
 | `BMP_I2C_SDA` | `21` | I2C SDA GPIO |
 | `BMP_I2C_SCL` | `22` | I2C SCL GPIO |
 | `DHT_PIN` | `16` | DHT22 data GPIO |
@@ -95,7 +96,7 @@ Change these defines before flashing:
 | `LED_PIN` | `5` | WS2812B data GPIO |
 | `HW_CONFIG_ID` | `"0x0B"` | Hardware configuration ID embedded in firmware and reported to the gateway for OTA compatibility checks |
 
-When deploying multiple nodes, give each a unique `NODE_NAME`.
+When deploying multiple nodes, give each a unique `NODE_NAME` when practical. Fresh nodes already append the last 4 MAC characters automatically, and you can still rename them later from the gateway dashboard.
 
 ---
 

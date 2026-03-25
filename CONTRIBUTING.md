@@ -34,12 +34,12 @@ Current file versions:
 
 | Component | Current Version |
 |----------|-----------------|
-| ESP32-S3 Gateway firmware `main.cpp` | `v2.1.3` |
+| ESP32-S3 Gateway firmware `main.cpp` | `v2.1.4` |
 | ESP32-C3 Gateway Coprocessor firmware `main.cpp` | `v0.1.1` |
-| ESP32 Sensor Node firmware `main.cpp` | `v2.1.3` |
-| ESP32 Actuator Relay Node firmware `main.cpp` | `v1.2.1` |
-| ESP32 Hybrid Relay Node firmware `main.cpp` | `v0.1.2` |
-| `mesh_protocol.h` | `v3.3.0` |
+| ESP32 Sensor Node firmware `main.cpp` | `v2.1.4` |
+| ESP32 Actuator Relay Node firmware `main.cpp` | `v1.2.2` |
+| ESP32 Hybrid Relay Node firmware `main.cpp` | `v0.1.3` |
+| `mesh_protocol.h` | `v3.3.1` |
 | `coproc_ota_protocol.h` | `v1.0.0` |
 | `index.html` | `v3.8` |
 | `app.js` | `v4.3` |
@@ -214,7 +214,7 @@ This file is the protocol contract and must remain identical across:
 - actuator node firmware
 - hybrid node firmware
 
-The current OTA-safety extension also depends on node registration carrying `hw_config_id`, so contributors must keep that field aligned everywhere the shared protocol is copied.
+The current OTA-safety extension also depends on node registration carrying `hw_config_id`, so contributors must keep that field aligned everywhere the shared protocol is copied. The current protocol line also reserves 25 bytes for node names (24 visible characters + NUL), so future name-field changes must be coordinated across the gateway, all node firmwares, dashboard validation, and gateway NVS compatibility handling.
 
 ### 2. Shared gateway-helper OTA transport
 
@@ -366,7 +366,7 @@ Typical work:
 
 When adding a new sensor node:
 1. Duplicate a similar existing node directory
-2. Update `NODE_NAME`
+2. Update `NODE_NAME` (fresh, unrenamed nodes append the last 4 MAC characters automatically, so keep the base name within the current 24 visible-character limit)
 3. Add sensor initialization in `setup()`
 4. Extend the sensor schema definition
 5. Extend sensor data sending logic
@@ -445,7 +445,7 @@ When wiring Hybrid-node peripherals on custom ESP32 boards, avoid using ESP32 bo
 
 ## Changing mesh_protocol.h
 
-Current version: `v3.3.0`
+Current version: `v3.3.1`
 
 File locations must stay synchronized:
 - `esp32-gateway/gateway_v1/include/mesh_protocol.h`

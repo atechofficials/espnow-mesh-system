@@ -1,6 +1,6 @@
 # ESP32 Hybrid Relay Node v1
 
-Firmware version: **0.1.2**
+Firmware version: **0.1.3**
 Target board: `esp32dev`
 
 This is the first **Hybrid node** in the ESPNow Mesh System. It starts from the existing 4-relay actuator architecture, keeps the same touch-input and relay-control behavior, and adds an **RC522 RFID reader** so saved RFID cards can apply predefined relay scenes directly on the node.
@@ -13,6 +13,7 @@ The firmware registers itself as `NODE_HYBRID`, reports Hybrid capabilities to t
 | v0.1.0 | Initial Hybrid Relay Node release with 4 relays, 4 TTP224 touch inputs, RC522 RFID card actions, dashboard RFID management, and gateway-managed Hybrid Node OTA support |
 | v0.1.1 | Added periodic RC522 health checks with automatic reader recovery after long-uptime stalls, and updated the recommended RC522 reset wiring to a safer GPIO for reliable USB flashing |
 | v0.1.2 | Restores the node status RGB LED to enabled when the node is unpaired from the gateway and saves that LED state back to NVS so pairing/status indication is visible again when the node is later re-paired |
+| v0.1.3 | Updated to the `mesh_protocol.h v3.3.1` line with support for 24-character node names and automatic first-boot default naming that appends the last 4 MAC characters for easier node identification without aggressive truncation |
 
 ---
 
@@ -98,7 +99,7 @@ Change these defines before flashing:
 
 | Constant | Default | Description |
 |----------|---------|-------------|
-| `NODE_NAME` | `"RFID-Hybrid-Node-1"` | Display name shown in the dashboard (protocol names are limited to 15 chars) |
+| `NODE_NAME` | `"RFID-Hybrid-Node-1"` | Base display name shown in the dashboard (up to 24 visible chars; fresh unrenamed nodes append the last 4 MAC characters automatically) |
 | `RELAY1_PIN` | `26` | Relay-1 control GPIO |
 | `RELAY2_PIN` | `27` | Relay-2 control GPIO |
 | `RELAY3_PIN` | `32` | Relay-3 control GPIO |
@@ -113,7 +114,7 @@ Change these defines before flashing:
 | `RFID_RST_PIN` | `21` | RC522 reset pin |
 | `HW_CONFIG_ID` | `"0x2A"` | Hardware configuration ID embedded in firmware and reported to the gateway for OTA compatibility checks |
 
-When deploying multiple nodes, give each node a unique `NODE_NAME`.
+When deploying multiple nodes, give each node a unique `NODE_NAME` when practical. Fresh nodes already append the last 4 MAC characters automatically, and you can still rename them later from the gateway dashboard.
 
 ---
 

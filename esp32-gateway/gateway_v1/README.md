@@ -1,11 +1,14 @@
 # Gateway v1 - Build, Flash, and OTA Guide
 
-Firmware version: **2.1.3**  
+Firmware version: **2.1.4**  
 Target board: `esp32-s3-devkitc1-n8r8`
 
 Gateway helper coprocessor: **ESP32-C3 firmware v0.1.1**
 
 ---
+
+## Highlights in v2.1.4
+- Increased the shared node-name field from 16 bytes to 25 bytes (24 visible characters + NUL) for beacon and registration messages, enabling clearer default node names, MAC-suffixed first-boot node names, and longer user-defined names while remaining well within ESP-NOW payload limits
 
 ## Highlights in v2.1.3
 
@@ -363,6 +366,7 @@ ws://<gateway-ip>/ws
 | `meta` | Gateway metadata such as firmware version, uptime, IP, AP SSID, OTA support |
 | `discovered` | Nodes currently broadcasting in pairing mode |
 | `pair_timeout` | Pairing window expired |
+| `pair_capacity_full` | The gateway is already at max node capacity and rejected the requested pair action |
 | `node_settings` | Settings schema + current values for one node |
 | `node_sensor_schema` | Sensor schema for one node |
 | `relay_labels_ack` | Relay label save/reset acknowledgement |
