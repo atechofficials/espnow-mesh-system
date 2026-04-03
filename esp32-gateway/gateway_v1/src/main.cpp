@@ -1,10 +1,10 @@
 /**
     * @file [main.cpp]
     * @brief Main source file for the ESP32 Mesh Gateway firmware
-    * @version 2.2.0
+    * @version 2.3.0
     * @author Mrinal (@atechofficials)
  */
-#define FW_VERSION "2.2.0"
+#define FW_VERSION "2.3.0"
 
 #include <Arduino.h>
 #include <WiFi.h>
@@ -37,6 +37,12 @@
 #define OTA_HWCFG_MARKER "GWHWCFG:"
 #define OTA_HWCFG_MARKER_LEN 8
 #define OTA_HWCFG_ID_MAX_LEN HW_CONFIG_ID_LEN
+#define OTA_ERROR_MSG_MAX_LEN 192
+#define COPROC_OTA_FW_MARKER "C3FWVER:"
+#define COPROC_OTA_FW_MARKER_LEN 8
+#define COPROC_OTA_HWCFG_MARKER "C3HWCFG:"
+#define COPROC_OTA_HWCFG_MARKER_LEN 8
+#define COPROC_OTA_VERSION_MAX_LEN COPROC_FW_VERSION_LEN
 #define NODE_OTA_FW_MARKER "NODEFWVER:"
 #define NODE_OTA_FW_MARKER_LEN 10
 #define NODE_OTA_ROLE_MARKER "NODETYPE:"
@@ -45,6 +51,7 @@
 #define NODE_OTA_HWCFG_MARKER_LEN 10
 #define NODE_OTA_VERSION_MAX_LEN 16
 #define NODE_OTA_FILE_PATH "/node_ota.bin"
+#define COPROC_OTA_FILE_PATH "/coproc_ota.bin"
 #define NODE_OTA_PORT 80
 #define NODE_OTA_AP_CHANNEL 6
 #define NODE_OTA_STAGE_TIMEOUT_MS 120000UL
@@ -53,6 +60,8 @@
 #define NODE_OTA_TIMEOUT_RECOVERY_MS 120000UL
 #define NODE_OTA_BEGIN_RETRY_MS 2000UL
 #define NODE_OTA_BEGIN_MAX_ATTEMPTS 10
+#define COPROC_OTA_STAGE_TIMEOUT_MS 120000UL
+#define COPROC_OTA_REBOOT_TIMEOUT_MS 90000UL
 #define COPROC_UART_BAUD 230400
 #define COPROC_UART_RX_BUFFER_SIZE 4096
 #define COPROC_UART_TX_BUFFER_SIZE 4096
@@ -193,7 +202,7 @@ struct GatewayOtaRequestState {
     char   incomingVersion[33] = {0};
     char   incomingDisplayVersion[OTA_FW_VERSION_MAX_LEN] = {0};
     char   incomingHwConfigId[OTA_HWCFG_ID_MAX_LEN] = {0};
-    char   error[128] = {0};
+    char   error[OTA_ERROR_MSG_MAX_LEN] = {0};
     uint8_t descBuf[OTA_DESC_BUF_LEN] = {0};
     size_t descBytes = 0;
     uint8_t markerMatchIndex = 0;
@@ -202,6 +211,42 @@ struct GatewayOtaRequestState {
     uint8_t hwMarkerMatchIndex = 0;
     bool    hwMarkerReading = false;
     uint8_t hwMarkerLen = 0;
+};
+
+enum CoprocOtaJobStage : uint8_t {
+    COPROC_OTA_JOB_IDLE = 0,
+    COPROC_OTA_JOB_STAGED,
+    COPROC_OTA_JOB_WAIT_HELLO,
+    COPROC_OTA_JOB_BEGIN,
+    COPROC_OTA_JOB_STREAM,
+    COPROC_OTA_JOB_FINALIZE,
+    COPROC_OTA_JOB_WAIT_REBOOT,
+    COPROC_OTA_JOB_SUCCESS,
+    COPROC_OTA_JOB_ERROR,
+};
+
+struct CoprocOtaUploadRequestState {
+    bool   started = false;
+    bool   ok = false;
+    bool   metadataValidated = false;
+    size_t expectedSize = 0;
+    size_t written = 0;
+    uint32_t crc32 = 0xFFFFFFFFu;
+    char   filename[64] = {0};
+    char   incomingVersion[33] = {0};
+    char   incomingDisplayVersion[COPROC_OTA_VERSION_MAX_LEN] = {0};
+    char   incomingHwConfigId[HW_CONFIG_ID_LEN] = {0};
+    char   incomingProjectName[COPROC_PROJECT_NAME_LEN] = {0};
+    char   error[OTA_ERROR_MSG_MAX_LEN] = {0};
+    uint8_t descBuf[OTA_DESC_BUF_LEN] = {0};
+    size_t descBytes = 0;
+    uint8_t versionMarkerMatchIndex = 0;
+    bool    versionMarkerReading = false;
+    uint8_t versionMarkerLen = 0;
+    uint8_t hwMarkerMatchIndex = 0;
+    bool    hwMarkerReading = false;
+    uint8_t hwMarkerLen = 0;
+    File    file;
 };
 
 static bool          otaUploadBusy    = false;
@@ -235,7 +280,7 @@ struct NodeOtaUploadRequestState {
     char   incomingDisplayVersion[NODE_OTA_VERSION_MAX_LEN] = {0};
     char   incomingRole[16] = {0};
     char   incomingHwConfigId[HW_CONFIG_ID_LEN] = {0};
-    char   error[128] = {0};
+    char   error[OTA_ERROR_MSG_MAX_LEN] = {0};
     uint8_t descBuf[OTA_DESC_BUF_LEN] = {0};
     size_t descBytes = 0;
     uint8_t versionMarkerMatchIndex = 0;
@@ -283,6 +328,31 @@ struct NodeOtaJobState {
     File           file;
 };
 
+struct CoprocOtaJobState {
+    bool           active = false;
+    bool           uploadBusy = false;
+    bool           awaitingAck = false;
+    bool           rebootSeen = false;
+    bool           flashReportedDone = false;
+    uint8_t        awaitingFrameType = 0;
+    CoprocOtaJobStage stage = COPROC_OTA_JOB_IDLE;
+    uint32_t       sessionId = 0;
+    uint32_t       imageCrc32 = 0;
+    size_t         imageSize = 0;
+    size_t         uploadOffset = 0;
+    unsigned long  stageStartedAt = 0;
+    unsigned long  lastActivityAt = 0;
+    unsigned long  lastAckAt = 0;
+    uint8_t        ackRetries = 0;
+    char           version[COPROC_OTA_VERSION_MAX_LEN] = {0};
+    char           priorVersion[COPROC_FW_VERSION_LEN] = {0};
+    char           filename[64] = {0};
+    char           message[96] = {0};
+    char           error[128] = {0};
+    uint8_t        progress = 0;
+    File           file;
+};
+
 struct CoprocAckState {
     bool     ready = false;
     uint8_t  originalType = 0;
@@ -311,6 +381,7 @@ struct CoprocRxState {
 
 static HardwareSerial coprocSerial(1);
 static NodeOtaJobState nodeOtaJob;
+static CoprocOtaJobState coprocOtaJob;
 static CoprocAckState coprocAck;
 static CoprocRxState coprocRx;
 static unsigned long lastCoprocHelloAt = 0;
@@ -318,6 +389,11 @@ static bool coprocOnline = false;
 static unsigned long lastCoprocAckAt = 0;
 static unsigned long lastCoprocNoAckLogAt = 0;
 static unsigned long lastCoprocRecoveryPulseAt = 0;
+static bool coprocOtaSupportedRemote = false;
+static uint32_t coprocOtaMaxBytes = 0;
+static char coprocFwVersion[COPROC_FW_VERSION_LEN] = {0};
+static char coprocHwConfigId[COPROC_HWCFG_ID_LEN] = {0};
+static char coprocProjectName[COPROC_PROJECT_NAME_LEN] = {0};
 
 // *****************************************************************************
 // Gateway Status LED Helpers
@@ -851,6 +927,125 @@ static bool validateGatewayFirmwareDescriptor(GatewayOtaRequestState* state) {
     return true;
 }
 
+static void setCoprocOtaUploadError(CoprocOtaUploadRequestState* state, const String& msg) {
+    if (!state || state->error[0] != '\0') return;
+    strncpy(state->error, msg.c_str(), sizeof(state->error) - 1);
+    state->error[sizeof(state->error) - 1] = '\0';
+    Serial.printf("[COPROC OTA]  ERROR: %s\n", state->error);
+}
+
+static void scanCoprocFirmwareMarkers(CoprocOtaUploadRequestState* state,
+                                      const uint8_t* data,
+                                      size_t len) {
+    if (!state || !data || len == 0) return;
+
+    for (size_t i = 0; i < len; i++) {
+        const char ch = (char)data[i];
+
+        if (state->versionMarkerReading) {
+            if (ch == '\0') {
+                if (state->versionMarkerLen > 0) {
+                    state->incomingDisplayVersion[state->versionMarkerLen] = '\0';
+                }
+                state->versionMarkerReading = false;
+                state->versionMarkerLen = 0;
+            } else if (ch >= 32 && ch <= 126 &&
+                       state->versionMarkerLen < (COPROC_OTA_VERSION_MAX_LEN - 1)) {
+                state->incomingDisplayVersion[state->versionMarkerLen++] = ch;
+            } else {
+                state->versionMarkerReading = false;
+                state->versionMarkerLen = 0;
+            }
+        }
+
+        if (state->hwMarkerReading) {
+            if (ch == '\0') {
+                if (state->hwMarkerLen > 0) {
+                    state->incomingHwConfigId[state->hwMarkerLen] = '\0';
+                }
+                state->hwMarkerReading = false;
+                state->hwMarkerLen = 0;
+            } else if (ch >= 32 && ch <= 126 &&
+                       state->hwMarkerLen < (HW_CONFIG_ID_LEN - 1)) {
+                state->incomingHwConfigId[state->hwMarkerLen++] = ch;
+            } else {
+                state->hwMarkerReading = false;
+                state->hwMarkerLen = 0;
+            }
+        }
+
+        if (!state->versionMarkerReading) {
+            if (ch == COPROC_OTA_FW_MARKER[state->versionMarkerMatchIndex]) {
+                state->versionMarkerMatchIndex++;
+                if (state->versionMarkerMatchIndex == COPROC_OTA_FW_MARKER_LEN) {
+                    state->versionMarkerReading = true;
+                    state->versionMarkerLen = 0;
+                    memset(state->incomingDisplayVersion, 0, sizeof(state->incomingDisplayVersion));
+                    state->versionMarkerMatchIndex = 0;
+                }
+            } else {
+                state->versionMarkerMatchIndex = (ch == COPROC_OTA_FW_MARKER[0]) ? 1 : 0;
+            }
+        }
+
+        if (!state->hwMarkerReading) {
+            if (ch == COPROC_OTA_HWCFG_MARKER[state->hwMarkerMatchIndex]) {
+                state->hwMarkerMatchIndex++;
+                if (state->hwMarkerMatchIndex == COPROC_OTA_HWCFG_MARKER_LEN) {
+                    state->hwMarkerReading = true;
+                    state->hwMarkerLen = 0;
+                    memset(state->incomingHwConfigId, 0, sizeof(state->incomingHwConfigId));
+                    state->hwMarkerMatchIndex = 0;
+                }
+            } else {
+                state->hwMarkerMatchIndex = (ch == COPROC_OTA_HWCFG_MARKER[0]) ? 1 : 0;
+            }
+        }
+    }
+}
+
+static bool validateCoprocFirmwareDescriptor(CoprocOtaUploadRequestState* state) {
+    if (!state) return false;
+    if (state->descBytes < OTA_DESC_BUF_LEN) return false;
+    if (state->metadataValidated) return true;
+
+    const esp_app_desc_t* incoming =
+        reinterpret_cast<const esp_app_desc_t*>(state->descBuf
+            + sizeof(esp_image_header_t)
+            + sizeof(esp_image_segment_header_t));
+
+    strncpy(state->incomingVersion, incoming->version, sizeof(state->incomingVersion) - 1);
+    state->incomingVersion[sizeof(state->incomingVersion) - 1] = '\0';
+    strncpy(state->incomingProjectName, incoming->project_name, sizeof(state->incomingProjectName) - 1);
+    state->incomingProjectName[sizeof(state->incomingProjectName) - 1] = '\0';
+
+    if (coprocProjectName[0] != '\0' &&
+        incoming->project_name[0] != '\0' &&
+        strncmp(coprocProjectName, incoming->project_name, sizeof(incoming->project_name)) != 0) {
+        setCoprocOtaUploadError(state, String("Coprocessor firmware project mismatch: expected \"")
+            + coprocProjectName + "\", got \"" + incoming->project_name + "\".");
+        return false;
+    }
+
+    state->metadataValidated = true;
+    Serial.printf("[COPROC OTA]  Incoming coprocessor descriptor version: %s\n",
+                  state->incomingVersion[0] ? state->incomingVersion : "(unknown)");
+    return true;
+}
+
+static bool requestTargetsCoproc(AsyncWebServerRequest* req) {
+    if (!req) return false;
+    const AsyncWebHeader* hdr = req->getHeader("X-Target-MCU");
+    return hdr && hdr->value().equalsIgnoreCase("coprocessor");
+}
+
+static void handleCoprocOtaUpload(AsyncWebServerRequest* req,
+                                  const String& filename,
+                                  size_t index,
+                                  uint8_t* data,
+                                  size_t len,
+                                  bool final);
+
 static void handleGatewayOtaUpload(AsyncWebServerRequest* req,
                                    const String& filename,
                                    size_t index,
@@ -858,6 +1053,10 @@ static void handleGatewayOtaUpload(AsyncWebServerRequest* req,
                                    size_t len,
                                    bool final) {
     if (!isHttpAuthenticated(req)) return;
+    if (requestTargetsCoproc(req)) {
+        handleCoprocOtaUpload(req, filename, index, data, len, final);
+        return;
+    }
 
     auto* state = reinterpret_cast<GatewayOtaRequestState*>(req->_tempObject);
     if (index == 0) {
@@ -985,8 +1184,9 @@ static void handleGatewayOtaUpload(AsyncWebServerRequest* req,
         } else if (state->incomingHwConfigId[0] == '\0') {
             setOtaError(state, "Gateway firmware hardware configuration marker (GWHWCFG) is missing. Rebuild the uploaded gateway firmware with the current OTA markers.");
         } else if (!hardwareConfigIdsMatch(state->incomingHwConfigId, HW_CONFIG_ID)) {
-            setOtaError(state, String("Gateway hardware configuration mismatch. This gateway supports hardware config ID ")
-                + HW_CONFIG_ID + " but the uploaded firmware targets " + state->incomingHwConfigId + ".");
+            setOtaError(state, String("Gateway hardware configuration mismatch. This gateway expects hardware config ID ")
+                + HW_CONFIG_ID + " but the uploaded firmware hardware config ID is "
+                + state->incomingHwConfigId + ".");
         } else if (state->expectedSize > 0 && state->written != state->expectedSize) {
             setOtaError(state, String("Upload size mismatch: wrote ")
                 + state->written + " of " + state->expectedSize + " bytes.");
@@ -1201,12 +1401,80 @@ static void broadcastNodeOtaState() {
     wsBroadcast(buildNodeOtaJson());
 }
 
+static String buildCoprocOtaJson() {
+    JsonDocument doc;
+    doc["type"] = "coproc_ota_state";
+    doc["active"] = coprocOtaJob.active;
+    doc["online"] = coprocOnline;
+    doc["upload_busy"] = coprocOtaJob.uploadBusy;
+    doc["stage"] = (int)coprocOtaJob.stage;
+    doc["progress"] = coprocOtaJob.progress;
+    doc["message"] = coprocOtaJob.message;
+    doc["error"] = coprocOtaJob.error;
+    doc["version"] = coprocOtaJob.version;
+    doc["current_version"] = coprocFwVersion;
+    String out;
+    serializeJson(doc, out);
+    return out;
+}
+
+static void broadcastCoprocOtaState() {
+    wsBroadcast(buildCoprocOtaJson());
+}
+
 static void clearNodeOtaJob(bool removeFile = true) {
     if (nodeOtaJob.file) nodeOtaJob.file.close();
     if (removeFile && LittleFS.exists(NODE_OTA_FILE_PATH)) {
         LittleFS.remove(NODE_OTA_FILE_PATH);
     }
     nodeOtaJob = NodeOtaJobState{};
+}
+
+static void clearCoprocOtaJob(bool removeFile = true) {
+    if (coprocOtaJob.file) coprocOtaJob.file.close();
+    if (removeFile && LittleFS.exists(COPROC_OTA_FILE_PATH)) {
+        LittleFS.remove(COPROC_OTA_FILE_PATH);
+    }
+    coprocOtaJob = CoprocOtaJobState{};
+}
+
+static void setCoprocOtaJobMessage(const String& msg, uint8_t progress = 0) {
+    coprocOtaJob.lastActivityAt = millis();
+    const bool messageChanged = strncmp(coprocOtaJob.message, msg.c_str(), sizeof(coprocOtaJob.message)) != 0;
+    const bool progressChanged = coprocOtaJob.progress != progress;
+    if (messageChanged) {
+        strncpy(coprocOtaJob.message, msg.c_str(), sizeof(coprocOtaJob.message) - 1);
+        coprocOtaJob.message[sizeof(coprocOtaJob.message) - 1] = '\0';
+        Serial.printf("[COPROC OTA]  %s\n", coprocOtaJob.message);
+    }
+    if (messageChanged || progressChanged) {
+        coprocOtaJob.progress = progress;
+        coprocOtaJob.stageStartedAt = millis();
+        broadcastCoprocOtaState();
+    }
+}
+
+static void setCoprocOtaJobError(const String& msg) {
+    coprocOtaJob.stage = COPROC_OTA_JOB_ERROR;
+    coprocOtaJob.awaitingAck = false;
+    coprocOtaJob.awaitingFrameType = 0;
+    if (strncmp(coprocOtaJob.error, msg.c_str(), sizeof(coprocOtaJob.error)) != 0) {
+        strncpy(coprocOtaJob.error, msg.c_str(), sizeof(coprocOtaJob.error) - 1);
+        coprocOtaJob.error[sizeof(coprocOtaJob.error) - 1] = '\0';
+    }
+    setCoprocOtaJobMessage(msg, coprocOtaJob.progress);
+}
+
+static void setCoprocOtaJobSuccess(const String& msg) {
+    coprocOtaJob.stage = COPROC_OTA_JOB_SUCCESS;
+    coprocOtaJob.awaitingAck = false;
+    coprocOtaJob.awaitingFrameType = 0;
+    coprocOtaJob.error[0] = '\0';
+    setCoprocOtaJobMessage(msg, 100);
+}
+
+static bool coprocLinkBusy() {
+    return nodeOtaJob.active || coprocOtaJob.active;
 }
 
 static void setNodeOtaJobMessage(const String& msg, uint8_t progress = 0) {
@@ -1313,11 +1581,18 @@ static void handleCoprocFrame(uint8_t type, const uint8_t* payload, size_t len) 
     if (type == COPROC_FRAME_ACK) {
         if (len < sizeof(CoprocAckPayload)) return;
         const auto* ack = reinterpret_cast<const CoprocAckPayload*>(payload);
-        if (nodeOtaJob.active && nodeOtaJob.awaitingAck &&
-            nodeOtaJob.awaitingFrameType != COPROC_FRAME_HELLO &&
-            ack->original_type == COPROC_FRAME_HELLO) {
+        const unsigned long now = millis();
+        const bool linkJobWaiting =
+            (nodeOtaJob.active && nodeOtaJob.awaitingAck) ||
+            (coprocOtaJob.active && coprocOtaJob.awaitingAck);
+        const bool ignoreHelloAck =
+            linkJobWaiting &&
+            ack->original_type == COPROC_FRAME_HELLO &&
+            ((nodeOtaJob.active && nodeOtaJob.awaitingFrameType != COPROC_FRAME_HELLO) ||
+             (coprocOtaJob.active && coprocOtaJob.awaitingFrameType != COPROC_FRAME_HELLO));
+        if (ignoreHelloAck) {
             coprocOnline = ack->ok != 0;
-            lastCoprocAckAt = millis();
+            lastCoprocAckAt = now;
             return;
         }
         coprocAck.ready = true;
@@ -1325,7 +1600,9 @@ static void handleCoprocFrame(uint8_t type, const uint8_t* payload, size_t len) 
         coprocAck.ok = ack->ok != 0;
         coprocAck.value = ack->value;
         memcpy(coprocAck.message, ack->message, sizeof(coprocAck.message));
-        nodeOtaJob.lastAckAt = millis();
+        lastCoprocAckAt = now;
+        if (nodeOtaJob.active) nodeOtaJob.lastAckAt = now;
+        if (coprocOtaJob.active) coprocOtaJob.lastAckAt = now;
         if (ack->original_type != COPROC_FRAME_UPLOAD_CHUNK) {
             Serial.printf("[C3]  ACK type=0x%02X ok=%u value=%lu msg=\"%s\"\n",
                           ack->original_type,
@@ -1336,10 +1613,42 @@ static void handleCoprocFrame(uint8_t type, const uint8_t* payload, size_t len) 
         return;
     }
 
+    if (type == COPROC_FRAME_INFO) {
+        if (len < sizeof(CoprocInfoPayload)) return;
+        const auto* info = reinterpret_cast<const CoprocInfoPayload*>(payload);
+        coprocOnline = true;
+        lastCoprocAckAt = millis();
+        coprocOtaSupportedRemote = info->ota_supported != 0;
+        coprocOtaMaxBytes = info->ota_max_bytes;
+        strncpy(coprocFwVersion, info->fw_version, sizeof(coprocFwVersion) - 1);
+        coprocFwVersion[sizeof(coprocFwVersion) - 1] = '\0';
+        strncpy(coprocHwConfigId, info->hw_config_id, sizeof(coprocHwConfigId) - 1);
+        coprocHwConfigId[sizeof(coprocHwConfigId) - 1] = '\0';
+        strncpy(coprocProjectName, info->project_name, sizeof(coprocProjectName) - 1);
+        coprocProjectName[sizeof(coprocProjectName) - 1] = '\0';
+        Serial.printf("[C3]  INFO version=%s hw=%s ota=%u slot=%lu project=\"%s\"\n",
+                      coprocFwVersion[0] ? coprocFwVersion : "(unknown)",
+                      coprocHwConfigId[0] ? coprocHwConfigId : "(unknown)",
+                      (unsigned)info->ota_supported,
+                      (unsigned long)coprocOtaMaxBytes,
+                      coprocProjectName[0] ? coprocProjectName : "(unknown)");
+        if (coprocOtaJob.active && coprocOtaJob.stage == COPROC_OTA_JOB_WAIT_REBOOT) {
+            const bool versionMatches =
+                coprocOtaJob.version[0] != '\0' &&
+                coprocFwVersion[0] != '\0' &&
+                strncmp(coprocOtaJob.version, coprocFwVersion, sizeof(coprocOtaJob.version) - 1) == 0;
+            if (versionMatches) {
+                setCoprocOtaJobSuccess(String("Coprocessor reconnected with firmware v") + coprocFwVersion + ".");
+            }
+        }
+        broadcastMetaIfClientsConnected();
+        if (coprocOtaJob.active) broadcastCoprocOtaState();
+        return;
+    }
+
     if (type == COPROC_FRAME_STATUS) {
         if (len < sizeof(CoprocStatusPayload)) return;
         const auto* status = reinterpret_cast<const CoprocStatusPayload*>(payload);
-        bool recoveredFromTimeout = false;
         Serial.printf("[C3]  STATUS session=%lu phase=%u progress=%u err=%u msg=\"%s\"\n",
                       (unsigned long)status->session_id,
                       status->phase,
@@ -1347,6 +1656,7 @@ static void handleCoprocFrame(uint8_t type, const uint8_t* payload, size_t len) 
                       status->error_code,
                       status->message);
         if (nodeOtaJob.active && status->session_id == nodeOtaJob.sessionId) {
+            bool recoveredFromTimeout = false;
             nodeOtaJob.lastActivityAt = millis();
             if (status->phase == COPROC_HELPER_AP_READY) nodeOtaJob.helperApReady = true;
             if (status->phase == COPROC_HELPER_DONE || status->phase == NODE_OTA_SUCCESS) {
@@ -1364,6 +1674,23 @@ static void handleCoprocFrame(uint8_t type, const uint8_t* payload, size_t len) 
             } else {
                 setNodeOtaJobMessage(status->message[0] ? status->message : "OTA helper status updated.",
                                      status->progress);
+            }
+            return;
+        }
+
+        if (coprocOtaJob.active && status->session_id == coprocOtaJob.sessionId) {
+            coprocOtaJob.lastActivityAt = millis();
+            if (status->phase == COPROC_HELPER_ERROR) {
+                setCoprocOtaJobError(status->message[0] ? status->message : "Coprocessor reported an OTA error.");
+            } else if (status->phase == COPROC_HELPER_DONE) {
+                coprocOtaJob.flashReportedDone = true;
+                coprocOtaJob.stage = COPROC_OTA_JOB_WAIT_REBOOT;
+                coprocOnline = false;
+                setCoprocOtaJobMessage(status->message[0] ? status->message : "Firmware flashed. Waiting for coprocessor reboot...",
+                                       status->progress ? status->progress : 95);
+            } else {
+                setCoprocOtaJobMessage(status->message[0] ? status->message : "Coprocessor OTA status updated.",
+                                       status->progress);
             }
         }
     }
@@ -1499,6 +1826,69 @@ static bool sendCoprocUploadEndFrame(unsigned long now, bool resetRetries = true
     return true;
 }
 
+static void beginCoprocSelfOtaAwait(uint8_t frameType, unsigned long now, bool resetRetries = true) {
+    coprocOtaJob.awaitingAck = true;
+    coprocOtaJob.awaitingFrameType = frameType;
+    coprocOtaJob.lastAckAt = now;
+    if (resetRetries) coprocOtaJob.ackRetries = 0;
+}
+
+static bool sendCoprocSelfUploadBeginFrame(unsigned long now, bool resetRetries = true) {
+    CoprocUploadBeginPayload payload{};
+    payload.session_id = coprocOtaJob.sessionId;
+    payload.image_size = (uint32_t)coprocOtaJob.imageSize;
+    payload.image_crc32 = coprocOtaJob.imageCrc32;
+    payload.upload_target = COPROC_UPLOAD_TARGET_SELF;
+    payload.node_type = 0;
+    payload.ap_channel = 0;
+    payload.port = 0;
+    strncpy(payload.version, coprocOtaJob.version, sizeof(payload.version) - 1);
+    resetCoprocAck();
+    if (!sendCoprocFrame(COPROC_FRAME_UPLOAD_BEGIN, &payload, sizeof(payload))) {
+        return false;
+    }
+    beginCoprocSelfOtaAwait(COPROC_FRAME_UPLOAD_BEGIN, now, resetRetries);
+    return true;
+}
+
+static bool sendCoprocSelfUploadChunkFrame(unsigned long now, bool resetRetries = true, bool* reachedEnd = nullptr) {
+    if (reachedEnd) *reachedEnd = false;
+    if (!coprocOtaJob.file) {
+        coprocOtaJob.file = LittleFS.open(COPROC_OTA_FILE_PATH, "r");
+        if (!coprocOtaJob.file) {
+            return false;
+        }
+    }
+
+    CoprocUploadChunkPayload chunk{};
+    chunk.offset = (uint32_t)coprocOtaJob.uploadOffset;
+    if (!coprocOtaJob.file.seek(coprocOtaJob.uploadOffset, SeekSet)) {
+        return false;
+    }
+
+    const size_t n = coprocOtaJob.file.read(chunk.data, sizeof(chunk.data));
+    if (n == 0) {
+        if (reachedEnd) *reachedEnd = true;
+        return true;
+    }
+
+    resetCoprocAck();
+    if (!sendCoprocFrame(COPROC_FRAME_UPLOAD_CHUNK, &chunk, sizeof(chunk.offset) + n)) {
+        return false;
+    }
+    beginCoprocSelfOtaAwait(COPROC_FRAME_UPLOAD_CHUNK, now, resetRetries);
+    return true;
+}
+
+static bool sendCoprocSelfUploadEndFrame(unsigned long now, bool resetRetries = true) {
+    resetCoprocAck();
+    if (!sendCoprocFrame(COPROC_FRAME_UPLOAD_END, &coprocOtaJob.sessionId, sizeof(coprocOtaJob.sessionId))) {
+        return false;
+    }
+    beginCoprocSelfOtaAwait(COPROC_FRAME_UPLOAD_END, now, resetRetries);
+    return true;
+}
+
 static void initCoprocLink() {
     pinMode(COPROC_RESET_PIN, OUTPUT);
     digitalWrite(COPROC_RESET_PIN, LOW);
@@ -1517,12 +1907,19 @@ static void initCoprocLink() {
 }
 
 static void processCoprocHeartbeat(unsigned long now) {
+    const bool allowHeartbeat =
+        !nodeOtaJob.active &&
+        (!coprocOtaJob.active || coprocOtaJob.stage == COPROC_OTA_JOB_WAIT_REBOOT);
     const unsigned long pingInterval = coprocOnline ? COPROC_LINK_PING_MS : 1500UL;
-    if (!nodeOtaJob.active && (now - lastCoprocHelloAt) >= pingInterval) {
+    if (allowHeartbeat && (now - lastCoprocHelloAt) >= pingInterval) {
         sendCoprocHello();
     }
 
-    if (coprocAck.ready && coprocAck.originalType == COPROC_FRAME_HELLO) {
+    const bool jobAwaitingHello =
+        (nodeOtaJob.active && nodeOtaJob.awaitingAck && nodeOtaJob.awaitingFrameType == COPROC_FRAME_HELLO) ||
+        (coprocOtaJob.active && coprocOtaJob.awaitingAck && coprocOtaJob.awaitingFrameType == COPROC_FRAME_HELLO);
+
+    if (coprocAck.ready && coprocAck.originalType == COPROC_FRAME_HELLO && !jobAwaitingHello) {
         const bool wasOnline = coprocOnline;
         coprocOnline = coprocAck.ok;
         lastCoprocAckAt = now;
@@ -1542,7 +1939,7 @@ static void processCoprocHeartbeat(unsigned long now) {
         }
 
         const unsigned long recoveryAge = (lastCoprocAckAt > 0) ? (now - lastCoprocAckAt) : (now - lastCoprocHelloAt);
-        if (!nodeOtaJob.active &&
+        if (allowHeartbeat &&
             recoveryAge >= COPROC_RECOVERY_REBOOT_MS &&
             (lastCoprocRecoveryPulseAt == 0 ||
              (now - lastCoprocRecoveryPulseAt) >= COPROC_RECOVERY_COOLDOWN_MS)) {
@@ -1553,7 +1950,7 @@ static void processCoprocHeartbeat(unsigned long now) {
         }
     }
 
-    if (coprocOnline && !nodeOtaJob.active && lastCoprocAckAt > 0 &&
+    if (coprocOnline && allowHeartbeat && lastCoprocAckAt > 0 &&
         (now - lastCoprocAckAt) > (COPROC_LINK_PING_MS * 3)) {
         coprocOnline = false;
         Serial.println("[C3]  Coprocessor helper heartbeat lost.");
@@ -1802,6 +2199,286 @@ static void processNodeOtaJob(unsigned long now) {
         case NODE_OTA_JOB_IDLE:
         case NODE_OTA_JOB_COPROC_WAIT:
             break;
+    }
+}
+
+static void processCoprocOtaJob(unsigned long now) {
+    if (!coprocOtaJob.active) return;
+
+    if (coprocOtaJob.awaitingAck) {
+        if (coprocAck.ready && coprocAck.originalType == coprocOtaJob.awaitingFrameType) {
+            const bool ok = coprocAck.ok;
+            const uint8_t originalType = coprocAck.originalType;
+            const uint32_t value = coprocAck.value;
+            char msg[COPROC_STATUS_MESSAGE_LEN];
+            memcpy(msg, coprocAck.message, sizeof(msg));
+            resetCoprocAck();
+            coprocOtaJob.awaitingAck = false;
+            coprocOtaJob.lastActivityAt = now;
+            coprocOtaJob.ackRetries = 0;
+
+            if (!ok) {
+                setCoprocOtaJobError(msg[0] ? msg : "Coprocessor rejected the OTA command.");
+                return;
+            }
+
+            if (originalType == COPROC_FRAME_HELLO) {
+                coprocOnline = true;
+                coprocOtaJob.stage = COPROC_OTA_JOB_BEGIN;
+                setCoprocOtaJobMessage("Coprocessor is ready. Preparing OTA session...", 15);
+            } else if (originalType == COPROC_FRAME_UPLOAD_BEGIN) {
+                coprocOtaJob.stage = COPROC_OTA_JOB_STREAM;
+                setCoprocOtaJobMessage("Streaming firmware to coprocessor...", 25);
+            } else if (originalType == COPROC_FRAME_UPLOAD_CHUNK) {
+                coprocOtaJob.uploadOffset = value;
+                const uint8_t progress = (uint8_t)std::min<size_t>(85,
+                    25 + ((coprocOtaJob.uploadOffset * 60) / std::max<size_t>(1, coprocOtaJob.imageSize)));
+                setCoprocOtaJobMessage("Streaming firmware to coprocessor...", progress);
+            } else if (originalType == COPROC_FRAME_UPLOAD_END) {
+                coprocOtaJob.stage = COPROC_OTA_JOB_WAIT_REBOOT;
+                coprocOnline = false;
+                setCoprocOtaJobMessage("Firmware flashed. Waiting for coprocessor reboot...", 95);
+            }
+            return;
+        } else if ((now - coprocOtaJob.lastAckAt) > COPROC_ACK_TIMEOUT_MS) {
+            if (coprocOtaJob.ackRetries < COPROC_ACK_RETRY_LIMIT) {
+                coprocOtaJob.ackRetries++;
+                Serial.printf("[COPROC OTA]  Retrying frame 0x%02X (%u/%u)\n",
+                              coprocOtaJob.awaitingFrameType,
+                              coprocOtaJob.ackRetries,
+                              (unsigned)COPROC_ACK_RETRY_LIMIT);
+                bool resendOk = false;
+                if (coprocOtaJob.awaitingFrameType == COPROC_FRAME_HELLO) {
+                    resendOk = sendCoprocHello();
+                    if (resendOk) beginCoprocSelfOtaAwait(COPROC_FRAME_HELLO, now, false);
+                } else if (coprocOtaJob.awaitingFrameType == COPROC_FRAME_UPLOAD_BEGIN) {
+                    resendOk = sendCoprocSelfUploadBeginFrame(now, false);
+                } else if (coprocOtaJob.awaitingFrameType == COPROC_FRAME_UPLOAD_CHUNK) {
+                    bool reachedEnd = false;
+                    resendOk = sendCoprocSelfUploadChunkFrame(now, false, &reachedEnd);
+                    if (reachedEnd) {
+                        setCoprocOtaJobError("Unexpected end of staged firmware while retrying UART upload.");
+                        return;
+                    }
+                } else if (coprocOtaJob.awaitingFrameType == COPROC_FRAME_UPLOAD_END) {
+                    resendOk = sendCoprocSelfUploadEndFrame(now, false);
+                }
+                if (!resendOk) {
+                    setCoprocOtaJobError("Failed to resend the OTA frame to the coprocessor.");
+                    return;
+                }
+                coprocOtaJob.lastActivityAt = now;
+                return;
+            }
+
+            String timeoutMsg = String("No response from coprocessor");
+            if (coprocOtaJob.awaitingFrameType == COPROC_FRAME_UPLOAD_BEGIN) {
+                timeoutMsg += " during upload begin.";
+            } else if (coprocOtaJob.awaitingFrameType == COPROC_FRAME_UPLOAD_CHUNK) {
+                timeoutMsg += String(" during chunk upload at offset ") + coprocOtaJob.uploadOffset + ".";
+            } else if (coprocOtaJob.awaitingFrameType == COPROC_FRAME_UPLOAD_END) {
+                timeoutMsg += " while finalizing the firmware update.";
+            } else if (coprocOtaJob.awaitingFrameType == COPROC_FRAME_HELLO) {
+                timeoutMsg += " during handshake.";
+            } else {
+                timeoutMsg += ".";
+            }
+            setCoprocOtaJobError(timeoutMsg);
+            return;
+        } else {
+            return;
+        }
+    }
+
+    if (coprocOtaJob.stage == COPROC_OTA_JOB_ERROR || coprocOtaJob.stage == COPROC_OTA_JOB_SUCCESS) {
+        if ((now - coprocOtaJob.stageStartedAt) > 5000UL) {
+            sendCoprocFrame(COPROC_FRAME_ABORT, &coprocOtaJob.sessionId, sizeof(coprocOtaJob.sessionId));
+            clearCoprocOtaJob(true);
+        }
+        return;
+    }
+
+    if (coprocOtaJob.stage == COPROC_OTA_JOB_WAIT_REBOOT &&
+        (now - coprocOtaJob.stageStartedAt) > COPROC_OTA_REBOOT_TIMEOUT_MS) {
+        setCoprocOtaJobError("Coprocessor did not come back online after flashing.");
+        return;
+    }
+
+    if (coprocOtaJob.lastActivityAt > 0 &&
+        coprocOtaJob.stage != COPROC_OTA_JOB_WAIT_REBOOT &&
+        (now - coprocOtaJob.lastActivityAt) > COPROC_OTA_STAGE_TIMEOUT_MS) {
+        setCoprocOtaJobError("Coprocessor OTA timed out.");
+        return;
+    }
+
+    switch (coprocOtaJob.stage) {
+        case COPROC_OTA_JOB_STAGED:
+            if (!coprocOnline) {
+                requestCoprocReboot();
+                if (!sendCoprocHello()) {
+                    setCoprocOtaJobError("Failed to send HELLO to the coprocessor.");
+                    return;
+                }
+                beginCoprocSelfOtaAwait(COPROC_FRAME_HELLO, now);
+                coprocOtaJob.stage = COPROC_OTA_JOB_WAIT_HELLO;
+                setCoprocOtaJobMessage("Waiting for coprocessor...", 10);
+                break;
+            }
+            coprocOtaJob.stage = COPROC_OTA_JOB_BEGIN;
+            [[fallthrough]];
+
+        case COPROC_OTA_JOB_BEGIN:
+            if (!sendCoprocSelfUploadBeginFrame(now)) {
+                setCoprocOtaJobError("Failed to prepare coprocessor OTA storage.");
+                return;
+            }
+            setCoprocOtaJobMessage("Preparing coprocessor OTA storage...", 20);
+            break;
+
+        case COPROC_OTA_JOB_STREAM: {
+            bool reachedEnd = false;
+            if (!sendCoprocSelfUploadChunkFrame(now, true, &reachedEnd)) {
+                setCoprocOtaJobError("Failed to send coprocessor firmware chunk.");
+                return;
+            }
+            if (coprocOtaJob.uploadOffset == 0 && !reachedEnd) {
+                Serial.printf("[COPROC OTA]  Sending first UART chunk (%u bytes)\n",
+                              (unsigned)COPROC_UPLOAD_CHUNK_DATA_LEN);
+            }
+            if (reachedEnd) {
+                coprocOtaJob.stage = COPROC_OTA_JOB_FINALIZE;
+            }
+            break;
+        }
+
+        case COPROC_OTA_JOB_FINALIZE:
+            if (!sendCoprocSelfUploadEndFrame(now)) {
+                setCoprocOtaJobError("Failed to finalize the coprocessor OTA transfer.");
+                return;
+            }
+            setCoprocOtaJobMessage("Telling coprocessor to flash the uploaded firmware...", 90);
+            break;
+
+        case COPROC_OTA_JOB_WAIT_REBOOT:
+        case COPROC_OTA_JOB_WAIT_HELLO:
+        case COPROC_OTA_JOB_SUCCESS:
+        case COPROC_OTA_JOB_ERROR:
+        case COPROC_OTA_JOB_IDLE:
+            break;
+    }
+}
+
+static void handleCoprocOtaUpload(AsyncWebServerRequest* req,
+                                  const String& filename,
+                                  size_t index,
+                                  uint8_t* data,
+                                  size_t len,
+                                  bool final) {
+    if (!isHttpAuthenticated(req)) return;
+
+    auto* state = reinterpret_cast<CoprocOtaUploadRequestState*>(req->_tempObject);
+    if (index == 0) {
+        if (state) {
+            if (state->file) state->file.close();
+            delete state;
+            state = nullptr;
+        }
+        state = new CoprocOtaUploadRequestState();
+        req->_tempObject = state;
+        state->started = true;
+        const AsyncWebHeader* sizeHdr = req->getHeader("X-Firmware-Size");
+        if (sizeHdr) state->expectedSize = (size_t)strtoull(sizeHdr->value().c_str(), nullptr, 10);
+        strncpy(state->filename, filename.c_str(), sizeof(state->filename) - 1);
+        state->filename[sizeof(state->filename) - 1] = '\0';
+
+        if (otaUploadBusy || nodeOtaJob.uploadBusy || nodeOtaJob.active ||
+            coprocOtaJob.uploadBusy || coprocOtaJob.active) {
+            setCoprocOtaUploadError(state, "Another OTA job is already in progress.");
+        } else if (!LittleFS.begin(true)) {
+            setCoprocOtaUploadError(state, "LittleFS is not available.");
+        } else {
+            if (LittleFS.exists(COPROC_OTA_FILE_PATH)) LittleFS.remove(COPROC_OTA_FILE_PATH);
+            state->file = LittleFS.open(COPROC_OTA_FILE_PATH, "w");
+            if (!state->file) {
+                setCoprocOtaUploadError(state, "Could not open temporary storage for coprocessor firmware.");
+            } else {
+                coprocOtaJob.uploadBusy = true;
+                Serial.printf("[COPROC OTA]  Upload started: \"%s\" (%u bytes)\n",
+                              state->filename[0] ? state->filename : "(unnamed)",
+                              (unsigned)state->expectedSize);
+            }
+        }
+    }
+
+    if (!state) return;
+
+    if (state->error[0] != '\0') {
+        if (final && state->file) {
+            state->file.close();
+        }
+        return;
+    }
+
+    if (len > 0) {
+        scanCoprocFirmwareMarkers(state, data, len);
+
+        if (index == 0 && data[0] != ESP_IMAGE_HEADER_MAGIC) {
+            setCoprocOtaUploadError(state, "Uploaded file is not a valid ESP32 application image.");
+        }
+
+        if (state->error[0] == '\0' && !state->metadataValidated) {
+            const size_t copyLen = std::min<size_t>(len, OTA_DESC_BUF_LEN - state->descBytes);
+            memcpy(state->descBuf + state->descBytes, data, copyLen);
+            state->descBytes += copyLen;
+            if (state->descBytes >= OTA_DESC_BUF_LEN) {
+                validateCoprocFirmwareDescriptor(state);
+            }
+        }
+
+        if (state->error[0] == '\0') {
+            if (!state->file || state->file.write(data, len) != len) {
+                setCoprocOtaUploadError(state, "Failed to store the coprocessor firmware image.");
+            } else {
+                state->written += len;
+                state->crc32 = crc32Update(state->crc32, data, len);
+            }
+        }
+    }
+
+    if (final && state->error[0] == '\0') {
+        if (state->file) state->file.close();
+
+        if (state->incomingDisplayVersion[0] == '\0' && state->incomingVersion[0] != '\0') {
+            strncpy(state->incomingDisplayVersion, state->incomingVersion, sizeof(state->incomingDisplayVersion) - 1);
+            state->incomingDisplayVersion[sizeof(state->incomingDisplayVersion) - 1] = '\0';
+        }
+
+        if (!state->metadataValidated) {
+            setCoprocOtaUploadError(state, "Firmware metadata could not be validated.");
+        } else if (state->incomingDisplayVersion[0] == '\0') {
+            setCoprocOtaUploadError(state, "Coprocessor firmware version marker is missing. Rebuild the coprocessor firmware with the current OTA markers.");
+        } else if (state->incomingHwConfigId[0] == '\0') {
+            setCoprocOtaUploadError(state, "Coprocessor firmware hardware configuration marker is missing. Rebuild the coprocessor firmware with the current OTA markers.");
+        } else if (!hardwareConfigIdsMatch(state->incomingHwConfigId, COPROC_HW_CONFIG_ID)) {
+            setCoprocOtaUploadError(state, String("Coprocessor hardware configuration mismatch. This gateway expects coprocessor hardware config ID ")
+                + COPROC_HW_CONFIG_ID + " but the uploaded firmware hardware config ID is "
+                + state->incomingHwConfigId + ".");
+        } else if (!parseHardwareConfigId(state->incomingHwConfigId)) {
+            setCoprocOtaUploadError(state, String("Coprocessor hardware configuration ID is invalid: ")
+                + state->incomingHwConfigId + ".");
+        } else if (state->expectedSize > 0 && state->written != state->expectedSize) {
+            setCoprocOtaUploadError(state, String("Upload size mismatch: wrote ")
+                + state->written + " of " + state->expectedSize + " bytes.");
+        } else if (state->written == 0) {
+            setCoprocOtaUploadError(state, "Empty coprocessor firmware upload received.");
+        } else {
+            state->ok = true;
+            Serial.printf("[COPROC OTA]  Firmware staged successfully. Project=%s HW=%s Version=%s CRC32=%08X\n",
+                          state->incomingProjectName[0] ? state->incomingProjectName : "(unknown)",
+                          state->incomingHwConfigId,
+                          state->incomingDisplayVersion,
+                          state->crc32);
+        }
     }
 }
 
@@ -2491,6 +3168,13 @@ static String buildMetaJson() {
     doc["ota_busy"]        = otaUploadBusy;
     doc["ota_max_bytes"]   = (uint32_t)getGatewayOtaSlotSize();
     doc["ota_project"]     = esp_app_get_description()->project_name;
+    doc["coproc_online"]   = coprocOnline;
+    doc["coproc_fw_version"] = coprocFwVersion;
+    doc["coproc_hw_config_id"] = coprocHwConfigId;
+    doc["coproc_project"]  = coprocProjectName;
+    doc["coproc_ota_supported"] = coprocOtaSupportedRemote;
+    doc["coproc_ota_busy"] = coprocOtaJob.active || coprocOtaJob.uploadBusy;
+    doc["coproc_ota_max_bytes"] = coprocOtaMaxBytes;
     doc["node_ota_busy"]   = nodeOtaJob.active || nodeOtaJob.uploadBusy;
     doc["node_ota_helper_online"] = coprocOnline;
     doc["node_ota_host"]   = NODE_OTA_HOST;
@@ -3253,6 +3937,7 @@ static void onWsEvent(AsyncWebSocket*, AsyncWebSocketClient* client,
                 client->text(buildNodesJson());
                 client->text(buildDiscoveredJson());
                 client->text(buildNodeOtaJson());
+                client->text(buildCoprocOtaJson());
             } else {
                 // Credentials are set - client must authenticate first
                 client->text("{\"type\":\"auth_required\"}");
@@ -3284,6 +3969,7 @@ static void onWsEvent(AsyncWebSocket*, AsyncWebSocketClient* client,
                     client->text(buildNodesJson());
                     client->text(buildDiscoveredJson());
                     client->text(buildNodeOtaJson());
+                    client->text(buildCoprocOtaJson());
                     break;
                 }
                 const char* tok = doc["token"] | "";
@@ -3297,6 +3983,7 @@ static void onWsEvent(AsyncWebSocket*, AsyncWebSocketClient* client,
                     client->text(buildNodesJson());
                     client->text(buildDiscoveredJson());
                     client->text(buildNodeOtaJson());
+                    client->text(buildCoprocOtaJson());
                     Serial.printf("[AUTH]  WS client #%u authenticated\n", client->id());
                 } else {
                     client->text("{\"type\":\"auth_fail\"}");
@@ -3860,6 +4547,82 @@ static void setupRoutes() {
                 return;
             }
 
+            if (requestTargetsCoproc(req)) {
+                auto* state = reinterpret_cast<CoprocOtaUploadRequestState*>(req->_tempObject);
+                auto cleanup = [&]() {
+                    if (state) {
+                        if (state->file) state->file.close();
+                        delete state;
+                        req->_tempObject = nullptr;
+                    }
+                    coprocOtaJob.uploadBusy = false;
+                };
+
+                if (!state || !state->started) {
+                    req->send(400, "application/json", R"({"ok":false,"error":"No coprocessor firmware upload received."})");
+                    cleanup();
+                    return;
+                }
+
+                if (state->error[0] != '\0') {
+                    JsonDocument doc;
+                    doc["ok"] = false;
+                    doc["error"] = state->error;
+                    String body;
+                    serializeJson(doc, body);
+                    req->send(400, "application/json", body);
+                    if (LittleFS.exists(COPROC_OTA_FILE_PATH)) LittleFS.remove(COPROC_OTA_FILE_PATH);
+                    cleanup();
+                    return;
+                }
+
+                if (!state->ok) {
+                    req->send(500, "application/json", R"({"ok":false,"error":"Coprocessor firmware upload did not complete."})");
+                    if (LittleFS.exists(COPROC_OTA_FILE_PATH)) LittleFS.remove(COPROC_OTA_FILE_PATH);
+                    cleanup();
+                    return;
+                }
+
+                if (coprocOtaMaxBytes > 0 && state->written > coprocOtaMaxBytes) {
+                    JsonDocument doc;
+                    doc["ok"] = false;
+                    doc["error"] = String("Coprocessor firmware is too large for the OTA slot (")
+                        + state->written + " > " + coprocOtaMaxBytes + " bytes).";
+                    String body;
+                    serializeJson(doc, body);
+                    req->send(400, "application/json", body);
+                    if (LittleFS.exists(COPROC_OTA_FILE_PATH)) LittleFS.remove(COPROC_OTA_FILE_PATH);
+                    cleanup();
+                    return;
+                }
+
+                coprocOtaJob = CoprocOtaJobState{};
+                coprocOtaJob.stage = COPROC_OTA_JOB_STAGED;
+                coprocOtaJob.sessionId = esp_random();
+                coprocOtaJob.imageSize = state->written;
+                coprocOtaJob.imageCrc32 = state->crc32;
+                coprocOtaJob.stageStartedAt = millis();
+                coprocOtaJob.lastActivityAt = coprocOtaJob.stageStartedAt;
+                strncpy(coprocOtaJob.version, state->incomingDisplayVersion, sizeof(coprocOtaJob.version) - 1);
+                strncpy(coprocOtaJob.priorVersion, coprocFwVersion, sizeof(coprocOtaJob.priorVersion) - 1);
+                strncpy(coprocOtaJob.filename, state->filename, sizeof(coprocOtaJob.filename) - 1);
+                coprocOtaJob.active = true;
+                setCoprocOtaJobMessage("Coprocessor firmware uploaded. Preparing UART OTA session...", 5);
+
+                JsonDocument doc;
+                doc["ok"] = true;
+                doc["queued"] = true;
+                doc["target"] = "coprocessor";
+                doc["session_id"] = coprocOtaJob.sessionId;
+                doc["version"] = coprocOtaJob.version;
+                String body;
+                serializeJson(doc, body);
+                req->send(200, "application/json", body);
+                cleanup();
+                broadcastCoprocOtaState();
+                return;
+            }
+
             auto* state = reinterpret_cast<GatewayOtaRequestState*>(req->_tempObject);
             if (!state || !state->started) {
                 req->send(400, "application/json", R"({"ok":false,"error":"No firmware upload received."})");
@@ -3981,8 +4744,8 @@ static void setupRoutes() {
             if (!hardwareConfigIdsMatch(state->incomingHwConfigId, nodes[nodeId].hw_config_id)) {
                 JsonDocument doc;
                 doc["ok"] = false;
-                doc["error"] = String("Firmware hardware configuration mismatch. Selected node expects ")
-                    + nodes[nodeId].hw_config_id + " but the uploaded firmware targets "
+                doc["error"] = String("Firmware hardware configuration mismatch. Selected node expects hardware config ID ")
+                    + nodes[nodeId].hw_config_id + " but the uploaded firmware hardware config ID is "
                     + state->incomingHwConfigId + ".";
                 String body;
                 serializeJson(doc, body);
@@ -4143,6 +4906,7 @@ void loop() {
     processCoprocSerial();
     processCoprocHeartbeat(now);
     processNodeOtaJob(now);
+    processCoprocOtaJob(now);
     updateGwLed();
 
     if (otaRebootPending && now >= otaRebootAtMs) {

@@ -3,7 +3,7 @@
 /**
     * @file [user_config.h]
     * @brief Shared definitions for the ESP32 Mesh Gateway Firmware
-    * @version 1.0.0
+    * @version 1.1.0
     * @author Mrinal (@atechofficials)
  */
 
@@ -13,13 +13,26 @@
 #define NODE_OTA_HOST "192.168.4.1"
 
 // Select Main Dev Board
-#define ESP32_S3_DEVKITC1
-// #define XIAO_ESP32_S3
+// These can be provided from platformio.ini build_flags per environment.
+#if !defined(ESP32_S3_DEVKITC1) && !defined(XIAO_ESP32_S3)
+    #define ESP32_S3_DEVKITC1
+#endif
+
+#if defined(ESP32_S3_DEVKITC1) && defined(XIAO_ESP32_S3)
+    #error "Select only one gateway main dev board."
+#endif
 
 // Select Coprocessor Dev Board
-#define COPROC_ESP32C3_BEETLE
-// #define COPROC_ESP32C3_XIAO
-// #define COPROC_ESP32C3_SUPER_MINI
+// These can be provided from platformio.ini build_flags per environment.
+#if !defined(COPROC_ESP32C3_BEETLE) && !defined(COPROC_ESP32C3_XIAO) && !defined(COPROC_ESP32C3_SUPER_MINI)
+    #define COPROC_ESP32C3_BEETLE
+#endif
+
+#if (defined(COPROC_ESP32C3_BEETLE) && defined(COPROC_ESP32C3_XIAO)) || \
+    (defined(COPROC_ESP32C3_BEETLE) && defined(COPROC_ESP32C3_SUPER_MINI)) || \
+    (defined(COPROC_ESP32C3_XIAO) && defined(COPROC_ESP32C3_SUPER_MINI))
+    #error "Select only one gateway coprocessor dev board."
+#endif
 
 #ifdef ESP32_S3_DEVKITC1
     #ifdef COPROC_ESP32C3_BEETLE
@@ -55,6 +68,16 @@
     #define BME_MISO 8
     #define BME_MOSI 9
     #define BME_CS   2
+#endif
+
+// Coprocessor board-specific hardware config ID used by coprocessor OTA firmware validation.
+// This intentionally identifies the ESP32-C3 helper board itself, not the full gateway combo.
+#ifdef COPROC_ESP32C3_BEETLE
+    #define COPROC_HW_CONFIG_ID "0x0B"
+#elif defined(COPROC_ESP32C3_XIAO)
+    #define COPROC_HW_CONFIG_ID "0x1B"
+#elif defined(COPROC_ESP32C3_SUPER_MINI)
+    #define COPROC_HW_CONFIG_ID "0x2B"
 #endif
 
 // Coprocessor UART Configuration

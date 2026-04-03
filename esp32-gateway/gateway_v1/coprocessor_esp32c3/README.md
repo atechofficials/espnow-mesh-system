@@ -1,13 +1,15 @@
 # ESP32-C3 Gateway Coprocessor
 
-Firmware version: **0.2.0**
-Target board: `dfrobot_beetle_esp32c3`
+Firmware version: **0.3.0**
+Default target board: `dfrobot_beetle_esp32c3`
 
 This firmware runs on the **ESP32-C3 coprocessor** attached to the ESP32-S3 gateway. It is not a standalone mesh node. Its main job is to help the gateway perform **Node OTA updates** by staging node firmware, creating a temporary helper access point, serving the staged `firmware.bin` over HTTP, and sending helper status back to the gateway over UART.
 
-The helper does not decide firmware compatibility by itself. The ESP32-S3 gateway now validates node role and hardware-config compatibility before the helper staging flow is allowed to begin.
+The current helper release line can also be updated from the same **Gateway Firmware Update** section in the dashboard, where the ESP32-S3 gateway stages a compatible helper `firmware.bin`, validates the helper board type, transfers it over UART, and waits for the ESP32-C3 to reboot into the new firmware.
 
-Current helper releases are used for sensor-node, actuator-node, and hybrid-node OTA jobs. The `v0.2.0` line keeps the helper aligned with the newer gateway discovery/pairing behavior, the `user_config.h` configuration split, and the current Gateway v1A-v1D hardware documentation line.
+The helper does not decide firmware compatibility by itself. The ESP32-S3 gateway validates node role and hardware-config compatibility before node OTA staging begins, and validates the helper-board hardware-config ID before coprocessor self-OTA is allowed to begin.
+
+Current helper releases are used for sensor-node, actuator-node, and hybrid-node OTA jobs. The `v0.3.0` line also adds gateway-driven coprocessor self-OTA support, board-specific helper hardware validation, and alignment with the newer `user_config.h v1.1.0` and `coproc_ota_protocol.h v1.1.0` release line.
 
 ---
 
@@ -21,6 +23,8 @@ During a Node OTA update, the helper:
 4. serves the staged firmware at `http://192.168.4.1/firmware.bin`
 5. accepts helper status reports from the node on `/status`
 6. reports progress and errors back to the gateway
+
+During coprocessor self-OTA, the helper also receives a staged helper firmware image from the gateway over UART, writes the new image to its OTA slot, reports status back to the gateway, and reboots into the updated helper firmware.
 
 The gateway remains the OTA orchestrator. The ESP32-C3 only handles the helper-side transport and temporary OTA hosting.
 
@@ -56,7 +60,7 @@ This file must stay synchronized with:
 
 Current shared helper transport version:
 
-- `coproc_ota_protocol.h` **v1.0.0**
+- `coproc_ota_protocol.h` **v1.1.0**
 
 Important frame types include:
 
@@ -81,6 +85,17 @@ Framework libraries used directly: `WiFi`, `WebServer`, `LittleFS`.
 
 ---
 
+## Build Environments
+
+The helper firmware now exposes explicit PlatformIO environments for each supported ESP32-C3 helper board.
+
+| Environment | Board | Coprocessor hardware-config ID |
+|-------------|-------|--------------------------------|
+| `beetle_esp32c3` | DFRobot Beetle ESP32-C3 | `0x0B` |
+| `xiao_esp32c3` | Seeed Studio XIAO ESP32-C3 | `0x1B` |
+| `esp32c3_sm` | ESP32-C3 Super Mini | `0x2B` |
+
+Choose the environment that matches the helper board actually connected to the gateway.
 ## Build & Flash
 
 From the `coprocessor_esp32c3/` directory:
@@ -104,6 +119,20 @@ The newer release line moves board-selection and user-facing helper configuratio
 
 ---
 
+## Coprocessor OTA from the Gateway Web Interface
+
+Once a compatible helper build is already running on the ESP32-C3, the gateway can update the helper itself from the browser.
+
+During this flow, the ESP32-S3 gateway:
+
+1. validates the uploaded helper `firmware.bin`
+2. validates the uploaded helper hardware-config ID against the expected helper board type
+3. stages the image locally in LittleFS
+4. tells the helper to prepare for self-OTA
+5. transfers the image over UART
+6. waits for the helper to flash, reboot, and reconnect
+
+If the uploaded firmware targets the wrong helper board, the gateway rejects it before the UART transfer begins.
 ## Runtime Behavior
 
 ### Idle state

@@ -1,11 +1,18 @@
 # Gateway v1 - Build, Flash, and OTA Guide
 
-Firmware version: **2.2.0**  
+Firmware version: **2.3.0**  
 Target board: `esp32-s3-devkitc1-n8r8`
 
-Gateway helper coprocessor: **ESP32-C3 firmware v0.2.0**
+Gateway helper coprocessor: **ESP32-C3 firmware v0.3.0**
 
 ---
+
+## Highlights in v2.3.0
+- Adds **ESP32-C3 coprocessor OTA** support through the **Gateway Firmware Update** section in the web dashboard
+- Adds a target selector in the dashboard so the **Gateway Firmware Update** flow can address either the ESP32-S3 **Main MCU** or the ESP32-C3 **Coprocessor**
+- Adds board-specific coprocessor firmware validation using the helper board hardware-config ID before UART OTA transfer begins
+- Improves OTA error reporting so firmware mismatch messages include the uploaded hardware-config ID clearly in both the serial logs and the web UI
+- Adds explicit PlatformIO build environments for the documented gateway hardware combinations and the current custom development combo
 
 ## Highlights in v2.2.0
 - Polishes discovery timing on both the gateway and node side so pairing candidates appear faster and stale entries clear sooner
@@ -51,8 +58,8 @@ Gateway helper coprocessor: **ESP32-C3 firmware v0.2.0**
 ## Prerequisites
 
 - [PlatformIO Core](https://docs.platformio.org/en/latest/core/installation/index.html) or the PlatformIO IDE extension for VS Code
-- USB cable connected to the ESP32-S3-DevKitC-1-N8R8
-- USB cable connected to the ESP32-C3 coprocessor when flashing or debugging the Node OTA helper firmware
+- USB cable connected to the selected ESP32-S3 gateway main board
+- USB cable connected to the selected ESP32-C3 coprocessor board when flashing or debugging the helper firmware
 
 The current hardware release line in `hardware/` instead targets four single-layer carrier-PCB variants built around off-the-shelf ESP32-S3 and ESP32-C3 development boards.
 
@@ -79,6 +86,19 @@ The same `hardware/` tree also includes schematic PDFs and a `Development_Resour
 
 ---
 
+## PlatformIO Build Environments
+
+The gateway release line now exposes explicit build environments in `platformio.ini` so users can build the correct firmware for each documented hardware combination without editing board macros manually.
+
+| Environment | Main MCU board | Coprocessor board |
+|-------------|----------------|-------------------|
+| `gateway_v1a` | Seeed Studio XIAO ESP32-S3 | ESP32-C3 Super Mini |
+| `gateway_v1b` | Seeed Studio XIAO ESP32-S3 | Seeed Studio XIAO ESP32-C3 |
+| `gateway_v1c` | Seeed Studio XIAO ESP32-S3 | DFRobot Beetle ESP32-C3 |
+| `gateway_v1d` | Waveshare ESP32-S3-DevKit-C-N8R8 | ESP32-C3 Super Mini |
+| `development` | Espressif ESP32-S3-DevKitC-1-N8R8 | DFRobot Beetle ESP32-C3 |
+
+When building or uploading from USB, select the environment that matches the actual gateway hardware pair you are using.
 ## Dependencies
 
 Managed automatically by PlatformIO via `platformio.ini`:
@@ -217,6 +237,7 @@ pio run
 5. Click **Upload Gateway Firmware**
 6. Confirm the update when prompted
 
+The **Gateway Firmware Update** panel now includes a target selector with **Main MCU** and **Coprocessor** options. The steps in this section cover the ESP32-S3 main-firmware path.
 ### What the gateway does
 
 - validates the uploaded image
@@ -234,6 +255,35 @@ pio run
 
 ---
 
+## Gateway Coprocessor OTA Update from the Web Interface
+
+The same **Gateway Firmware Update** panel can now also update the attached **ESP32-C3 coprocessor** from the browser.
+
+### Steps
+
+1. Build the matching coprocessor helper firmware binary from `coprocessor_esp32c3/` using the correct environment for your helper board
+2. Open the dashboard in a browser
+3. Go to **Settings -> Gateway Firmware Update**
+4. Select **Coprocessor** from the MCU target dropdown
+5. Select the helper `firmware.bin`
+6. Click **Upload Gateway Firmware**
+
+### What the gateway does
+
+- validates the uploaded ESP32 application image
+- validates the uploaded coprocessor hardware-config marker against the expected helper board type
+- checks that the image fits in the coprocessor OTA slot
+- stages the firmware in LittleFS
+- asks the helper to halt normal work and prepare for self-OTA
+- transfers the firmware to the ESP32-C3 over UART
+- waits for the helper to flash, reboot, and reconnect
+- reports progress and errors back to the web UI
+
+### Notes
+
+- Upload the helper `firmware.bin` from the environment matching your helper board: `beetle_esp32c3`, `xiao_esp32c3`, or `esp32c3_sm`
+- Wrong-board helper uploads are rejected before UART transfer begins
+- Uploading the ESP32-S3 main firmware to the coprocessor OTA path is also rejected safely
 ## Node OTA Update from the Web Interface
 
 The gateway can also update a paired **sensor node**, **actuator node**, or **hybrid node** from the dashboard.

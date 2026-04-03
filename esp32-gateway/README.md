@@ -37,6 +37,7 @@ All four variants include connection points for a future **BME280** gateway-side
 - Serves the web dashboard from LittleFS over HTTP/WebSocket
 - Stores gateway configuration, web credentials, paired node records, node hardware-config IDs, and relay label assignments in NVS
 - Supports **gateway self-OTA** from the web interface with validation, hardware-config ID checking, progress reporting, and automatic reboot
+- Supports **gateway coprocessor OTA** from the same web interface by validating the uploaded ESP32-C3 helper firmware, transferring it over UART, and tracking helper reboot/reconnect status
 - Supports **Node OTA** by validating node role and hardware-config markers, staging node firmware, handing delivery to the ESP32-C3 helper, tracking node reconnects, and reporting OTA progress back to the dashboard
 - Supports **Hybrid nodes** with capability-aware state handling, actuator-schema sync, RFID config sync, and RFID scan-event forwarding to the web UI
 
@@ -73,6 +74,7 @@ All four variants include connection points for a future **BME280** gateway-side
 | v2.1.3 | Added gateway-side max-node pairing-capacity enforcement, added dismissible dashboard feedback when pairing is attempted after the gateway is already full, and hardened node-registry restore so reduced `MESH_MAX_NODES` test builds fail safely instead of corrupting memory |
 | v2.1.4 | Increased the shared node-name limit from 15 to 24 visible characters, updated gateway discovery/registry/rename handling for longer node names, added backward-compatible NVS restore support while saving new node records in the expanded-name format, and allowed fresh nodes to appear with MAC-suffixed default names for easier identification before manual rename |
 | v2.2.0 | Polished gateway-side discovery timing so available nodes appear and expire more predictably, aligned the release docs with the new Gateway v1A-v1D PCB family, and documents the move toward `user_config.h` for user-facing firmware configuration |
+| v2.3.0 | Added web-based ESP32-C3 coprocessor OTA from the Gateway Firmware Update section, introduced board-specific coprocessor hardware-config validation, improved OTA error reporting, and added explicit PlatformIO build targets for the documented gateway hardware combinations |
 
 ---
 
@@ -102,17 +104,27 @@ gateway_v1/
 
 ## Current Release Notes
 
-- Gateway firmware version: **v2.2.0**
-- Gateway coprocessor firmware version: **v0.2.0**
-- Shared helper transport: `coproc_ota_protocol.h` **v1.0.0**
+- Gateway firmware version: **v2.3.0**
+- Gateway coprocessor firmware version: **v0.3.0**
+- Shared helper transport: `coproc_ota_protocol.h` **v1.1.0**
 - Shared mesh protocol: `mesh_protocol.h` **v3.3.2**
-- User configuration header: **`user_config.h v1.0.0`**
+- User configuration header: **`user_config.h v1.1.0`**
 - Web UI assets:
-  - `app.js` v4.3
-  - `index.html` v3.8
+  - `app.js` v4.4
+  - `index.html` v3.9
   - `style.css` v3.7
 - Active partition layout: **`partitions_8mb_ota.csv`**
 
 ---
+
+### Gateway build environments
+
+The current `gateway_v1/platformio.ini` release line exposes explicit build environments for the documented hardware combinations:
+
+- `gateway_v1a` - Seeed Studio XIAO ESP32-S3 + ESP32-C3 Super Mini
+- `gateway_v1b` - Seeed Studio XIAO ESP32-S3 + Seeed Studio XIAO ESP32-C3
+- `gateway_v1c` - Seeed Studio XIAO ESP32-S3 + DFRobot Beetle ESP32-C3
+- `gateway_v1d` - Waveshare ESP32-S3-DevKit-C-N8R8 + ESP32-C3 Super Mini
+- `development` - custom ESP32-S3-DevKitC-1-N8R8 + DFRobot Beetle ESP32-C3 validation combo
 
 See [gateway_v1/README.md](gateway_v1/README.md) for build, flashing, gateway OTA, Node OTA, coprocessor setup, and configuration details.

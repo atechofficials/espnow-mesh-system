@@ -1,17 +1,21 @@
 /**
     * @file [main.cpp]
     * @brief Main source file for the (ESP32-C3) Gateway Coprocessor firmware
-    * @version 0.2.0
+    * @version 0.3.0
     * @author Mrinal (@atechofficials)
  */
 
-#define FW_VERSION "0.2.0"
+#define FW_VERSION "0.3.0"
 
 #include <Arduino.h>
 #include <WiFi.h>
 #include <WebServer.h>
 #include <LittleFS.h>
 #include <ArduinoJson.h>
+#include <algorithm>
+#include <Update.h>
+#include <esp_app_format.h>
+#include <esp_ota_ops.h>
 #include "../../include/coproc_ota_protocol.h"
 #include "../../include/mesh_protocol.h"
 #include "../../include/user_config.h"
@@ -20,12 +24,20 @@
 #define UART_RX_BUFFER_SIZE 4096
 #define UART_TX_BUFFER_SIZE 4096
 #define OTA_FILE_PATH "/firmware.bin"
+#define COPROC_OTA_HWCFG_MARKER "C3HWCFG:"
+#define COPROC_OTA_FW_MARKER "C3FWVER:"
 #define OTA_AP_IP IPAddress(192, 168, 4, 1)
 #define OTA_AP_GW IPAddress(192, 168, 4, 1)
 #define OTA_AP_MASK IPAddress(255, 255, 255, 0)
 #define FRAME_MAX_PAYLOAD sizeof(CoprocUploadChunkPayload)
-// Bring up the UART link quickly even when no USB serial monitor is attached.
 #define USB_SERIAL_WAIT_MS 250
+#define SELF_OTA_REBOOT_DELAY_MS 400UL
+
+__attribute__((used)) static const char kCoprocFirmwareVersionMarker[] =
+    COPROC_OTA_FW_MARKER FW_VERSION;
+__attribute__((used)) static const char kCoprocHardwareConfigMarker[] =
+    COPROC_OTA_HWCFG_MARKER COPROC_HW_CONFIG_ID;
+static volatile uint32_t gCoprocMarkerChecksum = 0;
 
 static HardwareSerial linkUart(1);
 static WebServer server(80);
@@ -48,6 +60,19 @@ struct HelperState {
     File     file;
 } helper;
 
+struct SelfOtaState {
+    bool          active = false;
+    bool          updateBegun = false;
+    bool          rebootPending = false;
+    uint32_t      sessionId = 0;
+    uint32_t      imageSize = 0;
+    uint32_t      imageCrc32 = 0;
+    uint32_t      runningCrc32 = 0xFFFFFFFFu;
+    size_t        written = 0;
+    unsigned long rebootAtMs = 0;
+    char          version[COPROC_FW_VERSION_LEN] = {0};
+} selfOta;
+
 struct RxState {
     enum State : uint8_t {
         WAIT_MAGIC_1 = 0,
@@ -65,6 +90,17 @@ struct RxState {
     uint16_t payloadIndex = 0;
     uint8_t  payload[FRAME_MAX_PAYLOAD] = {0};
 } rxState;
+
+static void touchFirmwareMarkers() {
+    uint32_t sum = 0;
+    for (size_t i = 0; kCoprocFirmwareVersionMarker[i] != '\0'; i++) {
+        sum += (uint8_t)kCoprocFirmwareVersionMarker[i];
+    }
+    for (size_t i = 0; kCoprocHardwareConfigMarker[i] != '\0'; i++) {
+        sum += (uint8_t)kCoprocHardwareConfigMarker[i];
+    }
+    gCoprocMarkerChecksum = sum;
+}
 
 static uint32_t crc32Update(uint32_t crc, const uint8_t* data, size_t len) {
     crc = ~crc;
@@ -90,6 +126,28 @@ static uint16_t crc16Ccitt(const uint8_t* data, size_t len) {
 
 static void resetRxState() {
     rxState = RxState{};
+}
+
+static size_t getCoprocOtaSlotSize() {
+    const esp_partition_t* part = esp_ota_get_next_update_partition(nullptr);
+    return part ? part->size : 0;
+}
+
+static bool coprocOtaSupported() {
+    return getCoprocOtaSlotSize() > 0;
+}
+
+static void fillInfoPayload(CoprocInfoPayload* info) {
+    if (!info) return;
+    memset(info, 0, sizeof(*info));
+    info->ota_supported = coprocOtaSupported() ? 1 : 0;
+    info->ota_max_bytes = (uint32_t)getCoprocOtaSlotSize();
+    strncpy(info->fw_version, FW_VERSION, sizeof(info->fw_version) - 1);
+    strncpy(info->hw_config_id, COPROC_HW_CONFIG_ID, sizeof(info->hw_config_id) - 1);
+    const esp_app_desc_t* desc = esp_app_get_description();
+    if (desc && desc->project_name[0] != '\0') {
+        strncpy(info->project_name, desc->project_name, sizeof(info->project_name) - 1);
+    }
 }
 
 static void sendFrame(uint8_t type, const void* payload, size_t len) {
@@ -138,6 +196,12 @@ static void sendStatus(uint32_t sessionId,
     sendFrame(COPROC_FRAME_STATUS, &st, sizeof(st));
 }
 
+static void sendInfo() {
+    CoprocInfoPayload info{};
+    fillInfoPayload(&info);
+    sendFrame(COPROC_FRAME_INFO, &info, sizeof(info));
+}
+
 static void logFrameRx(uint8_t type, size_t len) {
     switch (type) {
         case COPROC_FRAME_HELLO:
@@ -147,7 +211,7 @@ static void logFrameRx(uint8_t type, size_t len) {
             Serial.printf("[C3] RX UPLOAD_BEGIN (%u B)\n", (unsigned)len);
             break;
         case COPROC_FRAME_UPLOAD_CHUNK:
-            if (helper.written == 0) {
+            if (helper.written == 0 && selfOta.written == 0) {
                 Serial.printf("[C3] RX first UPLOAD_CHUNK (%u B)\n", (unsigned)len);
             }
             break;
@@ -176,6 +240,13 @@ static void resetHelperState(bool removeFile) {
     stopAccessPoint();
     if (removeFile && LittleFS.exists(OTA_FILE_PATH)) LittleFS.remove(OTA_FILE_PATH);
     helper = HelperState{};
+}
+
+static void resetSelfOtaState(bool abortUpdate) {
+    if (abortUpdate && selfOta.updateBegun) {
+        Update.abort();
+    }
+    selfOta = SelfOtaState{};
 }
 
 static bool startAccessPoint() {
@@ -250,12 +321,228 @@ static bool startAccessPoint() {
     return true;
 }
 
+static void reportSelfOtaError(uint32_t sessionId, uint8_t code, const char* message) {
+    sendStatus(sessionId, 0, COPROC_HELPER_ERROR, 100, code, message);
+}
+
+static bool beginSelfUpdate(const CoprocUploadBeginPayload* begin) {
+    resetHelperState(true);
+    resetSelfOtaState(true);
+    stopAccessPoint();
+    WiFi.mode(WIFI_OFF);
+
+    const size_t slotSize = getCoprocOtaSlotSize();
+    if (slotSize == 0) {
+        sendAck(COPROC_FRAME_UPLOAD_BEGIN, false, 0, "ota-unsupported");
+        reportSelfOtaError(begin->session_id, 1, "Coprocessor OTA unsupported");
+        return false;
+    }
+    if (begin->image_size == 0 || begin->image_size > slotSize) {
+        sendAck(COPROC_FRAME_UPLOAD_BEGIN, false, (uint32_t)slotSize, "image-too-large");
+        reportSelfOtaError(begin->session_id, 2, "Firmware image too large");
+        return false;
+    }
+    if (!Update.begin(slotSize, U_FLASH)) {
+        sendAck(COPROC_FRAME_UPLOAD_BEGIN, false, 0, "update-begin-failed");
+        reportSelfOtaError(begin->session_id, 3, Update.errorString());
+        return false;
+    }
+
+    selfOta.active = true;
+    selfOta.updateBegun = true;
+    selfOta.sessionId = begin->session_id;
+    selfOta.imageSize = begin->image_size;
+    selfOta.imageCrc32 = begin->image_crc32;
+    selfOta.runningCrc32 = 0xFFFFFFFFu;
+    selfOta.written = 0;
+    strncpy(selfOta.version, begin->version, sizeof(selfOta.version) - 1);
+
+    Serial.printf("[C3] Self OTA ready: %lu bytes, version=%s\n",
+                  (unsigned long)selfOta.imageSize,
+                  selfOta.version[0] ? selfOta.version : "(unknown)");
+    sendAck(COPROC_FRAME_UPLOAD_BEGIN, true, (uint32_t)slotSize, "ready-self");
+    sendStatus(selfOta.sessionId, 0, COPROC_HELPER_RECEIVING, 5, 0, "Ready for coprocessor OTA");
+    return true;
+}
+
+static void handleNodeHelperUploadBegin(const CoprocUploadBeginPayload* begin) {
+    resetSelfOtaState(true);
+    resetHelperState(true);
+    helper.sessionId = begin->session_id;
+    helper.imageSize = begin->image_size;
+    helper.imageCrc32 = begin->image_crc32;
+    helper.nodeType = begin->node_type;
+    helper.apChannel = begin->ap_channel;
+    helper.port = begin->port;
+    strncpy(helper.version, begin->version, sizeof(helper.version) - 1);
+    strncpy(helper.ssid, begin->ssid, sizeof(helper.ssid) - 1);
+    strncpy(helper.password, begin->password, sizeof(helper.password) - 1);
+    helper.runningCrc32 = 0xFFFFFFFFu;
+    helper.file = LittleFS.open(OTA_FILE_PATH, "w");
+    if (!helper.file) {
+        Serial.println("[C3] ERROR: failed to open OTA staging file.");
+        sendAck(COPROC_FRAME_UPLOAD_BEGIN, false, 0, "fs-open-failed");
+        reportSelfOtaError(begin->session_id, 4, "Node OTA staging open failed");
+        return;
+    }
+    Serial.printf("[C3] OTA staging ready: %lu bytes, nodeType=%u, version=%s\n",
+                  (unsigned long)helper.imageSize,
+                  helper.nodeType,
+                  helper.version);
+    sendAck(COPROC_FRAME_UPLOAD_BEGIN, true, 0, "ready");
+}
+
+static void handleSelfOtaChunk(const uint8_t* payload, size_t len) {
+    if (!selfOta.active || !selfOta.updateBegun || len < sizeof(uint32_t)) {
+        sendAck(COPROC_FRAME_UPLOAD_CHUNK, false, (uint32_t)selfOta.written, "bad-self-chunk");
+        reportSelfOtaError(selfOta.sessionId, 5, "Bad self OTA chunk state");
+        return;
+    }
+
+    const uint32_t offset = *(const uint32_t*)payload;
+    const uint8_t* chunk = payload + sizeof(uint32_t);
+    const size_t chunkLen = len - sizeof(uint32_t);
+    if (offset != selfOta.written) {
+        Serial.printf("[C3] ERROR: self OTA chunk offset mismatch got=%lu expected=%u\n",
+                      (unsigned long)offset, (unsigned)selfOta.written);
+        sendAck(COPROC_FRAME_UPLOAD_CHUNK, false, (uint32_t)selfOta.written, "offset-mismatch");
+        reportSelfOtaError(selfOta.sessionId, 6, "Self OTA chunk offset mismatch");
+        return;
+    }
+
+    const size_t written = Update.write(const_cast<uint8_t*>(chunk), chunkLen);
+    if (written != chunkLen) {
+        Serial.printf("[C3] ERROR: self OTA chunk write failed at offset=%u len=%u\n",
+                      (unsigned)selfOta.written, (unsigned)chunkLen);
+        sendAck(COPROC_FRAME_UPLOAD_CHUNK, false, (uint32_t)selfOta.written, "write-failed");
+        reportSelfOtaError(selfOta.sessionId, 7, Update.errorString());
+        return;
+    }
+
+    selfOta.written += chunkLen;
+    selfOta.runningCrc32 = crc32Update(selfOta.runningCrc32, chunk, chunkLen);
+    if ((selfOta.written % 65536u) == 0 || selfOta.written == selfOta.imageSize) {
+        const uint8_t progress = (uint8_t)std::min<size_t>(85, 5 + ((selfOta.written * 80u) / std::max<size_t>(1, selfOta.imageSize)));
+        Serial.printf("[C3] Self OTA received %u / %u bytes\n",
+                      (unsigned)selfOta.written, (unsigned)selfOta.imageSize);
+        sendStatus(selfOta.sessionId, 0, COPROC_HELPER_RECEIVING, progress, 0, "Receiving coprocessor firmware");
+    }
+    sendAck(COPROC_FRAME_UPLOAD_CHUNK, true, (uint32_t)selfOta.written, "ok");
+}
+
+static void handleNodeHelperChunk(const uint8_t* payload, size_t len) {
+    if (len < sizeof(uint32_t) || !helper.file) {
+        Serial.println("[C3] ERROR: bad upload chunk state.");
+        sendAck(COPROC_FRAME_UPLOAD_CHUNK, false, (uint32_t)helper.written, "bad-chunk");
+        return;
+    }
+    const uint32_t offset = *(const uint32_t*)payload;
+    const uint8_t* chunk = payload + sizeof(uint32_t);
+    const size_t chunkLen = len - sizeof(uint32_t);
+    if (offset != helper.written) {
+        Serial.printf("[C3] ERROR: chunk offset mismatch got=%lu expected=%u\n",
+                      (unsigned long)offset, (unsigned)helper.written);
+        sendAck(COPROC_FRAME_UPLOAD_CHUNK, false, (uint32_t)helper.written, "offset-mismatch");
+        return;
+    }
+    if (helper.file.write(chunk, chunkLen) != chunkLen) {
+        Serial.printf("[C3] ERROR: chunk write failed at offset=%u len=%u\n",
+                      (unsigned)helper.written, (unsigned)chunkLen);
+        sendAck(COPROC_FRAME_UPLOAD_CHUNK, false, (uint32_t)helper.written, "write-failed");
+        return;
+    }
+    helper.written += chunkLen;
+    helper.runningCrc32 = crc32Update(helper.runningCrc32, chunk, chunkLen);
+    if ((helper.written % 65536u) == 0 || helper.written == helper.imageSize) {
+        Serial.printf("[C3] Staged %u / %u bytes\n", (unsigned)helper.written, (unsigned)helper.imageSize);
+    }
+    sendAck(COPROC_FRAME_UPLOAD_CHUNK, true, (uint32_t)helper.written, "ok");
+}
+
+static void finalizeSelfUpdate() {
+    if (!selfOta.active || !selfOta.updateBegun) {
+        sendAck(COPROC_FRAME_UPLOAD_END, false, 0, "bad-self-end");
+        reportSelfOtaError(selfOta.sessionId, 8, "Self OTA finalize without active upload");
+        return;
+    }
+    if (selfOta.written != selfOta.imageSize) {
+        Serial.printf("[C3] ERROR: self OTA size mismatch wrote=%u expected=%u\n",
+                      (unsigned)selfOta.written, (unsigned)selfOta.imageSize);
+        sendAck(COPROC_FRAME_UPLOAD_END, false, (uint32_t)selfOta.written, "size-mismatch");
+        reportSelfOtaError(selfOta.sessionId, 9, "Self OTA size mismatch");
+        resetSelfOtaState(true);
+        return;
+    }
+    if (selfOta.runningCrc32 != selfOta.imageCrc32) {
+        Serial.printf("[C3] ERROR: self OTA crc mismatch got=0x%08lX expected=0x%08lX\n",
+                      (unsigned long)selfOta.runningCrc32,
+                      (unsigned long)selfOta.imageCrc32);
+        sendAck(COPROC_FRAME_UPLOAD_END, false, selfOta.runningCrc32, "crc-mismatch");
+        reportSelfOtaError(selfOta.sessionId, 10, "Self OTA CRC mismatch");
+        resetSelfOtaState(true);
+        return;
+    }
+
+    sendStatus(selfOta.sessionId, 0, COPROC_HELPER_FLASHING, 90, 0, "Flashing coprocessor firmware...");
+    if (!Update.end(true)) {
+        const char* err = Update.errorString();
+        Serial.printf("[C3] ERROR: self OTA finalization failed: %s\n", err);
+        sendAck(COPROC_FRAME_UPLOAD_END, false, 0, "finalize-failed");
+        reportSelfOtaError(selfOta.sessionId, 11, err);
+        resetSelfOtaState(true);
+        return;
+    }
+    if (!Update.isFinished()) {
+        Serial.println("[C3] ERROR: self OTA did not finish.");
+        sendAck(COPROC_FRAME_UPLOAD_END, false, 0, "not-finished");
+        reportSelfOtaError(selfOta.sessionId, 12, "Self OTA did not finish");
+        resetSelfOtaState(true);
+        return;
+    }
+
+    selfOta.updateBegun = false;
+    selfOta.rebootPending = true;
+    selfOta.rebootAtMs = millis() + SELF_OTA_REBOOT_DELAY_MS;
+    Serial.printf("[C3] Self OTA complete. Rebooting into version %s\n",
+                  selfOta.version[0] ? selfOta.version : "(unknown)");
+    sendAck(COPROC_FRAME_UPLOAD_END, true, 0, "update-complete");
+    sendStatus(selfOta.sessionId, 0, COPROC_HELPER_DONE, 95, 0, "Firmware flashed. Rebooting coprocessor...");
+}
+
+static void finalizeNodeHelperUpload() {
+    if (helper.file) helper.file.close();
+    if (helper.written != helper.imageSize) {
+        Serial.printf("[C3] ERROR: size mismatch wrote=%u expected=%u\n",
+                      (unsigned)helper.written, (unsigned)helper.imageSize);
+        sendAck(COPROC_FRAME_UPLOAD_END, false, (uint32_t)helper.written, "size-mismatch");
+        return;
+    }
+    if (helper.runningCrc32 != helper.imageCrc32) {
+        Serial.printf("[C3] ERROR: crc mismatch got=0x%08lX expected=0x%08lX\n",
+                      (unsigned long)helper.runningCrc32,
+                      (unsigned long)helper.imageCrc32);
+        sendAck(COPROC_FRAME_UPLOAD_END, false, helper.runningCrc32, "crc-mismatch");
+        return;
+    }
+    helper.fileReady = true;
+    if (!startAccessPoint()) {
+        Serial.println("[C3] ERROR: failed to start OTA AP.");
+        sendAck(COPROC_FRAME_UPLOAD_END, false, 0, "ap-start-failed");
+        return;
+    }
+    Serial.println("[C3] OTA helper ready for node download.");
+    sendAck(COPROC_FRAME_UPLOAD_END, true, 0, "ap-ready");
+    sendStatus(helper.sessionId, 0, COPROC_HELPER_AP_READY, 100, 0, "OTA AP ready");
+}
+
 static void handleFrame(uint8_t type, const uint8_t* payload, size_t len) {
     logFrameRx(type, len);
 
     switch (type) {
         case COPROC_FRAME_HELLO:
-            sendAck(COPROC_FRAME_HELLO, true, helper.apRunning ? 1u : 0u, "helper-ready");
+            sendAck(COPROC_FRAME_HELLO, true, helper.apRunning ? 1u : (selfOta.active ? 2u : 0u),
+                    selfOta.active ? "self-ota" : "helper-ready");
+            sendInfo();
             if (helper.apRunning) {
                 sendStatus(helper.sessionId, 0, COPROC_HELPER_AP_READY, 100, 0, "OTA AP ready");
             }
@@ -267,94 +554,33 @@ static void handleFrame(uint8_t type, const uint8_t* payload, size_t len) {
                 return;
             }
             const auto* begin = reinterpret_cast<const CoprocUploadBeginPayload*>(payload);
-            resetHelperState(true);
-            helper.sessionId = begin->session_id;
-            helper.imageSize = begin->image_size;
-            helper.imageCrc32 = begin->image_crc32;
-            helper.nodeType = begin->node_type;
-            helper.apChannel = begin->ap_channel;
-            helper.port = begin->port;
-            strncpy(helper.version, begin->version, sizeof(helper.version) - 1);
-            strncpy(helper.ssid, begin->ssid, sizeof(helper.ssid) - 1);
-            strncpy(helper.password, begin->password, sizeof(helper.password) - 1);
-            helper.runningCrc32 = 0xFFFFFFFFu;
-            helper.file = LittleFS.open(OTA_FILE_PATH, "w");
-            if (!helper.file) {
-                Serial.println("[C3] ERROR: failed to open OTA staging file.");
-                sendAck(COPROC_FRAME_UPLOAD_BEGIN, false, 0, "fs-open-failed");
-                return;
+            if (begin->upload_target == COPROC_UPLOAD_TARGET_SELF) {
+                beginSelfUpdate(begin);
+            } else if (begin->upload_target == COPROC_UPLOAD_TARGET_NODE_HELPER) {
+                handleNodeHelperUploadBegin(begin);
+            } else {
+                sendAck(COPROC_FRAME_UPLOAD_BEGIN, false, 0, "bad-target");
             }
-            Serial.printf("[C3] OTA staging ready: %lu bytes, nodeType=%u, version=%s\n",
-                          (unsigned long)helper.imageSize,
-                          helper.nodeType,
-                          helper.version);
-            sendAck(COPROC_FRAME_UPLOAD_BEGIN, true, 0, "ready");
             break;
         }
 
-        case COPROC_FRAME_UPLOAD_CHUNK: {
-            if (len < sizeof(uint32_t) || !helper.file) {
-                Serial.println("[C3] ERROR: bad upload chunk state.");
-                sendAck(COPROC_FRAME_UPLOAD_CHUNK, false, (uint32_t)helper.written, "bad-chunk");
-                return;
-            }
-            const uint32_t offset = *(const uint32_t*)payload;
-            const uint8_t* chunk = payload + sizeof(uint32_t);
-            const size_t chunkLen = len - sizeof(uint32_t);
-            if (offset != helper.written) {
-                Serial.printf("[C3] ERROR: chunk offset mismatch got=%lu expected=%u\n",
-                              (unsigned long)offset, (unsigned)helper.written);
-                sendAck(COPROC_FRAME_UPLOAD_CHUNK, false, (uint32_t)helper.written, "offset-mismatch");
-                return;
-            }
-            if (helper.file.write(chunk, chunkLen) != chunkLen) {
-                Serial.printf("[C3] ERROR: chunk write failed at offset=%u len=%u\n",
-                              (unsigned)helper.written, (unsigned)chunkLen);
-                sendAck(COPROC_FRAME_UPLOAD_CHUNK, false, (uint32_t)helper.written, "write-failed");
-                return;
-            }
-            helper.written += chunkLen;
-            helper.runningCrc32 = crc32Update(helper.runningCrc32, chunk, chunkLen);
-            if ((helper.written % 65536u) == 0 || helper.written == helper.imageSize) {
-                Serial.printf("[C3] Staged %u / %u bytes\n", (unsigned)helper.written, (unsigned)helper.imageSize);
-            }
-            sendAck(COPROC_FRAME_UPLOAD_CHUNK, true, (uint32_t)helper.written, "ok");
+        case COPROC_FRAME_UPLOAD_CHUNK:
+            if (selfOta.active) handleSelfOtaChunk(payload, len);
+            else handleNodeHelperChunk(payload, len);
             break;
-        }
 
-        case COPROC_FRAME_UPLOAD_END: {
-            if (helper.file) helper.file.close();
-            if (helper.written != helper.imageSize) {
-                Serial.printf("[C3] ERROR: size mismatch wrote=%u expected=%u\n",
-                              (unsigned)helper.written, (unsigned)helper.imageSize);
-                sendAck(COPROC_FRAME_UPLOAD_END, false, (uint32_t)helper.written, "size-mismatch");
-                return;
-            }
-            if (helper.runningCrc32 != helper.imageCrc32) {
-                Serial.printf("[C3] ERROR: crc mismatch got=0x%08lX expected=0x%08lX\n",
-                              (unsigned long)helper.runningCrc32,
-                              (unsigned long)helper.imageCrc32);
-                sendAck(COPROC_FRAME_UPLOAD_END, false, helper.runningCrc32, "crc-mismatch");
-                return;
-            }
-            helper.fileReady = true;
-            if (!startAccessPoint()) {
-                Serial.println("[C3] ERROR: failed to start OTA AP.");
-                sendAck(COPROC_FRAME_UPLOAD_END, false, 0, "ap-start-failed");
-                return;
-            }
-            Serial.println("[C3] OTA helper ready for node download.");
-            sendAck(COPROC_FRAME_UPLOAD_END, true, 0, "ap-ready");
-            sendStatus(helper.sessionId, 0, COPROC_HELPER_AP_READY, 100, 0, "OTA AP ready");
+        case COPROC_FRAME_UPLOAD_END:
+            if (selfOta.active) finalizeSelfUpdate();
+            else finalizeNodeHelperUpload();
             break;
-        }
 
-        case COPROC_FRAME_ABORT: {
+        case COPROC_FRAME_ABORT:
             Serial.println("[C3] OTA helper abort received.");
             resetHelperState(true);
+            resetSelfOtaState(true);
+            WiFi.mode(WIFI_OFF);
             sendAck(COPROC_FRAME_ABORT, true, 0, "aborted");
             break;
-        }
     }
 }
 
@@ -430,6 +656,7 @@ void setup() {
         delay(10);
     }
     Serial.printf("\n[C3] OTA helper booting v%s\n", FW_VERSION);
+    touchFirmwareMarkers();
 
     pinMode(REBOOT_SIGNAL_PIN, INPUT_PULLDOWN);
     if (!LittleFS.begin(true)) {
@@ -466,16 +693,14 @@ void loop() {
     }
     lastResetSignal = resetSignal;
 
+    if (selfOta.rebootPending && millis() >= selfOta.rebootAtMs) {
+        Serial.println("[C3] Restarting into updated coprocessor firmware.");
+        delay(20);
+        ESP.restart();
+    }
+
     delay(2);
 }
-
-
-
-
-
-
-
-
 
 
 

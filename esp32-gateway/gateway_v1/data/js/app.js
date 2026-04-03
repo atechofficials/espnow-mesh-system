@@ -1,9 +1,10 @@
 /**
- * ESP32 Mesh Gateway Web Interface Client v4.3
+ * ESP32 Mesh Gateway Web Interface Client v4.4
  *
  * WS Inbound:  { type:"meta"|"update"|"discovered"|"pair_timeout"|"pair_capacity_full"|"ap_config_ack"|
  *                     "gw_portal_starting"|"gw_factory_reset"|"gw_rebooting"|
  *                     "auth_required"|"auth_ok"|"auth_fail"|"session_expired"|
+ *                     "coproc_ota_state"|
  *                     "web_creds_ack"|"node_settings"|"node_sensor_schema"|
  *                     "node_actuator_schema"|"node_rfid_config"|
  *                     "node_rfid_config_ack"|"rfid_scan_event"|
@@ -77,6 +78,7 @@ const $apPassInput  = $("ap-pass-input");
 const $saveApBtn    = $("save-ap-btn");
 const $apSaveNote   = $("ap-save-note");
 const $wifiPortalBtn = $("wifi-portal-btn");
+const $gwOtaTarget = $("gw-ota-target");
 const $gwOtaFileInput = $("gw-ota-file");
 const $gwOtaBtn = $("gw-ota-btn");
 const $gwOtaNote = $("gw-ota-note");
@@ -112,6 +114,22 @@ let gatewayOtaBusy = false;
 let gatewayOtaMaxBytes = 0;
 let gatewayOtaProject = "";
 let gatewayOtaUploading = false;
+let gatewayOtaTarget = "main";
+let coprocOnline = false;
+let coprocFwVersion = "";
+let coprocOtaSupported = false;
+let coprocOtaBusy = false;
+let coprocOtaMaxBytes = 0;
+let coprocOtaProject = "";
+let coprocOtaState = {
+  active: false,
+  stage: 0,
+  progress: 0,
+  message: "",
+  error: "",
+  version: "",
+  current_version: ""
+};
 let nodeOtaBusy = false;
 let nodeOtaUploading = false;
 let nodeOtaHelperOnline = false;
@@ -614,6 +632,9 @@ function connect() {
       case "meta":
         applyMeta(msg);
         break;
+      case "coproc_ota_state":
+        applyCoprocOtaState(msg);
+        break;
       case "discovered":
         discovered.clear();
         (msg.nodes || []).forEach(n => discovered.set(n.mac, n));
@@ -714,10 +735,16 @@ function applyMeta(m) {
   gatewayOtaBusy = !!m.ota_busy;
   gatewayOtaMaxBytes = Number(m.ota_max_bytes || 0);
   gatewayOtaProject = m.ota_project || "";
+  coprocOnline = !!m.coproc_online;
+  coprocFwVersion = m.coproc_fw_version || "";
+  coprocOtaSupported = !!m.coproc_ota_supported;
+  coprocOtaBusy = !!m.coproc_ota_busy;
+  coprocOtaMaxBytes = Number(m.coproc_ota_max_bytes || 0);
+  coprocOtaProject = m.coproc_project || "";
   nodeOtaBusy = !!m.node_ota_busy;
   nodeOtaHelperOnline = !!m.node_ota_helper_online;
   nodeOtaHost = m.node_ota_host || "192.168.4.1";
-  if (!gatewayOtaUploading && !gatewayOtaBusy) {
+  if (!gatewayOtaUploading && !gatewayOtaBusy && !coprocOtaBusy) {
     resetGatewayOtaProgress();
   }
   refreshGatewayOtaUi();
@@ -1538,44 +1565,141 @@ function resetGatewayOtaProgress() {
   $gwOtaProgressText.textContent = "Idle";
 }
 
+function getGatewayOtaTarget() {
+  gatewayOtaTarget = $gwOtaTarget?.value === "coprocessor" ? "coprocessor" : "main";
+  return gatewayOtaTarget;
+}
+
+function getGatewayOtaTargetLabel(target = getGatewayOtaTarget()) {
+  return target === "coprocessor" ? "Coprocessor (ESP32-C3)" : "Main MCU (ESP32-S3)";
+}
+
+function getGatewayOtaSelectedVersion(target = getGatewayOtaTarget()) {
+  const version = target === "coprocessor" ? coprocFwVersion : fwVersion;
+  return version && version !== "—" ? `v${version}` : "v-";
+}
+
+function getGatewayOtaSelectedProject(target = getGatewayOtaTarget()) {
+  return target === "coprocessor" ? (coprocOtaProject || "-") : (gatewayOtaProject || "-");
+}
+
+function getGatewayOtaSelectedSlotSize(target = getGatewayOtaTarget()) {
+  const maxBytes = target === "coprocessor" ? coprocOtaMaxBytes : gatewayOtaMaxBytes;
+  return maxBytes > 0 ? fmtBytes(maxBytes) : "Not available";
+}
+
+function getGatewayOtaSelectedSupported(target = getGatewayOtaTarget()) {
+  return target === "coprocessor" ? coprocOtaSupported : gatewayOtaSupported;
+}
+
+function getGatewayOtaSelectedBusy(target = getGatewayOtaTarget()) {
+  return target === "coprocessor"
+    ? (coprocOtaBusy || coprocOtaState.active)
+    : gatewayOtaBusy;
+}
+
+function applyCoprocOtaState(msg) {
+  coprocOtaState = {
+    active: !!msg.active,
+    stage: Number(msg.stage || 0),
+    progress: Number(msg.progress || 0),
+    message: msg.message || "",
+    error: msg.error || "",
+    version: msg.version || "",
+    current_version: msg.current_version || coprocFwVersion || ""
+  };
+  coprocOnline = msg.online !== undefined ? !!msg.online : coprocOnline;
+  coprocFwVersion = coprocOtaState.current_version || coprocFwVersion;
+  coprocOtaBusy = !!msg.active || !!msg.upload_busy;
+
+  if (getGatewayOtaTarget() === "coprocessor") {
+    if (coprocOtaState.active) {
+      const text = coprocOtaState.error || coprocOtaState.message || "Coprocessor OTA in progress...";
+      setGatewayOtaProgress(coprocOtaState.progress, text);
+      setGatewayOtaNote(text, coprocOtaState.error ? "err" : "ok");
+    } else if (!gatewayOtaUploading) {
+      if (coprocOtaState.error) {
+        setGatewayOtaProgress(100, coprocOtaState.error);
+        setGatewayOtaNote(coprocOtaState.error, "err");
+      } else if (coprocOtaState.message) {
+        setGatewayOtaProgress(coprocOtaState.progress || 100, coprocOtaState.message);
+        setGatewayOtaNote(coprocOtaState.message, "ok");
+      } else {
+        resetGatewayOtaProgress();
+      }
+    }
+  }
+
+  refreshGatewayOtaUi();
+}
+
 function refreshGatewayOtaUi() {
-  if ($gwOtaCurrent) $gwOtaCurrent.textContent = fwVersion && fwVersion !== "—" ? `v${fwVersion}` : "v-";
-  if ($gwOtaSlot) $gwOtaSlot.textContent = gatewayOtaSupported ? fmtBytes(gatewayOtaMaxBytes) : "Not available";
-  if ($gwOtaProject) $gwOtaProject.textContent = gatewayOtaProject || "-";
+  const target = getGatewayOtaTarget();
+  const targetLabel = getGatewayOtaTargetLabel(target);
+  const supported = getGatewayOtaSelectedSupported(target);
+  const busy = getGatewayOtaSelectedBusy(target);
+
+  if ($gwOtaCurrent) $gwOtaCurrent.textContent = getGatewayOtaSelectedVersion(target);
+  if ($gwOtaSlot) $gwOtaSlot.textContent = supported ? getGatewayOtaSelectedSlotSize(target) : "Not available";
+  if ($gwOtaProject) $gwOtaProject.textContent = getGatewayOtaSelectedProject(target);
 
   if (!$gwOtaBtn || !$gwOtaFileInput) return;
 
   const hasFile = !!$gwOtaFileInput.files?.length;
-  const disabled = gatewayOtaUploading || gatewayOtaBusy || !gatewayOtaSupported || !hasFile;
+  const anyGatewayOtaBusy = gatewayOtaUploading || gatewayOtaBusy || coprocOtaBusy;
+  const disabled = gatewayOtaUploading || busy || !supported || !hasFile;
   $gwOtaBtn.disabled = disabled;
-  $gwOtaFileInput.disabled = gatewayOtaUploading || gatewayOtaBusy || !gatewayOtaSupported;
+  $gwOtaFileInput.disabled = gatewayOtaUploading || busy || !supported;
+  if ($gwOtaTarget) $gwOtaTarget.disabled = anyGatewayOtaBusy;
 
   if (gatewayOtaUploading) {
     $gwOtaBtn.textContent = "Uploading...";
     return;
   }
 
-  $gwOtaBtn.textContent = gatewayOtaBusy ? "OTA Busy" : "Upload Gateway Firmware";
+  $gwOtaBtn.textContent = busy ? "OTA Busy" : "Upload Firmware";
   const hasExplicitNote = !!($gwOtaNote?.textContent?.trim());
 
-  if (!gatewayOtaSupported) {
-    setGatewayOtaNote("OTA is unavailable until the gateway is flashed with the OTA partition layout.", "err");
-  } else if (gatewayOtaBusy) {
-    if (!hasExplicitNote) {
-      setGatewayOtaNote("Another firmware update is already in progress or the gateway is rebooting.", "err");
+  if (!supported) {
+    if (target === "coprocessor") {
+      setGatewayOtaNote("Coprocessor OTA is unavailable until the coprocessor is running the OTA-capable helper firmware.", "err");
+    } else {
+      setGatewayOtaNote("OTA is unavailable until the gateway is flashed with the OTA partition layout.", "err");
     }
+  } else if (busy) {
+    if (!hasExplicitNote) {
+      if (target === "coprocessor") {
+        setGatewayOtaNote("A coprocessor firmware update is already in progress.", "ok");
+      } else {
+        setGatewayOtaNote("Another firmware update is already in progress or the gateway is rebooting.", "err");
+      }
+    }
+  } else if (target === "coprocessor" && !coprocOnline && !hasFile && !hasExplicitNote) {
+    setGatewayOtaNote("Coprocessor appears offline. Once it responds to the gateway again, UART OTA will be available.", "");
   } else if (!hasFile) {
     setGatewayOtaNote("");
+  }
+
+  if (!gatewayOtaUploading && !busy) {
+    if (target === "coprocessor") {
+      if (!coprocOtaState.active && !coprocOtaState.message && !coprocOtaState.error) {
+        resetGatewayOtaProgress();
+      }
+    } else if (!gatewayOtaBusy) {
+      resetGatewayOtaProgress();
+    }
   }
 }
 
 function uploadGatewayFirmwareNow(file) {
+  const target = getGatewayOtaTarget();
+  const targetLabel = getGatewayOtaTargetLabel(target);
   const xhr = new XMLHttpRequest();
   const formData = new FormData();
   formData.append("firmware", file, file.name);
 
   gatewayOtaUploading = true;
-  setGatewayOtaNote("Uploading firmware image...", "");
+  setGatewayOtaNote(`Uploading ${targetLabel} firmware image...`, "");
   setGatewayOtaProgress(0, `Preparing ${file.name} (${fmtBytes(file.size)})`);
   refreshGatewayOtaUi();
 
@@ -1583,13 +1707,17 @@ function uploadGatewayFirmwareNow(file) {
   xhr.timeout = 180000;
   if (authToken) xhr.setRequestHeader("X-GW-Token", authToken);
   xhr.setRequestHeader("X-Firmware-Size", String(file.size));
+  xhr.setRequestHeader("X-Target-MCU", target);
 
   xhr.upload.addEventListener("progress", event => {
     if (!event.lengthComputable) return;
     const rawPercent = event.total > 0 ? (event.loaded / event.total) : 0;
-    const displayPercent = Math.min(96, Math.round(rawPercent * 96));
+    const uploadCap = target === "coprocessor" ? 25 : 96;
+    const displayPercent = Math.min(uploadCap, Math.round(rawPercent * uploadCap));
     const text = rawPercent >= 1
-      ? `Upload complete, validating and flashing ${file.name}...`
+      ? target === "coprocessor"
+        ? `Upload complete. Validating and staging ${file.name} for UART transfer...`
+        : `Upload complete, validating and flashing ${file.name}...`
       : `Uploading ${file.name}: ${Math.round(rawPercent * 100)}%`;
     setGatewayOtaProgress(displayPercent, text);
   });
@@ -1601,19 +1729,31 @@ function uploadGatewayFirmwareNow(file) {
     }
 
     if (xhr.status === 200 && response.ok) {
-      gatewayOtaBusy = true;
       gatewayOtaUploading = false;
-      const flashedVersion = response.version ? ` v${response.version}` : "";
-      setGatewayOtaProgress(100, response.message || `Firmware${flashedVersion} update complete. Gateway rebooting...`);
-      setGatewayOtaNote(`Firmware${flashedVersion} flashed successfully. Gateway is rebooting...`, "ok");
-      showToast(response.message || `Gateway firmware${flashedVersion} update complete. Rebooting...`, "warn");
+      if (target === "coprocessor") {
+        coprocOtaBusy = true;
+        const stagedVersion = response.version ? ` v${response.version}` : "";
+        setGatewayOtaProgress(25, `Firmware accepted${stagedVersion}. Waiting for UART OTA progress...`);
+        setGatewayOtaNote(`Firmware accepted${stagedVersion}. The gateway is preparing the coprocessor OTA session...`, "ok");
+        showToast(response.message || `Coprocessor firmware${stagedVersion} queued for UART OTA.`, "warn");
+      } else {
+        gatewayOtaBusy = true;
+        const flashedVersion = response.version ? ` v${response.version}` : "";
+        setGatewayOtaProgress(100, response.message || `Firmware${flashedVersion} update complete. Gateway rebooting...`);
+        setGatewayOtaNote(`Firmware${flashedVersion} flashed successfully. Gateway is rebooting...`, "ok");
+        showToast(response.message || `Gateway firmware${flashedVersion} update complete. Rebooting...`, "warn");
+      }
       $gwOtaFileInput.value = "";
       refreshGatewayOtaUi();
       return;
     }
 
     gatewayOtaUploading = false;
-    gatewayOtaBusy = false;
+    if (target === "coprocessor") {
+      coprocOtaBusy = false;
+    } else {
+      gatewayOtaBusy = false;
+    }
     const err = response.error || `Upload failed (${xhr.status || "network error"}).`;
     setGatewayOtaProgress(100, "Firmware update failed.");
     setGatewayOtaNote(err, "err");
@@ -1627,7 +1767,11 @@ function uploadGatewayFirmwareNow(file) {
 
   xhr.addEventListener("error", () => {
     gatewayOtaUploading = false;
-    gatewayOtaBusy = false;
+    if (target === "coprocessor") {
+      coprocOtaBusy = false;
+    } else {
+      gatewayOtaBusy = false;
+    }
     setGatewayOtaProgress(100, "Firmware upload failed.");
     setGatewayOtaNote("Network error while uploading firmware.", "err");
     showToast("Network error while uploading firmware.", "error");
@@ -1636,9 +1780,15 @@ function uploadGatewayFirmwareNow(file) {
 
   xhr.addEventListener("timeout", () => {
     gatewayOtaUploading = false;
-    gatewayOtaBusy = false;
+    if (target === "coprocessor") {
+      coprocOtaBusy = false;
+    } else {
+      gatewayOtaBusy = false;
+    }
     setGatewayOtaProgress(100, "Firmware upload timed out.");
-    setGatewayOtaNote("Upload timed out before the gateway finished flashing.", "err");
+    setGatewayOtaNote(target === "coprocessor"
+      ? "Upload timed out before the gateway finished staging the coprocessor firmware."
+      : "Upload timed out before the gateway finished flashing.", "err");
     showToast("Firmware upload timed out.", "error");
     refreshGatewayOtaUi();
   });
@@ -1647,16 +1797,24 @@ function uploadGatewayFirmwareNow(file) {
 }
 
 function uploadGatewayFirmware() {
+  const target = getGatewayOtaTarget();
+  const targetLabel = getGatewayOtaTargetLabel(target);
+  const supported = getGatewayOtaSelectedSupported(target);
+  const busy = getGatewayOtaSelectedBusy(target);
+  const slotSize = target === "coprocessor" ? coprocOtaMaxBytes : gatewayOtaMaxBytes;
+
   if (!$gwOtaFileInput?.files?.length) {
     setGatewayOtaNote("Select a .bin firmware file first.", "err");
     return;
   }
-  if (!gatewayOtaSupported) {
-    setGatewayOtaNote("OTA is not available on the current gateway partition layout.", "err");
+  if (!supported) {
+    setGatewayOtaNote(target === "coprocessor"
+      ? "Coprocessor OTA is unavailable until the coprocessor is running the OTA-capable helper firmware."
+      : "OTA is not available on the current gateway partition layout.", "err");
     return;
   }
-  if (gatewayOtaBusy || gatewayOtaUploading) {
-    setGatewayOtaNote("Gateway OTA is already busy.", "err");
+  if (busy || gatewayOtaUploading) {
+    setGatewayOtaNote(`${targetLabel} OTA is already busy.`, "err");
     return;
   }
 
@@ -1665,14 +1823,26 @@ function uploadGatewayFirmware() {
     setGatewayOtaNote("Select a compiled .bin firmware file.", "err");
     return;
   }
-  if (gatewayOtaMaxBytes > 0 && file.size > gatewayOtaMaxBytes) {
-    setGatewayOtaNote(`Firmware is too large for the OTA slot (${fmtBytes(file.size)} > ${fmtBytes(gatewayOtaMaxBytes)}).`, "err");
+  if (slotSize > 0 && file.size > slotSize) {
+    setGatewayOtaNote(`Firmware is too large for the OTA slot (${fmtBytes(file.size)} > ${fmtBytes(slotSize)}).`, "err");
+    return;
+  }
+
+  if (target === "coprocessor") {
+    showConfirm({
+      title: "Flash Gateway Coprocessor Firmware?",
+      body: `You are about to update the <strong>${esc(targetLabel)}</strong> with <strong>${esc(file.name)}</strong> (${fmtBytes(file.size)}).<br><br>
+             The gateway will validate the firmware, tell the coprocessor to halt its normal tasks, stream the image over the internal UART link, and then wait for the coprocessor to reboot and reconnect.`,
+      okLabel: "Upload and Update",
+      okClass: "warn",
+      callback: () => uploadGatewayFirmwareNow(file)
+    });
     return;
   }
 
   showConfirm({
     title: "Flash Gateway Firmware?",
-    body: `You are about to flash <strong>${esc(file.name)}</strong> (${fmtBytes(file.size)}).<br><br>
+    body: `You are about to flash <strong>${esc(file.name)}</strong> (${fmtBytes(file.size)}) to the <strong>${esc(targetLabel)}</strong>.<br><br>
            The gateway will validate the image, write it to the inactive OTA slot, and then
            <strong>reboot automatically</strong>. Do not power off the gateway during this process.`,
     okLabel: "Upload and Flash",
@@ -1685,11 +1855,18 @@ if ($gwOtaFileInput) {
   $gwOtaFileInput.addEventListener("change", () => {
     if ($gwOtaFileInput.files?.length) {
       const file = $gwOtaFileInput.files[0];
-      setGatewayOtaNote(`Ready: ${file.name} (${fmtBytes(file.size)})`, "");
+      setGatewayOtaNote(`Ready for ${getGatewayOtaTargetLabel()}: ${file.name} (${fmtBytes(file.size)})`, "");
     } else {
       setGatewayOtaNote("");
       resetGatewayOtaProgress();
     }
+    refreshGatewayOtaUi();
+  });
+}
+
+if ($gwOtaTarget) {
+  $gwOtaTarget.addEventListener("change", () => {
+    setGatewayOtaNote("");
     refreshGatewayOtaUi();
   });
 }

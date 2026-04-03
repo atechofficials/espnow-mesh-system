@@ -79,6 +79,7 @@ The project already supports **sensor nodes**, **actuator nodes**, and **hybrid 
 ### Current OTA capabilities
 
 - Gateway self-OTA from the browser with gateway hardware-config ID validation
+- Gateway-managed coprocessor OTA from the browser with board-specific coprocessor hardware-config ID validation and progress/error reporting
 - Gateway-managed OTA for supported sensor nodes with role and hardware-config ID validation
 - Gateway-managed OTA for supported actuator nodes with role and hardware-config ID validation
 - Gateway-managed OTA for supported hybrid nodes with role and hardware-config ID validation
@@ -183,6 +184,8 @@ For **Node OTA** support, also flash the ESP32-C3 gateway coprocessor once from:
 
 [`esp32-gateway/gateway_v1/coprocessor_esp32c3/`](esp32-gateway/gateway_v1/coprocessor_esp32c3/)
 
+The **Gateway Firmware Update** section in the dashboard can now target either the ESP32-S3 **Main MCU** or the ESP32-C3 **Coprocessor**.
+
 ### 2. Flash a node
 Choose one:
 
@@ -218,6 +221,7 @@ The current dashboard supports:
 - renaming nodes
 - rebooting nodes remotely
 - updating supported nodes with Node OTA
+- updating the gateway main MCU or the ESP32-C3 coprocessor from the **Gateway Firmware Update** section
 - disconnecting nodes
 - changing gateway settings
 - launching Wi-Fi setup mode

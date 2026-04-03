@@ -34,16 +34,16 @@ Current file versions:
 
 | Component | Current Version |
 |----------|-----------------|
-| ESP32-S3 Gateway firmware `main.cpp` | `v2.2.0` |
-| ESP32-C3 Gateway Coprocessor firmware `main.cpp` | `v0.2.0` |
+| ESP32-S3 Gateway firmware `main.cpp` | `v2.3.0` |
+| ESP32-C3 Gateway Coprocessor firmware `main.cpp` | `v0.3.0` |
 | ESP32 Sensor Node firmware `main.cpp` | `v2.2.0` |
 | ESP32 Actuator Relay Node firmware `main.cpp` | `v1.3.0` |
 | ESP32 Hybrid Relay Node firmware `main.cpp` | `v0.2.0` |
-| `user_config.h` | `v1.0.0` |
+| `user_config.h` | `v1.1.0` |
 | `mesh_protocol.h` | `v3.3.2` |
-| `coproc_ota_protocol.h` | `v1.0.0` |
-| `index.html` | `v3.8` |
-| `app.js` | `v4.3` |
+| `coproc_ota_protocol.h` | `v1.1.0` |
+| `index.html` | `v3.9` |
+| `app.js` | `v4.4` |
 | `style.css` | `v3.7` |
 
 Current supported node categories:
@@ -62,6 +62,9 @@ The current Node OTA system has been validated with:
 - node hardware-config mismatch rejection
 - gateway hardware-config mismatch rejection
 - gateway-image rejection on the node OTA route
+- gateway coprocessor OTA via the web interface
+- coprocessor board mismatch rejection on the coprocessor OTA route
+- gateway main-firmware rejection on the coprocessor OTA route when the uploaded image is too large for the helper OTA slot
 
 ---
 
@@ -177,6 +180,14 @@ pio run --target upload
 pio device monitor
 ```
 
+Use the PlatformIO environment that matches the gateway hardware combination you are actually building. The current documented environments are:
+
+- `gateway_v1a`
+- `gateway_v1b`
+- `gateway_v1c`
+- `gateway_v1d`
+- `development`
+
 ### Gateway coprocessor
 
 From `esp32-gateway/gateway_v1/coprocessor_esp32c3/`:
@@ -186,6 +197,12 @@ pio run --target erase
 pio run --target upload
 pio device monitor
 ```
+
+Use the coprocessor environment that matches the helper board you are actually flashing:
+
+- `beetle_esp32c3`
+- `xiao_esp32c3`
+- `esp32c3_sm`
 
 ### Sensor node
 
@@ -310,12 +327,14 @@ Things typically handled in the gateway:
 - HTTP API endpoints
 - persistence of gateway-side state
 - Node OTA job scheduling, validation, progress reporting, reconnect detection, and persistence of node hardware-config metadata
+- gateway self-OTA and coprocessor self-OTA target selection, validation, UART transfer, and helper reboot/reconnect reporting
 
 Before changing gateway logic:
 - confirm whether the change belongs in the gateway, helper, or the node
 - keep settings and sensor handling schema-driven
 - do not hardcode node-specific behavior unless it is truly gateway-specific
 - retest end-to-end Node OTA when changing OTA job timing, status handling, or reconnect logic
+- retest both Main-MCU OTA and Coprocessor OTA when changing the **Gateway Firmware Update** flow, helper validation behavior, or helper reconnect timing
 - preserve `GWHWCFG:` and `NODEHWCFG:` validation behavior when changing OTA upload parsing or firmware-marker scanning
 - keep UART pin definitions aligned with the actual gateway hardware variant being documented or built; the current gateway release line spans four valid PCB variants (`v1A` to `v1D`) and all helper routing / power assumptions should match the intended board pair
 
@@ -336,10 +355,13 @@ Things typically handled in the coprocessor:
 - starting the temporary OTA helper AP
 - serving the staged `firmware.bin` to the target node
 - reporting helper progress back to the gateway
+- receiving gateway-delivered helper firmware for coprocessor self-OTA
+- reporting helper-board identity and self-OTA status back to the gateway
 
 Before changing helper logic:
 - keep the gateway and helper copies of `coproc_ota_protocol.h` synchronized
 - test the full S3 -> C3 -> node OTA flow on hardware
+- test the gateway-driven S3 -> C3 coprocessor self-OTA flow when changing helper-side self-OTA handling or helper hardware-ID reporting
 - validate helper cleanup after OTA success and abort paths
 - keep the documented UART wiring aligned with the active gateway hardware release and the helper board actually being used on the PCB
 
@@ -369,6 +391,7 @@ When modifying the dashboard:
 - test node reboot scenarios
 - test settings changes from the browser
 - test Node OTA status transitions
+- test both **Main MCU** and **Coprocessor** target selection in the **Gateway Firmware Update** section
 
 ---
 
@@ -478,7 +501,7 @@ Release-line notes:
 
 ## Changing mesh_protocol.h
 
-Current version: `v3.3.1`
+Current version: `v3.3.2`
 
 File locations must stay synchronized:
 - `esp32-gateway/gateway_v1/include/mesh_protocol.h`
@@ -507,7 +530,7 @@ Examples of changes that likely require a major bump:
 
 ## Changing coproc_ota_protocol.h
 
-Current version: `v1.0.0`
+Current version: `v1.1.0`
 
 File locations must stay synchronized:
 - `esp32-gateway/gateway_v1/include/coproc_ota_protocol.h`
@@ -588,6 +611,7 @@ Before opening a PR:
 - build the affected project successfully
 - flash and test on real hardware when behavior changes
 - test serial monitor logs
+- test both gateway Main-MCU OTA and coprocessor OTA separately when the **Gateway Firmware Update** flow changes
 - update the correct README files
 - keep version references current
 - keep `mesh_protocol.h` synchronized everywhere

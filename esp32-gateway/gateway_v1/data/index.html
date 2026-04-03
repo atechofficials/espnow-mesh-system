@@ -1,4 +1,4 @@
-<!-- ESP32 Mesh Gateway Web Interface v3.8 -->
+<!-- ESP32 Mesh Gateway Web Interface v3.9 -->
 <!DOCTYPE html>
 <html lang="en" data-theme="dark">
 <head>
@@ -366,13 +366,21 @@
               <div class="settings-card-hdr">Gateway Firmware Update</div>
 
               <p class="settings-subsec-desc">
-                Upload a compiled gateway <code>.bin</code> firmware image built for this ESP32-S3 gateway.
-                The gateway validates the image, flashes it to the inactive OTA slot, and reboots automatically.
+                Select which gateway MCU you want to update, then upload the matching compiled <code>.bin</code> image.
+                Main MCU updates are flashed by the ESP32-S3 itself. Coprocessor updates are validated by the gateway and then streamed to the ESP32-C3 over UART.
               </p>
 
               <div class="setting-warn-box">
                 <span class="icon setting-warn-box-icon"></span>
-                <span>Only upload firmware built for this gateway project. A wrong image can fail validation and will be rejected.</span>
+                <span>Only upload firmware built for the selected MCU target and the current hardware configuration. Mismatched firmware will be rejected.</span>
+              </div>
+
+              <div class="setting-field" style="margin-top:.9rem;max-width:280px">
+                <label>Gateway MCU Target</label>
+                <select class="setting-input" id="gw-ota-target">
+                  <option value="main">Main MCU (ESP32-S3)</option>
+                  <option value="coprocessor">Coprocessor (ESP32-C3)</option>
+                </select>
               </div>
 
               <div class="ota-meta-grid">
@@ -397,7 +405,7 @@
 
               <div class="setting-save-row" style="margin-top:.8rem">
                 <button class="settings-save-btn ota-upload-btn" id="gw-ota-btn" type="button">
-                  Upload Gateway Firmware
+                  Upload Firmware
                 </button>
                 <span class="setting-save-note" id="gw-ota-note"></span>
               </div>
