@@ -1,11 +1,10 @@
 /**
     * @file [main.cpp]
     * @brief Main source file for the ESP32 Mesh Gateway firmware
-    * @version 2.1.4
+    * @version 2.2.0
     * @author Mrinal (@atechofficials)
  */
-#define FW_VERSION "2.1.4"
-#define HW_CONFIG_ID "0x0A"
+#define FW_VERSION "2.2.0"
 
 #include <Arduino.h>
 #include <WiFi.h>
@@ -26,11 +25,9 @@
 #include <algorithm>
 #include <ctype.h>
 #include <set>
+#include "user_config.h"
 
-// Configuration
-#define RESET_BTN_PIN    0
-#define AP_SSID_DEFAULT  "ESP32-Mesh-Gateway"
-#define AP_PASS_DEFAULT  "meshsetup"
+// Other Configuration
 #define WEB_PORT         80
 #define RELAY_LABEL_MAX_LEN 25
 #define OTA_DESC_BUF_LEN (sizeof(esp_image_header_t) + sizeof(esp_image_segment_header_t) + sizeof(esp_app_desc_t))
@@ -48,7 +45,6 @@
 #define NODE_OTA_HWCFG_MARKER_LEN 10
 #define NODE_OTA_VERSION_MAX_LEN 16
 #define NODE_OTA_FILE_PATH "/node_ota.bin"
-#define NODE_OTA_HOST "192.168.4.1"
 #define NODE_OTA_PORT 80
 #define NODE_OTA_AP_CHANNEL 6
 #define NODE_OTA_STAGE_TIMEOUT_MS 120000UL
@@ -58,11 +54,8 @@
 #define NODE_OTA_BEGIN_RETRY_MS 2000UL
 #define NODE_OTA_BEGIN_MAX_ATTEMPTS 10
 #define COPROC_UART_BAUD 230400
-#define COPROC_UART_TX_PIN 4
-#define COPROC_UART_RX_PIN 5
 #define COPROC_UART_RX_BUFFER_SIZE 4096
 #define COPROC_UART_TX_BUFFER_SIZE 4096
-#define COPROC_RESET_PIN 1
 #define COPROC_LINK_PING_MS 5000UL
 #define COPROC_ACK_TIMEOUT_MS 3000UL
 #define COPROC_RECOVERY_REBOOT_MS 8000UL
@@ -85,7 +78,7 @@ static std::set<uint32_t> authWsClients;  // authenticated WS client IDs
 #define RX_QUEUE_SIZE    30
 #define WS_UPDATE_MS     2000
 #define WS_META_MS       10000
-#define GW_LED_PIN       38
+#define DISCOVERED_CLEANUP_MS 1000
 #define MAX_DISCOVERED   10
 #define RFID_UID_HEX_MAX_LEN ((RFID_UID_MAX_LEN * 2) + 1)
 
@@ -4196,7 +4189,7 @@ void loop() {
 
     // Periodic discovered list cleanup (removes stale entries 
     // for nodes that disappeared without cleanly unregistering)
-    if (now - lastDiscClean >= 2000) {
+    if (now - lastDiscClean >= DISCOVERED_CLEANUP_MS) {
         lastDiscClean = now;
         if (cleanupDiscovered() && ws.count() > 0)
             wsBroadcast(buildDiscoveredJson());

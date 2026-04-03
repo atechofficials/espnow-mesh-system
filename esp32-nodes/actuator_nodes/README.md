@@ -12,7 +12,7 @@ Supported actuator-node firmwares can also be updated through the **gateway-mana
 
 | Node | Actuator Type | Description |
 |------|---------------|-------------|
-| `esp32_relay_node_v1/` | 4-channel relay control + TTP224 Touch Sensor | Controls up to 4 active-LOW relays independently from the Web Interface (`v1.2.2`) |
+| `esp32_relay_node_v1/` | 4-channel relay control + TTP224 Touch Sensor | Controls up to 4 active-LOW relays independently from the Web Interface (`v1.3.0`) |
 
 ---
 
@@ -33,7 +33,7 @@ Supported actuator-node firmwares can also be updated through the **gateway-mana
 
 ## Protocol Notes
 
-Actuator nodes use the shared `mesh_protocol.h` definitions and the actuator messaging available in protocol version **v3.3.1**.
+Actuator nodes use the shared `mesh_protocol.h` definitions and the actuator messaging available in protocol version **v3.3.2**.
 
 ### Actuator-related message types
 
@@ -62,6 +62,8 @@ Actuator nodes are designed to work much like sensor nodes, but instead of mainl
 5. Participate in the gateway-managed Node OTA workflow when a compatible firmware image is uploaded from the dashboard
 
 Current actuator-node firmwares also report their `HW_CONFIG_ID` during registration so the gateway can block incompatible actuator firmware before OTA delivery begins.
+
+The newer release line also moves user-tunable actuator-node definitions into `user_config.h`. If a future actuator-node board uses the ESP32-C3 Super Mini, keep any WiFi transmit power cap board-gated and apply it only after Wi-Fi startup.
 
 Hybrid nodes that also expose actuator behavior are now documented separately under `../hybrid_nodes/`, but they share the same gateway-side actuator schema/state handling model.
 

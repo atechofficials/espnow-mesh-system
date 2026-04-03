@@ -24,6 +24,3 @@ src/CMakeLists.txt
 
 # ESP-IDF auto-generated SDK configuration files
 sdkconfig.*
-
-# For future release: Related to Upcoming Gateway v1 PCB
-hardware/Components_Link_IN.txt

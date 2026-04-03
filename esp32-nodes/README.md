@@ -16,7 +16,7 @@ Currently implemented:
 
 | Node | Sensors | Firmware |
 |------|---------|----------|
-| Envo Mini V1 Node | Bosch BMP280 (temperature + pressure) + DHT22 (humidity) + TEMT6000 (ambient light) | v2.1.4 |
+| Envo Mini V1 Node | Bosch BMP280 (temperature + pressure) + DHT22 (humidity) + TEMT6000 (ambient light) | v2.2.0 |
 
 ### Actuator Nodes (`actuator_nodes/`)
 
@@ -26,7 +26,7 @@ Currently implemented:
 
 | Node | Actuator | Firmware |
 |------|---------|----------|
-| ESP32 Relay Node v1 | 4 relays + 4 touch inputs | v1.2.2 |
+| ESP32 Relay Node v1 | 4 relays + 4 touch inputs | v1.3.0 |
 
 ### Hybrid Nodes (`hybrid_nodes/`)
 
@@ -36,7 +36,7 @@ Currently implemented:
 
 | Node | Capabilities | Firmware |
 |------|--------------|----------|
-| ESP32 Hybrid Relay Node v1 | 4 relays + 4 touch inputs + RC522 RFID card actions | v0.1.3 |
+| ESP32 Hybrid Relay Node v1 | 4 relays + 4 touch inputs + RC522 RFID card actions | v0.2.0 |
 
 ---
 
@@ -84,6 +84,12 @@ This flow has now been validated with:
 - hardware-config mismatch rejection
 
 The current Hybrid-node line also includes improved RC522 runtime recovery so RFID scanning can recover from reader stalls without requiring a full node reboot.
+
+The newer release line also:
+
+- moves user-tunable firmware definitions into `user_config.h` for cleaner scaling across gateway and node projects
+- applies a board-gated `WiFi.setTxPower(WIFI_POWER_8_5dBm)` limit only on ESP32-C3 Super Mini node builds, and only after Wi-Fi startup has completed
+- includes a dedicated ESP32-C3 Super Mini WiFi characterization report at `../docs/esp32_c3_supermini_wifi_tests/README.md`
 
 ---
 

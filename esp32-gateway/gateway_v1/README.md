@@ -1,11 +1,17 @@
 # Gateway v1 - Build, Flash, and OTA Guide
 
-Firmware version: **2.1.4**  
+Firmware version: **2.2.0**  
 Target board: `esp32-s3-devkitc1-n8r8`
 
-Gateway helper coprocessor: **ESP32-C3 firmware v0.1.1**
+Gateway helper coprocessor: **ESP32-C3 firmware v0.2.0**
 
 ---
+
+## Highlights in v2.2.0
+- Polishes discovery timing on both the gateway and node side so pairing candidates appear faster and stale entries clear sooner
+- Introduces the `user_config.h` configuration split for cleaner user-tunable firmware definitions
+- Documents the current gateway hardware release line around four valid THT-friendly PCB variants (`v1A` to `v1D`)
+- Keeps the ESP32-C3 helper workflow aligned with the newer `v0.2.0` coprocessor firmware line
 
 ## Highlights in v2.1.4
 - Increased the shared node-name field from 16 bytes to 25 bytes (24 visible characters + NUL) for beacon and registration messages, enabling clearer default node names, MAC-suffixed first-boot node names, and longer user-defined names while remaining well within ESP-NOW payload limits
@@ -48,21 +54,26 @@ Gateway helper coprocessor: **ESP32-C3 firmware v0.1.1**
 - USB cable connected to the ESP32-S3-DevKitC-1-N8R8
 - USB cable connected to the ESP32-C3 coprocessor when flashing or debugging the Node OTA helper firmware
 
-The new **Gateway v1.0A** PCB release in `hardware/` instead uses off-the-shelf **ESP32-S3 Super Mini** and **ESP32-C3 Super Mini** boards soldered onto a single-layer carrier PCB.
+The current hardware release line in `hardware/` instead targets four single-layer carrier-PCB variants built around off-the-shelf ESP32-S3 and ESP32-C3 development boards.
 
 ---
 
-## Gateway v1.0A Hardware Release
+## Gateway Hardware Release Line
 
-The repository now includes the first gateway PCB release under `hardware/ESP32_Mesh_Gateway_v1A/`.
+The current gateway PCB release line documents four valid single-layer, thick-trace, home-fabrication-friendly variants:
 
-Current board-level highlights:
+| Variant | Main MCU board | Helper MCU board |
+|---------|----------------|------------------|
+| `ESP32_Mesh_Gateway_v1A` | Seeed Studio XIAO ESP32-S3 | ESP32-C3 Super Mini |
+| `ESP32_Mesh_Gateway_v1B` | Seeed Studio XIAO ESP32-S3 | Seeed Studio XIAO ESP32-C3 |
+| `ESP32_Mesh_Gateway_v1C` | Seeed Studio XIAO ESP32-S3 | DFRobot Beetle ESP32-C3 |
+| `ESP32_Mesh_Gateway_v1D` | Waveshare ESP32-S3-DevKit-C-N8R8 | ESP32-C3 Super Mini |
 
-- uses off-the-shelf **ESP32-S3 Super Mini** and **ESP32-C3 Super Mini** development boards
-- single-layer, thick-trace layout intended to be easy to fabricate and hand-assemble
-- relies on the ESP32-S3 Super Mini's built-in **ARGB LED**, so no separate WS2812B is placed on the PCB
-- includes a place to connect a **BME280** module so the gateway can later report its own basic room temperature and humidity (**firmware support still in development**)
-- includes an external **5V JST-style power connector**
+Shared board-level notes:
+
+- all four variants keep connection points for a future **BME280** gateway-side sensor module
+- all four variants are intentionally laid out on a single copper layer with thick traces for easier home fabrication
+- the earlier ESP32-S3 Super Mini based gateway carrier should now be treated as deprecated because that board only has 4 MB flash and is not suitable for the current gateway firmware line
 
 The same `hardware/` tree also includes schematic PDFs and a `Development_Resources/` folder with dev-board pinouts and MCU reference documents.
 
@@ -159,12 +170,7 @@ During a node update, the gateway:
 
 The coprocessor also reports OTA helper status back to the gateway so the web interface can show live progress.
 
-For the current **Gateway v1.0A** PCB release, the UART link is routed as:
-
-- **ESP32-S3 TX GPIO4 -> ESP32-C3 RX GPIO0**
-- **ESP32-S3 RX GPIO5 -> ESP32-C3 TX GPIO1**
-
-The `hardware/` directory also includes schematic PDFs, KiCad source files, and development-reference material for that board revision.
+The exact UART routing depends on the selected gateway PCB variant and helper dev board. Keep the helper UART definitions in sync with the intended hardware pair and document any board-specific differences in the hardware release notes when they change.
 
 Shared transport definitions between the gateway and helper live in:
 
@@ -224,7 +230,7 @@ pio run
 
 - Upload **`firmware.bin`**, not `bootloader.bin`, not `partitions.bin`
 - If the web UI assets were changed, also upload LittleFS via `pio run --target uploadfs`
-- The dashboard firmware version is still taken from `FW_VERSION` in `src/main.cpp`
+- The current release line moves user-facing configuration definitions into `user_config.h`; older checkouts may still have some of the same knobs in `src/main.cpp`
 
 ---
 
@@ -300,9 +306,9 @@ The gateway then reboots and returns to setup mode.
 
 ---
 
-## Key Configuration (`src/main.cpp`)
+## Key Configuration (`user_config.h`)
 
-All main tuneable constants are near the top of `src/main.cpp`.
+The current release line moves board selection, pin definitions, and user-facing firmware defaults into `user_config.h` so `main.cpp` can stay focused on runtime logic. Older checkouts may still keep some of the same constants in `src/main.cpp`.
 
 | Constant | Default | Description |
 |----------|---------|-------------|
@@ -318,7 +324,9 @@ Timing constants shared with the nodes live in `include/mesh_protocol.h`.
 
 Node OTA transport and helper constants are shared with the ESP32-C3 helper through `include/coproc_ota_protocol.h`.
 
-If you are working against the Gateway v1.0A PCB instead of the original dev-kit wiring, keep the UART pin assignments in `src/main.cpp` aligned with the PCB routing described above.
+Use `user_config.h` for board-specific pin mappings, helper UART routing, and other user-tunable firmware selections in the newer release line.
+
+If you are working against one of the gateway PCB variants instead of the original dev-kit wiring, keep the UART pin assignments and helper-board assumptions aligned with the specific hardware variant you are building.
 
 ---
 

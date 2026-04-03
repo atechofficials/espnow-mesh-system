@@ -1,25 +1,24 @@
 /**
     * @file [main.cpp]
     * @brief Main source file for the (ESP32-C3) Gateway Coprocessor firmware
-    * @version 0.1.1
+    * @version 0.2.0
     * @author Mrinal (@atechofficials)
  */
+
+#define FW_VERSION "0.2.0"
 
 #include <Arduino.h>
 #include <WiFi.h>
 #include <WebServer.h>
 #include <LittleFS.h>
 #include <ArduinoJson.h>
-#include "coproc_ota_protocol.h"
-#include "mesh_protocol.h"
+#include "../../include/coproc_ota_protocol.h"
+#include "../../include/mesh_protocol.h"
+#include "../../include/user_config.h"
 
-#define FW_VERSION "0.1.1"
-#define UART_RX_PIN 0
-#define UART_TX_PIN 1
 #define UART_BAUD 230400
 #define UART_RX_BUFFER_SIZE 4096
 #define UART_TX_BUFFER_SIZE 4096
-#define REBOOT_SIGNAL_PIN 7
 #define OTA_FILE_PATH "/firmware.bin"
 #define OTA_AP_IP IPAddress(192, 168, 4, 1)
 #define OTA_AP_GW IPAddress(192, 168, 4, 1)
@@ -469,3 +468,15 @@ void loop() {
 
     delay(2);
 }
+
+
+
+
+
+
+
+
+
+
+
+

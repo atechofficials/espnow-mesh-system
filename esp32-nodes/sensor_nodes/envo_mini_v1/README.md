@@ -1,11 +1,13 @@
 # Envo Mini V1 Node
 
-Firmware version: **2.1.4**
-Target board: `dfrobot_firebeetle2_esp32e`
+Firmware version: **2.2.0**
+Target board: `nologo_esp32c3_super_mini`
 
 Reads temperature and barometric pressure from a **Bosch BMP280**, humidity from a **DHT22**, and ambient light level from a **TEMT6000** phototransistor. Transmits all readings to the gateway over ESP-NOW using the schema-driven sensor protocol, so the node self-describes its sensors to the gateway at pair time and no gateway changes are needed when sensors are added or removed.
 
-This node also supports the **gateway-managed Node OTA** workflow introduced with the ESP32-S3 gateway `v2.0.0` and ESP32-C3 helper firmware `v0.1.0`. Current releases also report this node's hardware configuration ID so the gateway can reject incompatible sensor firmware before the OTA session starts, remain fully compatible with the Hybrid-capable gateway/dashboard line built on `mesh_protocol.h v3.3.1`, and advertise clearer default names by appending the last 4 MAC characters on fresh, unrenamed nodes.
+This node also supports the **gateway-managed Node OTA** workflow introduced with the ESP32-S3 gateway release line and the ESP32-C3 helper coprocessor. Current releases also report this node's hardware configuration ID so the gateway can reject incompatible sensor firmware before the OTA session starts, remain fully compatible with the Hybrid-capable gateway/dashboard line built on `mesh_protocol.h v3.3.2`, and advertise clearer default names by appending the last 4 MAC characters on fresh, unrenamed nodes.
+
+The newer `v2.2.0` release line also moves user-tunable definitions into `user_config.h`, polishes discovery timing for faster pairing feedback, and applies a board-gated `WiFi.setTxPower(WIFI_POWER_8_5dBm)` limit only when this firmware is built for the ESP32-C3 Super Mini path.
 
 ## Firmware Changelog
 | Version | Notes |
@@ -17,6 +19,7 @@ This node also supports the **gateway-managed Node OTA** workflow introduced wit
 | v2.1.2 | Updated to the `mesh_protocol.h v3.3.0` line with capability-aware registration for compatibility with the Hybrid-node-capable gateway release while preserving existing sensor behavior |
 | v2.1.3 | Restores the node status RGB LED to enabled when the node is unpaired from the gateway and saves that LED state back to NVS so pairing/status indication is visible again when the node is later re-paired |
 | v2.1.4 | Updated to the `mesh_protocol.h v3.3.1` line with support for 24-character node names and automatic first-boot default naming that appends the last 4 MAC characters for easier node identification without aggressive truncation |
+| v2.2.0 | Introduced `user_config.h`, polished node discovery timing for faster pairing feedback, and applies the ESP32-C3 Super Mini WiFi transmit power cap only after Wi-Fi startup |
 
 ---
 
@@ -24,45 +27,47 @@ This node also supports the **gateway-managed Node OTA** workflow introduced wit
 
 | Item | Detail |
 |------|--------|
-| Board | DFRobot Firebeetle 2 ESP32-E |
-| Sensor 1 | Bosch BMP280 (temperature + pressure), I2C |
+| Board | ESP32-C3 Super Mini |
+| Sensor 1 | Bosch BMP280 (temperature + pressure), SPI |
 | Sensor 2 | DHT22 (humidity), single-wire |
 | Sensor 3 | TEMT6000 phototransistor module (ambient light), ADC |
-| Status LED | WS2812B on GPIO 5 |
-| Pairing button | GPIO 27 (active-LOW, internal pull-up) |
+| Status LED | WS2812B on GPIO 3 |
+| Pairing button | GPIO 0 (active-LOW, internal pull-up) |
 
 ### Wiring
 
-**BMP280 breakout -> Firebeetle 2**
+**BMP280 breakout -> ESP32-C3 Super Mini**
 
-| BMP280 Pin | Firebeetle 2 Pin |
+| BMP280 Pin | ESP32-C3 Super Mini Pin |
 |------------|------------------|
 | VCC | 3V3 |
 | GND | GND |
-| SDA | GPIO 21 |
-| SCL | GPIO 22 |
+| SCK | GPIO 6 |
+| SDI | GPIO 7 |
+| CSB | GPIO 10 |
+| SDO | GPIO 5 |
 
-The BMP280 I2C address is auto-detected (tries `0x76` then `0x77`).
+The BMP280 now runs over the hardware SPI bus instead of I2C.
 
-**DHT22 -> Firebeetle 2**
+**DHT22 -> ESP32-C3 Super Mini**
 
-| DHT22 Pin | Firebeetle 2 Pin |
+| DHT22 Pin | ESP32-C3 Super Mini Pin |
 |-----------|------------------|
 | VCC | 3V3 |
 | GND | GND |
-| DATA | GPIO 16 |
+| DATA | GPIO 1 |
 
-**TEMT6000 module -> Firebeetle 2**
+**TEMT6000 module -> ESP32-C3 Super Mini**
 
-| TEMT6000 Pin | Firebeetle 2 Pin |
+| TEMT6000 Pin | ESP32-C3 Super Mini Pin |
 |--------------|------------------|
 | VCC | 3V3 |
 | GND | GND |
-| SIG | GPIO 36 (ADC1_CH0) |
+| SIG | GPIO 4 |
 
 The TEMT6000 module has an on-board 10K emitter resistor, so the signal pin is always actively driven and does not require an external pull-down.
 
-> **Note:** GPIO 36 on the ESP32 is an input-only pin. The firmware works around a known ESP32 hardware issue where ADC readings are corrupted during ESP-NOW transmissions by collecting 64 samples per reading cycle and discarding zero-valued samples before averaging.
+For the ESP32-C3 Super Mini RF characterization that motivated the board-specific TX-power cap support, see [`../../../docs/esp32_c3_supermini_wifi_tests/README.md`](../../../docs/esp32_c3_supermini_wifi_tests/README.md).
 
 ---
 
@@ -75,26 +80,31 @@ Managed automatically by PlatformIO via `platformio.ini`:
 | Adafruit BMP280 Library | 2.6.8 |
 | Adafruit Unified Sensor | 1.1.15 |
 | Adafruit NeoPixel | 1.15.4 |
-| DHT sensor library | 1.4.6 |
+| DHT sensor library | 1.4.7 |
 
-Framework libraries used directly: `Preferences`, `WiFi`, `Wire`.
+Framework libraries used directly: `Preferences`, `WiFi`, `SPI`.
 
 ---
 
-## Configuration (`src/main.cpp`)
+## Configuration (`user_config.h`)
 
-Change these defines before flashing:
+The current release line moves user-tunable board definitions into `user_config.h`. If your checkout predates that refactor, the same symbols may still live near the top of `src/main.cpp`.
+
+Key values for the ESP32-C3 Super Mini + BMP280 SPI build are:
 
 | Constant | Default | Description |
 |----------|---------|-------------|
-| `NODE_NAME` | `"BMP280-Node-1"` | Base display name shown in the dashboard (up to 24 visible chars; fresh unrenamed nodes append the last 4 MAC characters automatically) |
-| `BMP_I2C_SDA` | `21` | I2C SDA GPIO |
-| `BMP_I2C_SCL` | `22` | I2C SCL GPIO |
-| `DHT_PIN` | `16` | DHT22 data GPIO |
-| `TEMT6000_PIN` | `36` | TEMT6000 ADC GPIO |
-| `PAIR_BTN_PIN` | `27` | Pairing button GPIO (active-LOW) |
-| `LED_PIN` | `5` | WS2812B data GPIO |
-| `HW_CONFIG_ID` | `"0x0B"` | Hardware configuration ID embedded in firmware and reported to the gateway for OTA compatibility checks |
+| `NODE_NAME` | `"BMP280-Node"` | Base display name shown in the dashboard (up to 24 visible chars; fresh unrenamed nodes append the last 4 MAC characters automatically) |
+| `DHT_PIN` | `1` | DHT22 data GPIO |
+| `TEMT6000_PIN` | `4` | TEMT6000 ADC GPIO |
+| `PAIR_BTN_PIN` | `0` | Pairing button GPIO (active-LOW) |
+| `LED_PIN` | `3` | WS2812B data GPIO |
+| `BMP_SCK` | `6` | BMP280 SPI clock GPIO |
+| `BMP_MISO` | `5` | BMP280 SPI MISO GPIO |
+| `BMP_MOSI` | `7` | BMP280 SPI MOSI GPIO |
+| `BMP_CS` | `10` | BMP280 chip-select GPIO |
+| `HW_CONFIG_ID` | `"0x3B"` | Hardware configuration ID embedded in firmware and reported to the gateway for OTA compatibility checks |
+| `WIFI_POWER_8_5dBm` cap | Enabled only on ESP32-C3 Super Mini builds | Applied after Wi-Fi startup to improve RF stability on marginal Super Mini boards |
 
 When deploying multiple nodes, give each a unique `NODE_NAME` when practical. Fresh nodes already append the last 4 MAC characters automatically, and you can still rename them later from the gateway dashboard.
 
@@ -126,7 +136,7 @@ After the initial USB flash, future compatible firmware builds can be delivered 
    [PAIR]  No pairing data - hold button 3 s to pair.
    ```
 3. Make sure the gateway is online
-4. Hold **GPIO 27** (the pairing button) for **3 seconds** - the LED turns cyan and the node begins beaconing
+4. Hold **GPIO 0** (the pairing button) for **3 seconds** - the LED turns cyan and the node begins beaconing
 5. The gateway detects the beacon and completes the handshake automatically
 6. The LED turns solid green - the node is now paired and transmitting
 

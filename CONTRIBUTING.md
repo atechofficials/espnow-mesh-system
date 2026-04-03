@@ -34,12 +34,13 @@ Current file versions:
 
 | Component | Current Version |
 |----------|-----------------|
-| ESP32-S3 Gateway firmware `main.cpp` | `v2.1.4` |
-| ESP32-C3 Gateway Coprocessor firmware `main.cpp` | `v0.1.1` |
-| ESP32 Sensor Node firmware `main.cpp` | `v2.1.4` |
-| ESP32 Actuator Relay Node firmware `main.cpp` | `v1.2.2` |
-| ESP32 Hybrid Relay Node firmware `main.cpp` | `v0.1.3` |
-| `mesh_protocol.h` | `v3.3.1` |
+| ESP32-S3 Gateway firmware `main.cpp` | `v2.2.0` |
+| ESP32-C3 Gateway Coprocessor firmware `main.cpp` | `v0.2.0` |
+| ESP32 Sensor Node firmware `main.cpp` | `v2.2.0` |
+| ESP32 Actuator Relay Node firmware `main.cpp` | `v1.3.0` |
+| ESP32 Hybrid Relay Node firmware `main.cpp` | `v0.2.0` |
+| `user_config.h` | `v1.0.0` |
+| `mesh_protocol.h` | `v3.3.2` |
 | `coproc_ota_protocol.h` | `v1.0.0` |
 | `index.html` | `v3.8` |
 | `app.js` | `v4.3` |
@@ -73,13 +74,18 @@ espnow-mesh-system/
 |-- esp32-gateway/
 |   |-- README.md
 |   `-- gateway_v1/
+|       |-- user_config.h
 |       |-- src/main.cpp
 |       |-- include/mesh_protocol.h
 |       |-- include/coproc_ota_protocol.h
 |       |-- hardware/
 |       |   |-- ESP32_Mesh_Gateway_v1A/
+|       |   |-- ESP32_Mesh_Gateway_v1B/
+|       |   |-- ESP32_Mesh_Gateway_v1C/
+|       |   |-- ESP32_Mesh_Gateway_v1D/
 |       |   `-- Development_Resources/
 |       |-- coprocessor_esp32c3/
+|       |   |-- user_config.h
 |       |   |-- src/main.cpp
 |       |   |-- include/coproc_ota_protocol.h
 |       |   `-- platformio.ini
@@ -96,6 +102,7 @@ espnow-mesh-system/
     |-- sensor_nodes/
     |   |-- README.md
     |   `-- envo_mini_v1/
+    |       |-- user_config.h
     |       |-- src/main.cpp
     |       |-- include/mesh_protocol.h
     |       |-- platformio.ini
@@ -103,6 +110,7 @@ espnow-mesh-system/
     |-- actuator_nodes/
     |   |-- README.md
     |   `-- esp32_relay_node_v1/
+    |       |-- user_config.h
     |       |-- src/main.cpp
     |       |-- include/mesh_protocol.h
     |       |-- platformio.ini
@@ -110,10 +118,14 @@ espnow-mesh-system/
     `-- hybrid_nodes/
         |-- README.md
         `-- esp32_hybrid_relay_node_v1/
+            |-- user_config.h
             |-- src/main.cpp
             |-- include/mesh_protocol.h
             |-- platformio.ini
             `-- README.md
+|-- docs/
+|   `-- esp32_c3_supermini_wifi_tests/
+|       `-- README.md
 ```
 
 ---
@@ -126,7 +138,14 @@ Requirements:
 - One USB data cable per ESP32 device being flashed or monitored
 - Real hardware for validation
 
-For the gateway hardware release, the repository now also includes **ESP32 Mesh System Gateway v1.0A** KiCad files, schematic PDF, and development references under `esp32-gateway/gateway_v1/hardware/`.
+For the gateway hardware release, the current documentation line tracks four single-layer, thick-trace, home-fabrication-friendly gateway PCB variants under `esp32-gateway/gateway_v1/hardware/`:
+
+- `ESP32_Mesh_Gateway_v1A` - Seeed Studio XIAO ESP32-S3 + ESP32-C3 Super Mini
+- `ESP32_Mesh_Gateway_v1B` - Seeed Studio XIAO ESP32-S3 + Seeed Studio XIAO ESP32-C3
+- `ESP32_Mesh_Gateway_v1C` - Seeed Studio XIAO ESP32-S3 + DFRobot Beetle ESP32-C3
+- `ESP32_Mesh_Gateway_v1D` - Waveshare ESP32-S3-DevKit-C-N8R8 + ESP32-C3 Super Mini
+
+Each gateway PCB variant keeps connection points for a future BME280 module. The older ESP32-S3 Super Mini based carrier should be treated as deprecated because the current gateway firmware line expects an 8 MB class ESP32-S3 target.
 
 PlatformIO manages:
 - ESP32 toolchains
@@ -274,6 +293,7 @@ Useful contribution areas include:
 
 Main file:
 - `esp32-gateway/gateway_v1/src/main.cpp`
+- `esp32-gateway/gateway_v1/user_config.h`
 
 Shared protocols:
 - `esp32-gateway/gateway_v1/include/mesh_protocol.h`
@@ -297,7 +317,7 @@ Before changing gateway logic:
 - do not hardcode node-specific behavior unless it is truly gateway-specific
 - retest end-to-end Node OTA when changing OTA job timing, status handling, or reconnect logic
 - preserve `GWHWCFG:` and `NODEHWCFG:` validation behavior when changing OTA upload parsing or firmware-marker scanning
-- keep UART pin definitions aligned with the actual gateway hardware variant being documented or built; the current Gateway v1.0A reference PCB routes **ESP32-S3 TX GPIO4 -> ESP32-C3 RX GPIO0** and **ESP32-S3 RX GPIO5 -> ESP32-C3 TX GPIO1**
+- keep UART pin definitions aligned with the actual gateway hardware variant being documented or built; the current gateway release line spans four valid PCB variants (`v1A` to `v1D`) and all helper routing / power assumptions should match the intended board pair
 
 ---
 
@@ -305,6 +325,7 @@ Before changing gateway logic:
 
 Main file:
 - `esp32-gateway/gateway_v1/coprocessor_esp32c3/src/main.cpp`
+- `esp32-gateway/gateway_v1/coprocessor_esp32c3/user_config.h`
 
 Shared protocol:
 - `esp32-gateway/gateway_v1/coprocessor_esp32c3/include/coproc_ota_protocol.h`
@@ -379,6 +400,10 @@ When adding a new sensor node:
 Goal:
 A new sensor node should ideally require no gateway code changes if it follows the current schema-driven model and the existing Node OTA contract.
 
+Release-line notes:
+- the current refactor moves user-tunable node definitions into `user_config.h` instead of crowding `main.cpp`
+- ESP32-C3 Super Mini node builds may apply `WiFi.setTxPower(WIFI_POWER_8_5dBm)`, but only after Wi-Fi startup has completed
+
 ---
 
 ## Working on Actuator Nodes
@@ -410,6 +435,10 @@ When adding or extending an actuator node:
 Important:
 Actuator nodes should never assume the Web Interface can guess real hardware state. The node must report it.
 
+Release-line notes:
+- actuator-node board and naming defaults now belong in `user_config.h` for the newer documentation line
+- if a future actuator-node board uses the ESP32-C3 Super Mini, keep any WiFi transmit power cap board-gated and apply it only after Wi-Fi startup
+
 ---
 
 ## Working on Hybrid Nodes
@@ -440,6 +469,10 @@ Hybrid nodes should be capability-driven, not hardcoded in the gateway or dashbo
 
 Hardware note:
 When wiring Hybrid-node peripherals on custom ESP32 boards, avoid using ESP32 boot-strapping pins for external modules when a safer GPIO is available. The current Hybrid Relay Node reference now places the RC522 `RST` line on **GPIO21** instead of `GPIO2` to keep USB flashing reliable while the RFID reader is connected.
+
+Release-line notes:
+- Hybrid-node board and feature toggles now belong in `user_config.h` for the newer documentation line
+- if a future Hybrid-node board uses the ESP32-C3 Super Mini, keep any WiFi transmit power cap board-gated and apply it only after Wi-Fi startup
 
 ---
 

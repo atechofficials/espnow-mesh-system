@@ -15,7 +15,16 @@ The gateway is the heart of the ESPNow Mesh System. It runs on an **ESP32-S3** a
 | Status LED | WS2812B on GPIO 38 (on-board) |
 | Boot / Reset button | GPIO 0 (on-board BOOT button, used for factory reset) |
 
-The repository now also includes **ESP32 Mesh System Gateway v1.0A** PCB files under `gateway_v1/hardware/`. That hardware release is designed around off-the-shelf **ESP32-S3 Super Mini** and **ESP32-C3 Super Mini** development boards, uses the ESP32-S3 Super Mini's built-in ARGB LED instead of a separate WS2812B, provides a place for an external **BME280** module (firmware support still in progress), and adds an external **5V JST-style power connector**.
+The current gateway hardware release line now tracks four single-layer, thick-trace, THT-friendly PCB variants under `gateway_v1/hardware/`:
+
+| Variant | Main MCU board | Helper MCU board |
+|---------|----------------|------------------|
+| `ESP32_Mesh_Gateway_v1A` | Seeed Studio XIAO ESP32-S3 | ESP32-C3 Super Mini |
+| `ESP32_Mesh_Gateway_v1B` | Seeed Studio XIAO ESP32-S3 | Seeed Studio XIAO ESP32-C3 |
+| `ESP32_Mesh_Gateway_v1C` | Seeed Studio XIAO ESP32-S3 | DFRobot Beetle ESP32-C3 |
+| `ESP32_Mesh_Gateway_v1D` | Waveshare ESP32-S3-DevKit-C-N8R8 | ESP32-C3 Super Mini |
+
+All four variants include connection points for a future **BME280** gateway-side sensor. The older ESP32-S3 Super Mini based carrier should now be treated as deprecated because the current gateway firmware line expects an 8 MB class ESP32-S3 target.
 
 ---
 
@@ -63,6 +72,7 @@ The repository now also includes **ESP32 Mesh System Gateway v1.0A** PCB files u
 | v2.1.2 | Added documentation/support for the **Gateway v1.0A** PCB release, aligned the gateway-helper UART mapping with the new PCB layout, and kept the gateway firmware line in sync with the latest hardware release |
 | v2.1.3 | Added gateway-side max-node pairing-capacity enforcement, added dismissible dashboard feedback when pairing is attempted after the gateway is already full, and hardened node-registry restore so reduced `MESH_MAX_NODES` test builds fail safely instead of corrupting memory |
 | v2.1.4 | Increased the shared node-name limit from 15 to 24 visible characters, updated gateway discovery/registry/rename handling for longer node names, added backward-compatible NVS restore support while saving new node records in the expanded-name format, and allowed fresh nodes to appear with MAC-suffixed default names for easier identification before manual rename |
+| v2.2.0 | Polished gateway-side discovery timing so available nodes appear and expire more predictably, aligned the release docs with the new Gateway v1A-v1D PCB family, and documents the move toward `user_config.h` for user-facing firmware configuration |
 
 ---
 
@@ -92,10 +102,11 @@ gateway_v1/
 
 ## Current Release Notes
 
-- Gateway firmware version: **v2.1.4**
-- Gateway coprocessor firmware version: **v0.1.1**
+- Gateway firmware version: **v2.2.0**
+- Gateway coprocessor firmware version: **v0.2.0**
 - Shared helper transport: `coproc_ota_protocol.h` **v1.0.0**
-- Shared mesh protocol: `mesh_protocol.h` **v3.3.1**
+- Shared mesh protocol: `mesh_protocol.h` **v3.3.2**
+- User configuration header: **`user_config.h v1.0.0`**
 - Web UI assets:
   - `app.js` v4.3
   - `index.html` v3.8

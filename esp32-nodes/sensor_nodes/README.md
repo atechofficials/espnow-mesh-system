@@ -4,7 +4,7 @@ Sensor nodes read physical measurements and transmit them to the gateway over ES
 
 Supported sensor-node firmwares can also be updated through the **gateway-managed Node OTA** flow. During that OTA window, the selected node temporarily joins the helper AP created by the gateway's ESP32-C3 coprocessor, downloads the staged firmware, flashes it, and then returns to normal ESP-NOW operation after reboot.
 
-As of the current mesh protocol (`v3.3.1`), nodes are **self-describing**. Each node sends a sensor schema to the gateway at pair time that defines the labels, units, and precision of its readings. The gateway and web dashboard have no hardcoded knowledge of any specific sensor type and adapt automatically. Adding a new sensor to a node still requires only node firmware changes when the schema contract is preserved.
+As of the current mesh protocol (`v3.3.2`), nodes are **self-describing**. Each node sends a sensor schema to the gateway at pair time that defines the labels, units, and precision of its readings. The gateway and web dashboard have no hardcoded knowledge of any specific sensor type and adapt automatically. Adding a new sensor to a node still requires only node firmware changes when the schema contract is preserved.
 
 Current sensor-node firmwares also report a hardware configuration ID during registration so the gateway can block incompatible Node OTA images before delivery starts. They continue to work unchanged with the newer Hybrid-capable gateway/dashboard release.
 
@@ -14,7 +14,7 @@ Current sensor-node firmwares also report a hardware configuration ID during reg
 
 | Directory | Sensors | Measurements | Board |
 |-----------|---------|--------------|-------|
-| `envo_mini_v1/` | Bosch BMP280 + DHT22 + TEMT6000 | Temperature, Atmospheric Pressure, Humidity, Ambient Light | DFRobot Firebeetle 2 ESP32-E (`v2.1.4`) |
+| `envo_mini_v1/` | Bosch BMP280 (SPI) + DHT22 + TEMT6000 | Temperature, Atmospheric Pressure, Humidity, Ambient Light | ESP32-C3 Super Mini (`v2.2.0`) |
 
 ---
 
@@ -31,3 +31,9 @@ Current sensor-node firmwares also report a hardware configuration ID during reg
 No changes to `mesh_protocol.h`, the gateway firmware, or the web interface are required. The gateway learns what sensors a node has from the schema handshake at pair time.
 
 The pairing flow, heartbeat, gateway-loss recovery, settings protocol, schema handshake, and Node OTA downloader flow are consistent across node types and can be reused from existing implementations.
+
+Current release-line notes:
+
+- user-facing node configuration now belongs in `user_config.h` instead of living entirely in `main.cpp`
+- ESP32-C3 Super Mini sensor-node builds can apply a board-specific `WiFi.setTxPower(WIFI_POWER_8_5dBm)` limit after Wi-Fi startup when RF stability needs it
+- the ESP32-C3 Super Mini antenna/LDO characterization data used to motivate that change is documented in [`../../docs/esp32_c3_supermini_wifi_tests/README.md`](../../docs/esp32_c3_supermini_wifi_tests/README.md)

@@ -1,13 +1,13 @@
 # ESP32-C3 Gateway Coprocessor
 
-Firmware version: **0.1.1**
+Firmware version: **0.2.0**
 Target board: `dfrobot_beetle_esp32c3`
 
 This firmware runs on the **ESP32-C3 coprocessor** attached to the ESP32-S3 gateway. It is not a standalone mesh node. Its main job is to help the gateway perform **Node OTA updates** by staging node firmware, creating a temporary helper access point, serving the staged `firmware.bin` over HTTP, and sending helper status back to the gateway over UART.
 
 The helper does not decide firmware compatibility by itself. The ESP32-S3 gateway now validates node role and hardware-config compatibility before the helper staging flow is allowed to begin.
 
-Current helper releases are used for sensor-node, actuator-node, and hybrid-node OTA jobs. The `v0.1.1` line keeps the helper aligned with the Hybrid-node-capable gateway release and improves the helper handshake/readiness flow used by the ESP32-S3 gateway.
+Current helper releases are used for sensor-node, actuator-node, and hybrid-node OTA jobs. The `v0.2.0` line keeps the helper aligned with the newer gateway discovery/pairing behavior, the `user_config.h` configuration split, and the current Gateway v1A-v1D hardware documentation line.
 
 ---
 
@@ -40,7 +40,7 @@ This means incompatible uploads such as wrong-role firmware, wrong hardware-conf
 | Helper AP IP | `192.168.4.1` |
 | Helper HTTP port | `80` |
 
-On the **ESP32 Mesh System Gateway v1.0A** PCB release, the helper is hosted on an **ESP32-C3 Super Mini** footprint and is wired to the ESP32-S3 side as **RX=GPIO0** and **TX=GPIO1**. The firmware target remains the same helper role, but contributors should keep the documented board-level routing aligned with the current hardware release.
+The current gateway hardware release line may host this helper role on an **ESP32-C3 Super Mini**, **Seeed Studio XIAO ESP32-C3**, or **DFRobot Beetle ESP32-C3**, depending on the selected gateway PCB variant. Contributors should keep helper UART routing, reset pins, and other board-level assumptions aligned with the intended hardware variant.
 
 ---
 
@@ -99,6 +99,8 @@ pio device monitor
 Default serial monitor baud rate: **115200**.
 
 You normally flash this helper once during gateway setup, then update it again only when helper-side behavior or the gateway-helper transport changes.
+
+The newer release line moves board-selection and user-facing helper configuration into `user_config.h`; older checkouts may still keep some of those definitions near the top of `main.cpp`.
 
 ---
 

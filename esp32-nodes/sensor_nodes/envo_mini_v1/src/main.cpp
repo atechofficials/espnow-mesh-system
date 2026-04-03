@@ -1,11 +1,10 @@
 /**
     * @file [main.cpp]
     * @brief Main source file for the ESP32 Mesh Sensor Node firmware
-    * @version 2.1.4
+    * @version 2.2.0
     * @author Mrinal (@atechofficials)
  */
-#define FW_VERSION "2.1.4"
-#define HW_CONFIG_ID "0x0B"
+#define FW_VERSION "2.2.0"
 
 #include <Arduino.h>
 #include <WiFi.h>
@@ -15,25 +14,14 @@
 #include <esp_wifi.h>
 #include <Preferences.h>
 #include <Wire.h>
+#include <SPI.h>
 #include <Adafruit_BMP280.h>
 #include <DHT.h>
 #include <Adafruit_NeoPixel.h>
 #include <Update.h>
 #include <ArduinoJson.h>
 #include "mesh_protocol.h"
-
-// User config
-#define NODE_NAME       "BMP280-Node"   // change per node (max 24 chars)
-#define BMP_I2C_SDA     21
-#define BMP_I2C_SCL     22
-#define BMP_ADDR_PRIM   0x76
-#define BMP_ADDR_SEC    0x77
-#define DHT_PIN         16    // DHT22 data pin
-#define DHT_TYPE        DHT22
-#define TEMT6000_PIN    36    // TEMT6000 analog output (ADC1_CH0 - input only)
-#define PAIR_BTN_PIN    27    // Pairing button GPIO - active-LOW, uses internal pull-up
-#define LED_PIN         5     // WS2812B data pin
-#define LED_COUNT       1
+#include "user_config.h"
 
 // Node state machine
 enum NodeState { STATE_UNPAIRED, STATE_PAIRING, STATE_PAIRED, STATE_DISC_PEND, STATE_GW_LOST };
@@ -47,7 +35,11 @@ static bool     hasMaster    = false;
 static bool     masterAcked  = false;
 static unsigned long lastReReg = 0;
 
+#ifdef BMP280_SPI_CONFIG
+static Adafruit_BMP280   bmp(BMP_CS, &SPI);
+#else
 static Adafruit_BMP280   bmp;
+#endif
 static DHT               dht(DHT_PIN, DHT_TYPE);
 static Adafruit_NeoPixel led(LED_COUNT, LED_PIN, NEO_GRB + NEO_KHZ800);
 static Preferences       prefs;
@@ -92,6 +84,59 @@ static void buildDefaultNodeName() {
         : 0;
 
     snprintf(gNodeName, sizeof(gNodeName), "%.*s-%s", static_cast<int>(maxBaseLen), NODE_NAME, suffix);
+}
+
+static void applyBoardSpecificWifiTxPowerLimit() {
+#ifdef ESP32C3_SUPER_MINI
+    const bool txPowerApplied = WiFi.setTxPower(WIFI_POWER_8_5dBm);
+    Serial.printf("[WIFI] TX power cap (8.5 dBm) -> %s\n", txPowerApplied ? "ok" : "failed");
+#endif
+}
+
+static bool ensureWifiStaReady() {
+    WiFi.mode(WIFI_STA);
+    delay(100);
+    WiFi.disconnect();
+    delay(100);
+    WiFi.setSleep(false);
+    WiFi.persistent(false);
+
+    wifi_mode_t mode = WIFI_MODE_NULL;
+    esp_err_t modeResult = esp_wifi_get_mode(&mode);
+    Serial.printf("[WIFI] Mode query -> %s (mode=%d)\n",
+                  modeResult == ESP_OK ? "ok" : esp_err_to_name(modeResult),
+                  modeResult == ESP_OK ? static_cast<int>(mode) : -1);
+
+    if (modeResult == ESP_ERR_WIFI_NOT_INIT) {
+        Serial.println("[WIFI] Driver not initialized after WiFi.mode(). Retrying STA bring-up...");
+        WiFi.mode(WIFI_OFF);
+        delay(50);
+        WiFi.mode(WIFI_STA);
+        delay(150);
+
+        modeResult = esp_wifi_get_mode(&mode);
+        Serial.printf("[WIFI] Mode re-query -> %s (mode=%d)\n",
+                      modeResult == ESP_OK ? "ok" : esp_err_to_name(modeResult),
+                      modeResult == ESP_OK ? static_cast<int>(mode) : -1);
+        if (modeResult != ESP_OK) {
+            return false;
+        }
+    }
+
+    esp_err_t startResult = esp_wifi_start();
+    Serial.printf("[WIFI] Start -> %s\n",
+                  (startResult == ESP_OK || startResult == ESP_ERR_WIFI_CONN)
+                      ? "ok"
+                      : esp_err_to_name(startResult));
+    if (startResult != ESP_OK && startResult != ESP_ERR_WIFI_CONN) {
+        return false;
+    }
+
+    esp_err_t psResult = esp_wifi_set_ps(WIFI_PS_NONE);
+    Serial.printf("[WIFI] PS disable -> %s\n",
+                  psResult == ESP_OK ? "ok" : esp_err_to_name(psResult));
+
+    return psResult == ESP_OK;
 }
 
 // Timing
@@ -221,20 +266,17 @@ static void onDataRecv(const esp_now_recv_info_t* info,
 }
 
 static void onDataSent(const wifi_tx_info_t* /*txInfo*/, esp_now_send_status_t status) {
-    if (!hasMaster) {
-        // For Debugging
-        Serial.println("[ESP-NOW] Send callback received but no master known. Ignoring.");
-        return;
-    }
     if (status == ESP_NOW_SEND_SUCCESS) {
-        // For Debugging
-        Serial.println("[ESP-NOW] Send successful.");
-        txFailCount = 0;
+        Serial.println(hasMaster
+            ? "[ESP-NOW] Send successful."
+            : "[ESP-NOW] Broadcast send successful.");
+        if (hasMaster) txFailCount = 0;
     } 
     else {
-        // For Debugging
-        Serial.println("[ESP-NOW] Send failed.");
-        if (txFailCount < 255) txFailCount = txFailCount + 1;
+        Serial.println(hasMaster
+            ? "[ESP-NOW] Send failed."
+            : "[ESP-NOW] Broadcast send failed.");
+        if (hasMaster && txFailCount < 255) txFailCount = txFailCount + 1;
     }
 }
 
@@ -406,6 +448,7 @@ static void addMasterPeer() {
     if (esp_now_is_peer_exist(masterMac)) return;
     esp_now_peer_info_t p = {};
     memcpy(p.peer_addr, masterMac, 6);
+    p.ifidx = WIFI_IF_STA;
     p.channel = myChannel;
     p.encrypt = false;
     if (esp_now_add_peer(&p) == ESP_OK)
@@ -419,11 +462,12 @@ static void addBroadcastPeer(uint8_t channel) {
     if (esp_now_is_peer_exist(bcast)) esp_now_del_peer(bcast);
     esp_now_peer_info_t p = {};
     memcpy(p.peer_addr, bcast, 6);
-    p.channel = channel;
+    p.ifidx = WIFI_IF_STA;
+    p.channel = 0;
     p.encrypt = false;
-    esp_now_add_peer(&p);
-    // For Debugging: print broadcast peer addition info to Serial Monitor
-    Serial.printf("[ESP-NOW] Broadcast peer added on channel %d.\n", channel);
+    esp_err_t r = esp_now_add_peer(&p);
+    Serial.printf("[ESP-NOW] Broadcast peer add on channel %d -> %s\n",
+                  channel, r == ESP_OK ? "ok" : esp_err_to_name(r));
 }
 
 // *****************************************************************************
@@ -438,8 +482,9 @@ static void sendBeacon() {
     b.name[sizeof(b.name) - 1] = '\0';
     b.tx_channel    = pairingChannel;
     uint8_t bcast[6] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
-    esp_now_send(bcast, (uint8_t*)&b, sizeof(b));
-    Serial.printf("[PAIR]  Beacon -> ch%d\n", pairingChannel);
+    esp_err_t r = esp_now_send(bcast, (uint8_t*)&b, sizeof(b));
+    Serial.printf("[PAIR]  Beacon -> ch%d (%s)\n",
+                  pairingChannel, r == ESP_OK ? "queued" : esp_err_to_name(r));
 }
 
 static void sendRegistration() {
@@ -484,24 +529,34 @@ static void sendSensorData() {
     }
 
     if (temtOk) {
-        // ESP32 ADC is corrupted by WiFi/ESP-NOW TX bursts, producing spurious
-        // zeros. Simple averaging still returns 0 when most samples land during
-        // a TX window. Fix: collect 64 samples, discard zeros, average the rest.
-        // This isolates only valid ADC conversions regardless of TX timing.
+        int raw = 0;
+        float adcFullScale = 4095.0f;
+
+#ifdef FIREBEETLE_2_ESP32E
+        // The original ESP32 ADC can get spurious zeros during Wi-Fi / ESP-NOW TX.
         const int SAMPLES = 64;
         long sum = 0;
-        int  valid = 0;
+        int valid = 0;
         for (int s = 0; s < SAMPLES; s++) {
             int v = analogRead(TEMT6000_PIN);
-            if (v > 0) { sum += v; valid++; }
+            if (v > 0) {
+                sum += v;
+                valid++;
+            }
         }
-        int raw = (valid > 0) ? (int)(sum / valid) : 0;
-        // Logarithmic scaling: lux is perceptually logarithmic, so a linear
-        // formula maps indoor light to near-zero even though it looks bright.
-        // log10(1+raw)/log10(4096) gives ~40% for typical room light (raw≈30)
-        // and 100% for direct bright light (raw≈4095) at default sensitivity=5.
-        // Sensitivity shifts the entire curve: sens=1 → dim, sens=10 → very sensitive.
-        float normalized = (raw > 0) ? (log10f(1.0f + raw) / log10f(4096.0f)) : 0.0f;
+        raw = (valid > 0) ? (int)(sum / valid) : 0;
+        adcFullScale = 4096.0f;
+#else
+        // ESP32-C3 ADC readings are stable enough here, so a simple average works.
+        const int SAMPLES = 16;
+        long sum = 0;
+        for (int s = 0; s < SAMPLES; s++) {
+            sum += analogRead(TEMT6000_PIN);
+        }
+        raw = (int)(sum / SAMPLES);
+#endif
+
+        float normalized = (raw > 0) ? (log10f(1.0f + raw) / log10f(adcFullScale)) : 0.0f;
         float pct = normalized * (sSettingTemtSens / 5.0f) * 100.0f;
         if (pct > 100.0f) pct = 100.0f;
         sd.readings[sd.count++] = { .id = 3, .value = pct };
@@ -1012,7 +1067,7 @@ static void processRxQueue() {
 // *****************************************************************************
 void setup() {
     Serial.begin(115200);
-    delay(200);
+    delay(300);
     buildDefaultNodeName();
     Serial.printf("\n[BOOT] %s starting...\n", gNodeName);
     touchFirmwareMarkers();
@@ -1025,9 +1080,16 @@ void setup() {
     pinMode(PAIR_BTN_PIN, INPUT_PULLUP);
 
     // BMP280
+#ifdef BMP280_SPI_CONFIG
+    SPI.begin(BMP_SCK, BMP_MISO, BMP_MOSI, BMP_CS);
+    pinMode(BMP_CS, OUTPUT);
+    digitalWrite(BMP_CS, HIGH);
+    bmpOk = bmp.begin();
+#else
     Wire.begin(BMP_I2C_SDA, BMP_I2C_SCL);
     bmpOk = bmp.begin(BMP_ADDR_PRIM);
     if (!bmpOk) bmpOk = bmp.begin(BMP_ADDR_SEC);
+#endif
     if (!bmpOk) {
         Serial.println("[BMP]  WARNING: sensor not found - check wiring!");
     } else {
@@ -1036,7 +1098,13 @@ void setup() {
                         Adafruit_BMP280::SAMPLING_X16,
                         Adafruit_BMP280::FILTER_X4,
                         Adafruit_BMP280::STANDBY_MS_250);
-        Serial.println("[BMP]  Sensor ready.");
+        Serial.println(
+#ifdef BMP280_SPI_CONFIG
+            "[BMP]  Sensor ready over SPI."
+#else
+            "[BMP]  Sensor ready."
+#endif
+        );
     }
 
     // DHT22
@@ -1047,6 +1115,7 @@ void setup() {
     Serial.printf("[DHT]  %s\n", dhtOk ? "Sensor ready." : "WARNING: no valid reading - check wiring!");
 
     // TEMT6000
+    pinMode(TEMT6000_PIN, INPUT);
     analogSetAttenuation(ADC_11db);
     analogRead(TEMT6000_PIN);
     temtOk = true;
@@ -1055,15 +1124,21 @@ void setup() {
     // Load settings, init ESP-NOW and attempt to pair with master if preferences are found in NVS
     loadSettings();
     rxQueue = xQueueCreate(10, sizeof(RxPacket));
-    WiFi.mode(WIFI_STA);
-    WiFi.disconnect();
-    delay(100);
+    if (!ensureWifiStaReady()) {
+        Serial.println("[WIFI] STA bring-up failed - rebooting");
+        delay(1000);
+        ESP.restart();
+    }
 
-    if (esp_now_init() != ESP_OK) {
+    esp_err_t nowResult = esp_now_init();
+    Serial.printf("[ESP-NOW] Init -> %s\n",
+                  nowResult == ESP_OK ? "ok" : esp_err_to_name(nowResult));
+    if (nowResult != ESP_OK) {
         Serial.println("[ESP-NOW] Init failed - rebooting");
         delay(1000);
         ESP.restart();
     }
+    applyBoardSpecificWifiTxPowerLimit();
     esp_now_register_recv_cb(onDataRecv);
     esp_now_register_send_cb(onDataSent);
 
@@ -1115,7 +1190,13 @@ void loop() {
         } 
         else if (now - lastBeacon >= BEACON_INTERVAL) {
             lastBeacon = now;
-            esp_wifi_set_channel(pairingChannel, WIFI_SECOND_CHAN_NONE);
+            esp_err_t chResult = esp_wifi_set_channel(pairingChannel, WIFI_SECOND_CHAN_NONE);
+            if (chResult != ESP_OK) {
+                Serial.printf("[PAIR]  Channel set failed for ch%d -> %s\n",
+                              pairingChannel, esp_err_to_name(chResult));
+            } else {
+                delay(25);
+            }
             addBroadcastPeer(pairingChannel);
             sendBeacon();
             pairingChannel = (pairingChannel % 13) + 1;

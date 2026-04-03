@@ -2,7 +2,7 @@
 /**
     * @file [mesh_protocol.h]
     * @brief Shared ESP-NOW message definitions for the ESP32 ESPNow Mesh System project
-    * @version 3.3.1
+    * @version 3.3.2
     * @author Mrinal (@atechofficials)
     * @details Shared ESP-NOW message definitions
         * Copy this file into the include/ folder of every node project.
@@ -40,7 +40,7 @@
 
 #include <stdint.h>
 
-#define SW_VERSION "3.3.1"
+#define SW_VERSION "3.3.2"
 
 // Message Types *****************************************************************************
 typedef enum : uint8_t {
@@ -342,8 +342,8 @@ typedef struct {
 #define NODE_TIMEOUT_MS       35000UL
 #define HEARTBEAT_INTERVAL    30000UL
 #define SENSOR_INTERVAL       10000UL
-#define BEACON_INTERVAL       2000UL
+#define BEACON_INTERVAL       500UL
 #define PAIRING_TIMEOUT_MS    60000UL
-#define DISCOVERED_TIMEOUT_MS 60000UL
-#define PAIR_CMD_RETRY_MS     2000UL
+#define DISCOVERED_TIMEOUT_MS 15000UL
+#define PAIR_CMD_RETRY_MS     500UL
 #define PAIR_CMD_TIMEOUT_MS   30000UL

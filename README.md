@@ -25,7 +25,7 @@ Open the gateway's IP address in your browser to view live sensor readings from 
 Turn relays on and off directly from the dashboard.
 
 ### Easy pairing
-Put a node into pairing mode and the gateway can discover and register it automatically. Fresh, unrenamed nodes now advertise with the last 4 characters of their MAC address appended to the default node name, making it easier to tell identical boards apart before you rename them from the dashboard.
+Put a node into pairing mode and the gateway can discover and register it automatically. Fresh, unrenamed nodes now advertise with the last 4 characters of their MAC address appended to the default node name, making it easier to tell identical boards apart before you rename them from the dashboard. The current release line also tightens beacon/discovery timing so pairing candidates appear faster and stale "available to pair" entries clear sooner after a node powers down.
 
 ### Node settings from the browser
 Change node settings such as:
@@ -125,20 +125,35 @@ For **Node OTA**, the gateway temporarily hands firmware delivery to the on-boar
 
 ## Hardware Used
 
-### Gateway
-- ESP32-S3-DevKitC-1-N8R8
-- ESP32-C3 helper coprocessor for Node OTA delivery and future gateway-side expansion
+### Gateway firmware targets
+- ESP32-S3-DevKitC-1-N8R8 for bench development and validation
+- Seeed Studio XIAO ESP32-S3 on the new THT gateway carrier variants
+- Waveshare ESP32-S3-DevKit-C-N8R8 on the new THT gateway carrier variants
 
-### Gateway reference PCB
-- **ESP32 Mesh System Gateway v1.0A** hardware files are now included under `esp32-gateway/gateway_v1/hardware/`
-- Designed around off-the-shelf **ESP32-S3 Super Mini** and **ESP32-C3 Super Mini** development boards
-- Single-layer, thick-trace, THT-friendly layout intended to be easy to hand-assemble and home-fabricate
-- Uses the ESP32-S3 Super Mini's built-in **ARGB LED**, so no separate WS2812B is placed on the PCB
-- Includes a footprint/header position for a **BME280** gateway-side sensor module for future room-temperature / humidity support (**firmware support still in development**)
-- Includes an external **5V JST-style power connector**
+### Gateway helper targets
+- ESP32-C3 Super Mini
+- Seeed Studio XIAO ESP32-C3
+- DFRobot Beetle ESP32-C3
 
-### Sensor node reference board
+### Gateway reference PCB variants
+
+The current gateway hardware release line now consists of four single-layer, thick-trace, THT-friendly PCB variants intended to be easy to hand-fabricate at home:
+
+| Variant | Main MCU board | Helper MCU board |
+|---------|----------------|------------------|
+| `ESP32_Mesh_Gateway_v1A` | Seeed Studio XIAO ESP32-S3 | ESP32-C3 Super Mini |
+| `ESP32_Mesh_Gateway_v1B` | Seeed Studio XIAO ESP32-S3 | Seeed Studio XIAO ESP32-C3 |
+| `ESP32_Mesh_Gateway_v1C` | Seeed Studio XIAO ESP32-S3 | DFRobot Beetle ESP32-C3 |
+| `ESP32_Mesh_Gateway_v1D` | Waveshare ESP32-S3-DevKit-C-N8R8 | ESP32-C3 Super Mini |
+
+Shared board-level notes for all four variants:
+- All four variants provide connection points for a future **BME280** module on the gateway PCB
+- All four variants are intentionally kept on a single copper layer with thick traces for easier home fabrication
+- The earlier ESP32-S3 Super Mini based gateway carrier should now be considered deprecated because that board's 4 MB flash is not suitable for the current gateway firmware line, which expects an 8 MB class ESP32-S3 target
+
+### Sensor node reference boards
 - DFRobot FireBeetle 2 ESP32-E
+- ESP32-C3 Super Mini based **Envo Mini v1** prototype hardware
 
 ### Sensor node reference sensors
 - BMP280
@@ -270,7 +285,7 @@ espnow-mesh-system/
 - [`esp32-gateway/`](esp32-gateway/)  
   Gateway documentation and firmware
 - [`esp32-gateway/gateway_v1/hardware/`](esp32-gateway/gateway_v1/hardware/)  
-  Gateway v1.0A PCB files, schematic PDFs, and development resources
+  Gateway v1A-v1D PCB resources, schematic PDFs, and development references
 
 - [`esp32-nodes/`](esp32-nodes/)  
   Sensor, actuator, and hybrid node firmware
@@ -287,10 +302,11 @@ If you're just exploring:
 If you're building hardware:
 
 - Gateway firmware guide: [`esp32-gateway/gateway_v1/README.md`](esp32-gateway/gateway_v1/README.md)
-- Gateway v1.0A PCB files: [`esp32-gateway/gateway_v1/hardware/`](esp32-gateway/gateway_v1/hardware/)
+- Gateway v1A-v1D PCB resources: [`esp32-gateway/gateway_v1/hardware/`](esp32-gateway/gateway_v1/hardware/)
 - Sensor node guide: [`esp32-nodes/sensor_nodes/envo_mini_v1/README.md`](esp32-nodes/sensor_nodes/envo_mini_v1/README.md)
 - Relay node guide: [`esp32-nodes/actuator_nodes/esp32_relay_node_v1/README.md`](esp32-nodes/actuator_nodes/esp32_relay_node_v1/README.md)
 - Hybrid node guide: [`esp32-nodes/hybrid_nodes/esp32_hybrid_relay_node_v1/README.md`](esp32-nodes/hybrid_nodes/esp32_hybrid_relay_node_v1/README.md)
+- ESP32-C3 Super Mini WiFi test report: [`docs/esp32_c3_supermini_wifi_tests/README.md`](docs/esp32_c3_supermini_wifi_tests/README.md)
 
 If you're contributing code:
 
@@ -306,6 +322,8 @@ The project currently supports:
 - local RFID-driven relay scenes on Hybrid nodes
 - browser-based node management
 - gateway-managed Node OTA for supported sensor, actuator, and hybrid nodes with role and hardware-config safety checks
+- board-specific configuration cleanup through the new `user_config.h` release line for gateway and node firmware
+- ESP32-C3 Super Mini board support with board-gated WiFi transmit power limiting on node firmware where needed
 
 Planned future growth may include:
 - more sensor node types

@@ -14,11 +14,10 @@
     *          - Implements a simple touch input handling for toggling relays, with debounce logic.
     * 
     *        Note: This code is intended as a starting point and may require adjustments based on specific hardware configurations and requirements.
-    * @version 1.2.2
+    * @version 1.3.0
     * @author Mrinal (@atechofficials)
  */
-#define FW_VERSION "1.2.2"
-#define HW_CONFIG_ID "0x1A"
+#define FW_VERSION "1.3.0"
 
 #include <Arduino.h>
 #include <WiFi.h>
@@ -31,23 +30,7 @@
 #include <Update.h>
 #include <ArduinoJson.h>
 #include "mesh_protocol.h"
-
-// User config
-#define NODE_NAME       "Relay-Node"   // change per node (max 24 chars)
-#define RELAY1_PIN      26    // Active LOW relay control pins - adjust as needed for your hardware setup
-#define RELAY2_PIN      27
-#define RELAY3_PIN      32
-#define RELAY4_PIN      33
-#define TOUCH1_PIN      25    // TTP224 touch sensor 1 (channels 1-4) - active HIGH, with external pull-downs to GND. Adjust pin numbers as needed for your hardware setup.
-#define TOUCH2_PIN      4     // TTP224 touch sensor 2
-#define TOUCH3_PIN      13    // TTP224 touch sensor 3
-#define TOUCH4_PIN      14    // TTP224 touch sensor 4
-#define PAIR_BTN_PIN    16    // Pairing button GPIO pin (active-LOW, uses internal pull-up)
-#define LED_PIN         5     // WS2812B data pin
-#define LED_COUNT       1     
-#define RELAY_COUNT     4
-#define TOUCH_DEBOUNCE_MS 35
-bool relay_active_high = false; // Set to true if your relay module is active HIGH, false if active LOW
+#include "user_config.h"
 
 // Node state machine
 enum NodeState { STATE_UNPAIRED, STATE_PAIRING, STATE_PAIRED, STATE_DISC_PEND, STATE_GW_LOST };
@@ -104,6 +87,13 @@ static void buildDefaultNodeName() {
         : 0;
 
     snprintf(gNodeName, sizeof(gNodeName), "%.*s-%s", static_cast<int>(maxBaseLen), NODE_NAME, suffix);
+}
+
+static void applyBoardSpecificWifiTxPowerLimit() {
+#ifdef ESP32C3_SUPER_MINI
+    const bool txPowerApplied = WiFi.setTxPower(WIFI_POWER_8_5dBm);
+    Serial.printf("[WIFI] TX power cap (8.5 dBm) -> %s\n", txPowerApplied ? "ok" : "failed");
+#endif
 }
 
 // Timing state
@@ -1144,6 +1134,7 @@ void setup() {
         delay(1000);
         ESP.restart();
     }
+    applyBoardSpecificWifiTxPowerLimit();
     esp_now_register_recv_cb(onDataRecv);
     esp_now_register_send_cb(onDataSent);
 

@@ -1,0 +1,73 @@
+#pragma once
+
+/**
+    * @file [user_config.h]
+    * @brief Shared definitions for the ESP32 Mesh Gateway Firmware
+    * @version 1.0.0
+    * @author Mrinal (@atechofficials)
+ */
+
+// Gateway User Configurations
+#define AP_SSID_DEFAULT  "ESP32-Mesh-Gateway"
+#define AP_PASS_DEFAULT  "meshsetup"
+#define NODE_OTA_HOST "192.168.4.1"
+
+// Select Main Dev Board
+#define ESP32_S3_DEVKITC1
+// #define XIAO_ESP32_S3
+
+// Select Coprocessor Dev Board
+#define COPROC_ESP32C3_BEETLE
+// #define COPROC_ESP32C3_XIAO
+// #define COPROC_ESP32C3_SUPER_MINI
+
+#ifdef ESP32_S3_DEVKITC1
+    #ifdef COPROC_ESP32C3_BEETLE
+        #define HW_CONFIG_ID "0x0A"
+    #elif defined(COPROC_ESP32C3_XIAO)
+        #define HW_CONFIG_ID "0x1A"
+    #elif defined(COPROC_ESP32C3_SUPER_MINI)
+        #define HW_CONFIG_ID "0x2A"
+    #endif
+    #define RESET_BTN_PIN    7
+    #define GW_LED_PIN       38
+    #define COPROC_UART_TX_PIN 4
+    #define COPROC_UART_RX_PIN 5
+    #define COPROC_RESET_PIN 6
+    #define BME_SCK  12
+    #define BME_MISO 14
+    #define BME_MOSI 11
+    #define BME_CS   10
+#elif defined (XIAO_ESP32_S3)
+    #ifdef COPROC_ESP32C3_BEETLE
+        #define HW_CONFIG_ID "0x3A"
+    #elif defined(COPROC_ESP32C3_XIAO)
+        #define HW_CONFIG_ID "0x4A"
+    #elif defined(COPROC_ESP32C3_SUPER_MINI)
+        #define HW_CONFIG_ID "0x5A"
+    #endif
+    #define RESET_BTN_PIN    6
+    #define GW_LED_PIN       3
+    #define COPROC_UART_TX_PIN 4
+    #define COPROC_UART_RX_PIN 5
+    #define COPROC_RESET_PIN 1
+    #define BME_SCK  7
+    #define BME_MISO 8
+    #define BME_MOSI 9
+    #define BME_CS   2
+#endif
+
+// Coprocessor UART Configuration
+#ifdef COPROC_ESP32C3_BEETLE
+    #define UART_TX_PIN 1
+    #define UART_RX_PIN 0
+    #define REBOOT_SIGNAL_PIN 7
+#elif defined(COPROC_ESP32C3_XIAO)
+    #define UART_TX_PIN 4
+    #define UART_RX_PIN 3
+    #define REBOOT_SIGNAL_PIN 5
+#elif defined(COPROC_ESP32C3_SUPER_MINI)
+    #define UART_TX_PIN 1
+    #define UART_RX_PIN 0
+    #define REBOOT_SIGNAL_PIN 3
+#endif

@@ -1,6 +1,6 @@
 # ESP32 Relay Node v1
 
-Firmware version: **1.2.2**
+Firmware version: **1.3.0**
 Target board: `esp32dev`
 
 ## Firmware Changelog
@@ -14,6 +14,7 @@ Target board: `esp32dev`
 | v1.2.0 | Updated to the `mesh_protocol.h v3.3.0` line with capability-aware registration and actuator-schema compatibility for the newer Hybrid-capable gateway/dashboard release |
 | v1.2.1 | Restores the node status RGB LED to enabled when the node is unpaired from the gateway and saves that LED state back to NVS so pairing/status indication is visible again when the node is later re-paired |
 | v1.2.2 | Updated to the `mesh_protocol.h v3.3.1` line with support for 24-character node names and automatic first-boot default naming that appends the last 4 MAC characters for easier node identification without aggressive truncation |
+| v1.3.0 | Introduced `user_config.h` for user-tunable actuator-node definitions and keeps any future ESP32-C3 Super Mini WiFi transmit power cap board-gated and applied only after Wi-Fi startup |
 
 ---
 
@@ -75,9 +76,11 @@ Managed automatically by PlatformIO via `platformio.ini`:
 
 Framework libraries used directly: `Preferences`, `WiFi`, `Wire`.
 
-## Configuration (`src/main.cpp`)
+## Configuration (`user_config.h`)
 
-Change these defines before flashing:
+The current release line moves user-facing pin maps, board choices, and naming defaults into `user_config.h`. If your checkout predates that refactor, the same symbols may still live near the top of `src/main.cpp`.
+
+Key values to review before flashing:
 
 | Constant | Default | Description |
 |----------|---------|-------------|
@@ -93,7 +96,7 @@ Change these defines before flashing:
 | `TOUCH3_PIN` | `13` | TTP224 capacitive touch sensor 3 |
 | `TOUCH4_PIN` | `14` | TTP224 capacitive touch sensor 4 |
 | `relay_active_high` | `false` | Active-HIGH relay support flag |
-| `HW_CONFIG_ID` | `"0x1A"` | Hardware configuration ID embedded in firmware and reported to the gateway for OTA compatibility checks |
+| `HW_CONFIG_ID` | `"0x0C"` | Hardware configuration ID embedded in firmware and reported to the gateway for OTA compatibility checks |
 
 When deploying multiple nodes, give each a unique `NODE_NAME` when practical. Fresh nodes already append the last 4 MAC characters automatically, and you can still rename them later from the gateway dashboard.
 
