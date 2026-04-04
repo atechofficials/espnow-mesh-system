@@ -34,7 +34,7 @@ Current file versions:
 
 | Component | Current Version |
 |----------|-----------------|
-| ESP32-S3 Gateway firmware `main.cpp` | `v2.3.0` |
+| ESP32-S3 Gateway firmware `main.cpp` | `v2.3.1` |
 | ESP32-C3 Gateway Coprocessor firmware `main.cpp` | `v0.3.0` |
 | ESP32 Sensor Node firmware `main.cpp` | `v2.2.0` |
 | ESP32 Actuator Relay Node firmware `main.cpp` | `v1.3.0` |
@@ -43,7 +43,7 @@ Current file versions:
 | `mesh_protocol.h` | `v3.3.2` |
 | `coproc_ota_protocol.h` | `v1.1.0` |
 | `index.html` | `v3.9` |
-| `app.js` | `v4.4` |
+| `app.js` | `v4.5` |
 | `style.css` | `v3.7` |
 
 Current supported node categories:

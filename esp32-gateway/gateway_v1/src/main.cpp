@@ -1,10 +1,10 @@
 /**
     * @file [main.cpp]
     * @brief Main source file for the ESP32 Mesh Gateway firmware
-    * @version 2.3.0
+    * @version 2.3.1
     * @author Mrinal (@atechofficials)
  */
-#define FW_VERSION "2.3.0"
+#define FW_VERSION "2.3.1"
 
 #include <Arduino.h>
 #include <WiFi.h>
@@ -38,6 +38,7 @@
 #define OTA_HWCFG_MARKER_LEN 8
 #define OTA_HWCFG_ID_MAX_LEN HW_CONFIG_ID_LEN
 #define OTA_ERROR_MSG_MAX_LEN 192
+#define COPROC_BUSY_MSG "Coprocessor Busy. Please try after some time."
 #define COPROC_OTA_FW_MARKER "C3FWVER:"
 #define COPROC_OTA_FW_MARKER_LEN 8
 #define COPROC_OTA_HWCFG_MARKER "C3HWCFG:"
@@ -1045,6 +1046,9 @@ static void handleCoprocOtaUpload(AsyncWebServerRequest* req,
                                   uint8_t* data,
                                   size_t len,
                                   bool final);
+static bool isCoprocessorReservedForNodeOta();
+static bool isCoprocessorReservedForCoprocOta();
+static bool isOtaConflictError(const char* msg);
 
 static void handleGatewayOtaUpload(AsyncWebServerRequest* req,
                                    const String& filename,
@@ -1074,7 +1078,9 @@ static void handleGatewayOtaUpload(AsyncWebServerRequest* req,
         strncpy(state->filename, filename.c_str(), sizeof(state->filename) - 1);
         state->filename[sizeof(state->filename) - 1] = '\0';
 
-        if (otaUploadBusy) {
+        if (isCoprocessorReservedForNodeOta() || isCoprocessorReservedForCoprocOta()) {
+            setOtaError(state, COPROC_BUSY_MSG);
+        } else if (otaUploadBusy) {
             setOtaError(state, "Another OTA upload is already in progress.");
         } else if (otaRebootPending) {
             setOtaError(state, "Gateway reboot pending. Wait for the device to come back online.");
@@ -1428,6 +1434,7 @@ static void clearNodeOtaJob(bool removeFile = true) {
         LittleFS.remove(NODE_OTA_FILE_PATH);
     }
     nodeOtaJob = NodeOtaJobState{};
+    broadcastNodeOtaState();
 }
 
 static void clearCoprocOtaJob(bool removeFile = true) {
@@ -1436,6 +1443,7 @@ static void clearCoprocOtaJob(bool removeFile = true) {
         LittleFS.remove(COPROC_OTA_FILE_PATH);
     }
     coprocOtaJob = CoprocOtaJobState{};
+    broadcastCoprocOtaState();
 }
 
 static void setCoprocOtaJobMessage(const String& msg, uint8_t progress = 0) {
@@ -1473,8 +1481,17 @@ static void setCoprocOtaJobSuccess(const String& msg) {
     setCoprocOtaJobMessage(msg, 100);
 }
 
-static bool coprocLinkBusy() {
-    return nodeOtaJob.active || coprocOtaJob.active;
+static bool isCoprocessorReservedForNodeOta() {
+    return nodeOtaJob.active || nodeOtaJob.uploadBusy;
+}
+
+static bool isCoprocessorReservedForCoprocOta() {
+    return coprocOtaJob.active || coprocOtaJob.uploadBusy;
+}
+
+static bool isOtaConflictError(const char* msg) {
+    return strcmp(msg, "Another OTA upload is already in progress.") == 0 ||
+           strcmp(msg, COPROC_BUSY_MSG) == 0;
 }
 
 static void setNodeOtaJobMessage(const String& msg, uint8_t progress = 0) {
@@ -1774,6 +1791,7 @@ static bool sendCoprocUploadBeginFrame(unsigned long now, bool resetRetries = tr
     payload.session_id = nodeOtaJob.sessionId;
     payload.image_size = (uint32_t)nodeOtaJob.imageSize;
     payload.image_crc32 = nodeOtaJob.imageCrc32;
+    payload.upload_target = COPROC_UPLOAD_TARGET_NODE_HELPER;
     payload.node_type = (uint8_t)nodeOtaJob.targetType;
     payload.ap_channel = NODE_OTA_AP_CHANNEL;
     payload.port = NODE_OTA_PORT;
@@ -2391,8 +2409,9 @@ static void handleCoprocOtaUpload(AsyncWebServerRequest* req,
         strncpy(state->filename, filename.c_str(), sizeof(state->filename) - 1);
         state->filename[sizeof(state->filename) - 1] = '\0';
 
-        if (otaUploadBusy || nodeOtaJob.uploadBusy || nodeOtaJob.active ||
-            coprocOtaJob.uploadBusy || coprocOtaJob.active) {
+        if (isCoprocessorReservedForNodeOta()) {
+            setCoprocOtaUploadError(state, COPROC_BUSY_MSG);
+        } else if (otaUploadBusy || isCoprocessorReservedForCoprocOta()) {
             setCoprocOtaUploadError(state, "Another OTA job is already in progress.");
         } else if (!LittleFS.begin(true)) {
             setCoprocOtaUploadError(state, "LittleFS is not available.");
@@ -2406,6 +2425,7 @@ static void handleCoprocOtaUpload(AsyncWebServerRequest* req,
                 Serial.printf("[COPROC OTA]  Upload started: \"%s\" (%u bytes)\n",
                               state->filename[0] ? state->filename : "(unnamed)",
                               (unsigned)state->expectedSize);
+                broadcastCoprocOtaState();
             }
         }
     }
@@ -2505,7 +2525,9 @@ static void handleNodeOtaUpload(AsyncWebServerRequest* req,
         strncpy(state->filename, filename.c_str(), sizeof(state->filename) - 1);
         state->filename[sizeof(state->filename) - 1] = '\0';
 
-        if (otaUploadBusy || nodeOtaJob.uploadBusy || nodeOtaJob.active) {
+        if (isCoprocessorReservedForCoprocOta()) {
+            setNodeOtaUploadError(state, COPROC_BUSY_MSG);
+        } else if (otaUploadBusy || nodeOtaJob.uploadBusy || nodeOtaJob.active) {
             setNodeOtaUploadError(state, "Another OTA job is already in progress.");
         } else if (!LittleFS.begin(true)) {
             setNodeOtaUploadError(state, "LittleFS is not available.");
@@ -2519,6 +2541,7 @@ static void handleNodeOtaUpload(AsyncWebServerRequest* req,
                 Serial.printf("[NODE OTA]  Upload started: \"%s\" (%u bytes)\n",
                               state->filename[0] ? state->filename : "(unnamed)",
                               (unsigned)state->expectedSize);
+                broadcastNodeOtaState();
             }
         }
     }
@@ -4556,6 +4579,7 @@ static void setupRoutes() {
                         req->_tempObject = nullptr;
                     }
                     coprocOtaJob.uploadBusy = false;
+                    broadcastCoprocOtaState();
                 };
 
                 if (!state || !state->started) {
@@ -4570,7 +4594,7 @@ static void setupRoutes() {
                     doc["error"] = state->error;
                     String body;
                     serializeJson(doc, body);
-                    req->send(400, "application/json", body);
+                    req->send(isOtaConflictError(state->error) ? 409 : 400, "application/json", body);
                     if (LittleFS.exists(COPROC_OTA_FILE_PATH)) LittleFS.remove(COPROC_OTA_FILE_PATH);
                     cleanup();
                     return;
@@ -4619,7 +4643,6 @@ static void setupRoutes() {
                 serializeJson(doc, body);
                 req->send(200, "application/json", body);
                 cleanup();
-                broadcastCoprocOtaState();
                 return;
             }
 
@@ -4627,7 +4650,7 @@ static void setupRoutes() {
             if (!state || !state->started) {
                 req->send(400, "application/json", R"({"ok":false,"error":"No firmware upload received."})");
             } else if (state->error[0] != '\0') {
-                int status = (strcmp(state->error, "Another OTA upload is already in progress.") == 0) ? 409 : 400;
+                int status = isOtaConflictError(state->error) ? 409 : 400;
                 JsonDocument doc;
                 doc["ok"] = false;
                 doc["error"] = state->error;
@@ -4675,6 +4698,7 @@ static void setupRoutes() {
                     req->_tempObject = nullptr;
                 }
                 nodeOtaJob.uploadBusy = false;
+                broadcastNodeOtaState();
             };
 
             if (!state || !state->started) {
@@ -4689,7 +4713,7 @@ static void setupRoutes() {
                 doc["error"] = state->error;
                 String body;
                 serializeJson(doc, body);
-                req->send(400, "application/json", body);
+                req->send(isOtaConflictError(state->error) ? 409 : 400, "application/json", body);
                 if (LittleFS.exists(NODE_OTA_FILE_PATH)) LittleFS.remove(NODE_OTA_FILE_PATH);
                 cleanup();
                 return;
@@ -4780,7 +4804,6 @@ static void setupRoutes() {
             serializeJson(doc, body);
             req->send(200, "application/json", body);
             cleanup();
-            broadcastNodeOtaState();
         },
         handleNodeOtaUpload
     );

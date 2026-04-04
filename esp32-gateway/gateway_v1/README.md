@@ -1,11 +1,17 @@
-# Gateway v1 - Build, Flash, and OTA Guide
+﻿# Gateway v1 - Build, Flash, and OTA Guide
 
-Firmware version: **2.3.0**  
+Firmware version: **2.3.1**  
 Target board: `esp32-s3-devkitc1-n8r8`
 
 Gateway helper coprocessor: **ESP32-C3 firmware v0.3.0**
 
 ---
+
+## Highlights in v2.3.1
+- Hardens OTA coordination so **Node OTA**, **Gateway OTA**, and **coprocessor OTA** cannot reserve the ESP32-C3 helper at the same time
+- Shows **Coprocessor Busy. Please try after some time.** across the dashboard when the helper is already occupied, including both **Main MCU** and **Coprocessor** targets in the **Gateway Firmware Update** section
+- Fixes the Node OTA helper upload-begin target so staged node firmware reaches the coprocessor helper correctly again
+- Clears stale Node OTA and coprocessor OTA panel state automatically after backend cleanup so the dashboard returns to idle cleanly
 
 ## Highlights in v2.3.0
 - Adds **ESP32-C3 coprocessor OTA** support through the **Gateway Firmware Update** section in the web dashboard
@@ -283,7 +289,7 @@ The same **Gateway Firmware Update** panel can now also update the attached **ES
 
 - Upload the helper `firmware.bin` from the environment matching your helper board: `beetle_esp32c3`, `xiao_esp32c3`, or `esp32c3_sm`
 - Wrong-board helper uploads are rejected before UART transfer begins
-- Uploading the ESP32-S3 main firmware to the coprocessor OTA path is also rejected safely
+- If the ESP32-C3 is already serving as the Node OTA helper, the **Gateway Firmware Update** section now blocks both MCU targets and shows a shared **Coprocessor Busy** message until the helper is released
 ## Node OTA Update from the Web Interface
 
 The gateway can also update a paired **sensor node**, **actuator node**, or **hybrid node** from the dashboard.
@@ -309,7 +315,7 @@ The gateway can also update a paired **sensor node**, **actuator node**, or **hy
 
 - Upload **node `firmware.bin`** from the node project, not bootloader or partition files
 - The node does **not** need your home Wi-Fi credentials; it only joins the temporary helper AP for the OTA window
-- Wrong-role uploads, wrong-hardware uploads, and gateway firmware uploaded to the node OTA route are rejected before helper staging starts
+- If the coprocessor is already busy with a helper self-update, the **Node OTA Update** section disables its controls and shows the shared **Coprocessor Busy** message until the helper is available again
 - Supported and verified flows now include same-version reflashing, upgrades, downgrades, sensor-node OTA, relay-node OTA, hybrid-node OTA, and node OTA after gateway reboot
 
 ---

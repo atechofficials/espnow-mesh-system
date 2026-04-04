@@ -1,4 +1,4 @@
-# ESP32 Gateway
+﻿# ESP32 Gateway
 
 The gateway is the heart of the ESPNow Mesh System. It runs on an **ESP32-S3** and bridges your Wi-Fi network with the ESP-NOW mesh while serving a live web dashboard, managing paired nodes, supporting **web-based gateway OTA firmware updates**, and coordinating **gateway-managed Node OTA updates** for sensor, actuator, and hybrid nodes with a companion **ESP32-C3 coprocessor**.
 
@@ -37,8 +37,7 @@ All four variants include connection points for a future **BME280** gateway-side
 - Serves the web dashboard from LittleFS over HTTP/WebSocket
 - Stores gateway configuration, web credentials, paired node records, node hardware-config IDs, and relay label assignments in NVS
 - Supports **gateway self-OTA** from the web interface with validation, hardware-config ID checking, progress reporting, and automatic reboot
-- Supports **gateway coprocessor OTA** from the same web interface by validating the uploaded ESP32-C3 helper firmware, transferring it over UART, and tracking helper reboot/reconnect status
-- Supports **Node OTA** by validating node role and hardware-config markers, staging node firmware, handing delivery to the ESP32-C3 helper, tracking node reconnects, and reporting OTA progress back to the dashboard
+- Coordinates **Gateway OTA**, **coprocessor OTA**, and **Node OTA** so the ESP32-C3 helper cannot be reserved by conflicting update flows at the same time
 - Supports **Hybrid nodes** with capability-aware state handling, actuator-schema sync, RFID config sync, and RFID scan-event forwarding to the web UI
 
 ---
@@ -74,7 +73,7 @@ All four variants include connection points for a future **BME280** gateway-side
 | v2.1.3 | Added gateway-side max-node pairing-capacity enforcement, added dismissible dashboard feedback when pairing is attempted after the gateway is already full, and hardened node-registry restore so reduced `MESH_MAX_NODES` test builds fail safely instead of corrupting memory |
 | v2.1.4 | Increased the shared node-name limit from 15 to 24 visible characters, updated gateway discovery/registry/rename handling for longer node names, added backward-compatible NVS restore support while saving new node records in the expanded-name format, and allowed fresh nodes to appear with MAC-suffixed default names for easier identification before manual rename |
 | v2.2.0 | Polished gateway-side discovery timing so available nodes appear and expire more predictably, aligned the release docs with the new Gateway v1A-v1D PCB family, and documents the move toward `user_config.h` for user-facing firmware configuration |
-| v2.3.0 | Added web-based ESP32-C3 coprocessor OTA from the Gateway Firmware Update section, introduced board-specific coprocessor hardware-config validation, improved OTA error reporting, and added explicit PlatformIO build targets for the documented gateway hardware combinations |
+| v2.3.1 | Hardened OTA coordination so Node OTA, Gateway OTA, and coprocessor OTA cannot fight over the ESP32-C3 helper, surfaced the shared **Coprocessor Busy** feedback across both gateway MCU targets, fixed a Node OTA helper-target regression, and auto-clears stale OTA panel state after backend cleanup |
 
 ---
 
@@ -104,13 +103,13 @@ gateway_v1/
 
 ## Current Release Notes
 
-- Gateway firmware version: **v2.3.0**
+- Gateway firmware version: **v2.3.1**
 - Gateway coprocessor firmware version: **v0.3.0**
 - Shared helper transport: `coproc_ota_protocol.h` **v1.1.0**
 - Shared mesh protocol: `mesh_protocol.h` **v3.3.2**
 - User configuration header: **`user_config.h v1.1.0`**
 - Web UI assets:
-  - `app.js` v4.4
+  - `app.js` v4.5
   - `index.html` v3.9
   - `style.css` v3.7
 - Active partition layout: **`partitions_8mb_ota.csv`**

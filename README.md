@@ -1,4 +1,4 @@
-# ESPNow Mesh System
+﻿# ESPNow Mesh System
 
 A local-first ESP32 smart-home system for **wireless sensing and control**.
 
@@ -82,7 +82,7 @@ The project already supports **sensor nodes**, **actuator nodes**, and **hybrid 
 - Gateway-managed coprocessor OTA from the browser with board-specific coprocessor hardware-config ID validation and progress/error reporting
 - Gateway-managed OTA for supported sensor nodes with role and hardware-config ID validation
 - Gateway-managed OTA for supported actuator nodes with role and hardware-config ID validation
-- Gateway-managed OTA for supported hybrid nodes with role and hardware-config ID validation
+- Gateway OTA and Node OTA now coordinate helper ownership so the ESP32-C3 coprocessor cannot be reserved by conflicting update flows at the same time
 
 ---
 
@@ -106,21 +106,21 @@ This makes the setup especially useful for small ESP32 devices that only need to
 
 ```text
 Browser
-   │
-   │  Dashboard
-   ▼
+   â”‚
+   â”‚  Dashboard
+   â–¼
 ESP32-S3 Gateway
-   │
-   │  ESP-NOW
-   ├── Sensor Nodes
-   └── Actuator Nodes
+   â”‚
+   â”‚  ESP-NOW
+   â”œâ”€â”€ Sensor Nodes
+   â””â”€â”€ Actuator Nodes
 ```
 
 The gateway acts as the bridge between:
 - your browser over Wi-Fi
 - your ESP32 nodes over ESP-NOW
 
-For **Node OTA**, the gateway temporarily hands firmware delivery to the on-board **ESP32-C3 coprocessor**, which stages the selected node firmware, starts a temporary helper access point, and serves the firmware image to the target node while the main gateway continues managing the mesh and dashboard. Incompatible uploads are blocked up front if the firmware markers do not match the selected node role or hardware configuration.
+For **Node OTA**, the gateway temporarily hands firmware delivery to the on-board **ESP32-C3 coprocessor**, which stages the selected node firmware, starts a temporary helper access point, and serves the firmware image to the target node while the main gateway continues managing the mesh and dashboard. Incompatible uploads are blocked up front if the firmware markers do not match the selected node role or hardware configuration. While that helper session is active, the dashboard now blocks conflicting Gateway OTA or coprocessor OTA actions and shows a clear **Coprocessor Busy** state until the helper is free again.
 
 ---
 
@@ -278,10 +278,10 @@ More detailed documentation is available in the subproject README files.
 
 ```text
 espnow-mesh-system/
-├── README.md
-├── CONTRIBUTING.md
-├── esp32-gateway/
-└── esp32-nodes/
+â”œâ”€â”€ README.md
+â”œâ”€â”€ CONTRIBUTING.md
+â”œâ”€â”€ esp32-gateway/
+â””â”€â”€ esp32-nodes/
 ```
 
 ### Main sections

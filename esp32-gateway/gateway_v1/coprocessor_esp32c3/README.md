@@ -1,4 +1,4 @@
-# ESP32-C3 Gateway Coprocessor
+﻿# ESP32-C3 Gateway Coprocessor
 
 Firmware version: **0.3.0**
 Default target board: `dfrobot_beetle_esp32c3`
@@ -7,7 +7,8 @@ This firmware runs on the **ESP32-C3 coprocessor** attached to the ESP32-S3 gate
 
 The current helper release line can also be updated from the same **Gateway Firmware Update** section in the dashboard, where the ESP32-S3 gateway stages a compatible helper `firmware.bin`, validates the helper board type, transfers it over UART, and waits for the ESP32-C3 to reboot into the new firmware.
 
-The helper does not decide firmware compatibility by itself. The ESP32-S3 gateway validates node role and hardware-config compatibility before node OTA staging begins, and validates the helper-board hardware-config ID before coprocessor self-OTA is allowed to begin.
+
+The gateway also coordinates helper ownership now: if the ESP32-C3 is already busy serving a Node OTA session, the dashboard blocks helper self-OTA requests with a **Coprocessor Busy** message, and if helper self-OTA is already running, Node OTA requests are blocked until the helper returns to the idle state.
 
 Current helper releases are used for sensor-node, actuator-node, and hybrid-node OTA jobs. The `v0.3.0` line also adds gateway-driven coprocessor self-OTA support, board-specific helper hardware validation, and alignment with the newer `user_config.h v1.1.0` and `coproc_ota_protocol.h v1.1.0` release line.
 
@@ -157,7 +158,7 @@ The gateway sends an abort/cleanup command and the helper:
 
 - stops the temporary AP
 - stops the HTTP server
-- returns to the idle `helper-ready` state
+- becomes available again for either the next Node OTA session or a helper self-OTA request from the dashboard
 
 ---
 

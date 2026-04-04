@@ -1,5 +1,5 @@
 /**
- * ESP32 Mesh Gateway Web Interface Client v4.4
+ * ESP32 Mesh Gateway Web Interface Client v4.5
  *
  * WS Inbound:  { type:"meta"|"update"|"discovered"|"pair_timeout"|"pair_capacity_full"|"ap_config_ack"|
  *                     "gw_portal_starting"|"gw_factory_reset"|"gw_rebooting"|
@@ -115,6 +115,7 @@ let gatewayOtaMaxBytes = 0;
 let gatewayOtaProject = "";
 let gatewayOtaUploading = false;
 let gatewayOtaTarget = "main";
+const COPROC_BUSY_MSG = "Coprocessor Busy. Please try after some time.";
 let coprocOnline = false;
 let coprocFwVersion = "";
 let coprocOtaSupported = false;
@@ -1592,10 +1593,26 @@ function getGatewayOtaSelectedSupported(target = getGatewayOtaTarget()) {
   return target === "coprocessor" ? coprocOtaSupported : gatewayOtaSupported;
 }
 
+function isGatewayUploadingToCoprocessor() {
+  return gatewayOtaUploading && gatewayOtaTarget === "coprocessor";
+}
+
+function isCoprocessorReservedByNodeOta() {
+  return nodeOtaUploading || nodeOtaBusy;
+}
+
+function isCoprocessorReservedByCoprocOta() {
+  return coprocOtaBusy || isGatewayUploadingToCoprocessor();
+}
+
+function isGatewayFirmwareUpdateBlockedByCoproc() {
+  return isCoprocessorReservedByNodeOta() || isCoprocessorReservedByCoprocOta();
+}
+
 function getGatewayOtaSelectedBusy(target = getGatewayOtaTarget()) {
   return target === "coprocessor"
-    ? (coprocOtaBusy || coprocOtaState.active)
-    : gatewayOtaBusy;
+    ? (coprocOtaBusy || isCoprocessorReservedByNodeOta())
+    : (gatewayOtaBusy || isGatewayFirmwareUpdateBlockedByCoproc());
 }
 
 function applyCoprocOtaState(msg) {
@@ -1631,6 +1648,7 @@ function applyCoprocOtaState(msg) {
   }
 
   refreshGatewayOtaUi();
+  refreshNodeOtaUi();
 }
 
 function refreshGatewayOtaUi() {
@@ -1638,6 +1656,7 @@ function refreshGatewayOtaUi() {
   const targetLabel = getGatewayOtaTargetLabel(target);
   const supported = getGatewayOtaSelectedSupported(target);
   const busy = getGatewayOtaSelectedBusy(target);
+  const coprocBlocksGatewaySection = isGatewayFirmwareUpdateBlockedByCoproc();
 
   if ($gwOtaCurrent) $gwOtaCurrent.textContent = getGatewayOtaSelectedVersion(target);
   if ($gwOtaSlot) $gwOtaSlot.textContent = supported ? getGatewayOtaSelectedSlotSize(target) : "Not available";
@@ -1646,7 +1665,7 @@ function refreshGatewayOtaUi() {
   if (!$gwOtaBtn || !$gwOtaFileInput) return;
 
   const hasFile = !!$gwOtaFileInput.files?.length;
-  const anyGatewayOtaBusy = gatewayOtaUploading || gatewayOtaBusy || coprocOtaBusy;
+  const anyGatewayOtaBusy = gatewayOtaUploading || gatewayOtaBusy || coprocBlocksGatewaySection;
   const disabled = gatewayOtaUploading || busy || !supported || !hasFile;
   $gwOtaBtn.disabled = disabled;
   $gwOtaFileInput.disabled = gatewayOtaUploading || busy || !supported;
@@ -1667,7 +1686,9 @@ function refreshGatewayOtaUi() {
       setGatewayOtaNote("OTA is unavailable until the gateway is flashed with the OTA partition layout.", "err");
     }
   } else if (busy) {
-    if (!hasExplicitNote) {
+    if (coprocBlocksGatewaySection) {
+      setGatewayOtaNote(COPROC_BUSY_MSG, "err");
+    } else if (!hasExplicitNote) {
       if (target === "coprocessor") {
         setGatewayOtaNote("A coprocessor firmware update is already in progress.", "ok");
       } else {
@@ -1802,6 +1823,7 @@ function uploadGatewayFirmware() {
   const supported = getGatewayOtaSelectedSupported(target);
   const busy = getGatewayOtaSelectedBusy(target);
   const slotSize = target === "coprocessor" ? coprocOtaMaxBytes : gatewayOtaMaxBytes;
+  const coprocBlocksGatewaySection = isGatewayFirmwareUpdateBlockedByCoproc();
 
   if (!$gwOtaFileInput?.files?.length) {
     setGatewayOtaNote("Select a .bin firmware file first.", "err");
@@ -1811,6 +1833,10 @@ function uploadGatewayFirmware() {
     setGatewayOtaNote(target === "coprocessor"
       ? "Coprocessor OTA is unavailable until the coprocessor is running the OTA-capable helper firmware."
       : "OTA is not available on the current gateway partition layout.", "err");
+    return;
+  }
+  if (coprocBlocksGatewaySection) {
+    setGatewayOtaNote(COPROC_BUSY_MSG, "err");
     return;
   }
   if (busy || gatewayOtaUploading) {
@@ -1949,11 +1975,18 @@ function applyNodeOtaState(msg) {
   }
 
   refreshNodeOtaUi();
+  refreshGatewayOtaUi();
 }
 
 function refreshNodeOtaUi() {
   populateNodeOtaTargets();
-  if ($nodeOtaHelper) $nodeOtaHelper.textContent = nodeOtaHelperOnline ? "Online" : "Offline";
+  const coprocReservedByCoprocOta = isCoprocessorReservedByCoprocOta();
+  const coprocReservedByAnyOta = coprocReservedByCoprocOta || isCoprocessorReservedByNodeOta();
+  if ($nodeOtaHelper) {
+    $nodeOtaHelper.textContent = coprocReservedByAnyOta
+      ? "Busy"
+      : (nodeOtaHelperOnline ? "Online" : "Offline");
+  }
   if ($nodeOtaHost) $nodeOtaHost.textContent = nodeOtaHost || "192.168.4.1";
 
   const selectedId = Number($nodeOtaNode?.value || 0);
@@ -1965,21 +1998,25 @@ function refreshNodeOtaUi() {
   }
 
   const hasFile = !!$nodeOtaFileInput?.files?.length;
-  const disabled = nodeOtaUploading || nodeOtaBusy || !selectedNode || !hasFile;
+  const disabled = nodeOtaUploading || nodeOtaBusy || coprocReservedByCoprocOta || !selectedNode || !hasFile;
   if ($nodeOtaBtn) $nodeOtaBtn.disabled = disabled;
-  if ($nodeOtaFileInput) $nodeOtaFileInput.disabled = nodeOtaUploading || nodeOtaBusy;
-  if ($nodeOtaNode) $nodeOtaNode.disabled = nodeOtaUploading || nodeOtaBusy;
+  if ($nodeOtaFileInput) $nodeOtaFileInput.disabled = nodeOtaUploading || nodeOtaBusy || coprocReservedByCoprocOta;
+  if ($nodeOtaNode) $nodeOtaNode.disabled = nodeOtaUploading || nodeOtaBusy || coprocReservedByCoprocOta;
 
   if ($nodeOtaBtn) {
     $nodeOtaBtn.textContent = nodeOtaUploading
       ? "Uploading..."
+      : coprocReservedByCoprocOta
+        ? "Coprocessor Busy"
       : nodeOtaBusy
         ? "Node OTA Busy"
         : "Upload Node Firmware";
   }
 
   if (nodeOtaUploading) return;
-  if (nodeOtaBusy && !nodeOtaState.error) {
+  if (coprocReservedByCoprocOta) {
+    setNodeOtaNote(COPROC_BUSY_MSG, "err");
+  } else if (nodeOtaBusy && !nodeOtaState.error) {
     setNodeOtaNote(nodeOtaState.message || "Node OTA is in progress.", "ok");
   } else if (!selectedNode && !$nodeOtaNode?.value) {
     setNodeOtaNote("");
@@ -2067,6 +2104,10 @@ function uploadNodeFirmware() {
   }
   if (!$nodeOtaFileInput?.files?.length) {
     setNodeOtaNote("Select a .bin firmware file first.", "err");
+    return;
+  }
+  if (isCoprocessorReservedByCoprocOta()) {
+    setNodeOtaNote(COPROC_BUSY_MSG, "err");
     return;
   }
   if (nodeOtaBusy || nodeOtaUploading) {
