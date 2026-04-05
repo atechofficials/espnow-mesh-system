@@ -3,7 +3,7 @@
 A local-first ESP32 smart-home system for **wireless sensing and control**.
 
 This project lets you build a small home mesh using **ESP32-based nodes** and a central **ESP32-S3 gateway**.  
-The gateway connects to your Wi-Fi, hosts a browser-based dashboard, communicates with nearby nodes over **ESP-NOW**, and now uses a companion **ESP32-C3 coprocessor** to handle **gateway-managed Node OTA updates** and future helper tasks.
+The gateway connects to your Wi-Fi, hosts a browser-based dashboard, communicates with nearby nodes over **ESP-NOW**, can now fall back to its own **offline access-point mode** when your router is unavailable, and uses a companion **ESP32-C3 coprocessor** to handle **gateway-managed Node OTA updates** and future helper tasks.
 
 That means you can:
 
@@ -35,6 +35,9 @@ Change node settings such as:
 
 ### Gateway-managed Node OTA
 Upload compatible sensor-node, actuator-node, or hybrid-node firmware from the gateway web interface and let the gateway update the selected node without connecting that node to your home Wi-Fi. The gateway now validates both the node role and the node hardware configuration ID before delivery begins.
+
+### Offline gateway access
+If your router is unavailable, the gateway can now switch to an **ESP32-S3-hosted Offline Mode AP** so the dashboard stays reachable without internet or home-network access. You can also choose manual offline mode during setup and edit the offline AP credentials later from the dashboard.
 
 ### Automatic recovery
 If the gateway or node reboots, the system reconnects automatically and restores state where supported.
@@ -83,6 +86,7 @@ The project already supports **sensor nodes**, **actuator nodes**, and **hybrid 
 - Gateway-managed OTA for supported sensor nodes with role and hardware-config ID validation
 - Gateway-managed OTA for supported actuator nodes with role and hardware-config ID validation
 - Gateway OTA and Node OTA now coordinate helper ownership so the ESP32-C3 coprocessor cannot be reserved by conflicting update flows at the same time
+- Gateway self-OTA, coprocessor OTA, and Node OTA remain available while the dashboard is being served through the Offline Mode AP
 
 ---
 
@@ -121,6 +125,8 @@ The gateway acts as the bridge between:
 - your ESP32 nodes over ESP-NOW
 
 For **Node OTA**, the gateway temporarily hands firmware delivery to the on-board **ESP32-C3 coprocessor**, which stages the selected node firmware, starts a temporary helper access point, and serves the firmware image to the target node while the main gateway continues managing the mesh and dashboard. Incompatible uploads are blocked up front if the firmware markers do not match the selected node role or hardware configuration. While that helper session is active, the dashboard now blocks conflicting Gateway OTA or coprocessor OTA actions and shows a clear **Coprocessor Busy** state until the helper is free again.
+
+If the gateway loses its router Wi-Fi connection, the **ESP32-S3** can now host an operator-facing Offline Mode AP directly while keeping ESP-NOW active on the last known mesh channel. When the router comes back, the gateway scans for the saved SSID, reconnects automatically, and returns the dashboard to the router-assigned IP.
 
 ---
 
@@ -199,13 +205,17 @@ Hybrid node:
 [`esp32-nodes/hybrid_nodes/esp32_hybrid_relay_node_v1/README.md`](esp32-nodes/hybrid_nodes/esp32_hybrid_relay_node_v1/README.md)
 
 ### 3. Power on the gateway
-On first boot, the gateway helps you connect it to your home Wi-Fi.
+On first boot, the gateway opens the setup portal so you can either connect it to your home Wi-Fi or choose manual offline mode with the built-in Offline Mode AP credentials.
 
 ### 4. Pair a node
 Put a node into pairing mode and let the gateway detect it.
 
 ### 5. Open the dashboard
-Visit the gateway IP in your browser and start using the system.
+Visit the gateway IP in your browser and start using the system. If the gateway is running in Offline Mode, open:
+
+```text
+http://192.168.8.1/
+```
 
 ---
 
@@ -224,8 +234,9 @@ The current dashboard supports:
 - updating the gateway main MCU or the ESP32-C3 coprocessor from the **Gateway Firmware Update** section
 - disconnecting nodes
 - changing gateway settings
+- editing Offline Mode AP settings and viewing current network mode / access IP
 - launching Wi-Fi setup mode
-- factory reset options
+- factory reset options, including a physical long-press reset button on the gateway
 
 The dashboard is served directly by the gateway itself.
 

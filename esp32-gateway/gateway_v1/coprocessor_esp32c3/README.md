@@ -7,10 +7,11 @@ This firmware runs on the **ESP32-C3 coprocessor** attached to the ESP32-S3 gate
 
 The current helper release line can also be updated from the same **Gateway Firmware Update** section in the dashboard, where the ESP32-S3 gateway stages a compatible helper `firmware.bin`, validates the helper board type, transfers it over UART, and waits for the ESP32-C3 to reboot into the new firmware.
 
+In the current **Gateway v2.4.0** release line, the new Offline Mode AP is hosted by the **ESP32-S3 main MCU**, not by this coprocessor. That means the helper remains available for Node OTA staging and helper self-OTA while the dashboard is being accessed through the gateway's Offline Mode AP.
 
 The gateway also coordinates helper ownership now: if the ESP32-C3 is already busy serving a Node OTA session, the dashboard blocks helper self-OTA requests with a **Coprocessor Busy** message, and if helper self-OTA is already running, Node OTA requests are blocked until the helper returns to the idle state.
 
-Current helper releases are used for sensor-node, actuator-node, and hybrid-node OTA jobs. The `v0.3.0` line also adds gateway-driven coprocessor self-OTA support, board-specific helper hardware validation, and alignment with the newer `user_config.h v1.1.0` and `coproc_ota_protocol.h v1.1.0` release line.
+Current helper releases are used for sensor-node, actuator-node, and hybrid-node OTA jobs. The `v0.3.0` line also adds gateway-driven coprocessor self-OTA support, board-specific helper hardware validation, and alignment with the current gateway release line built around `user_config.h v1.1.1` and `coproc_ota_protocol.h v1.1.0`.
 
 ---
 
@@ -27,7 +28,7 @@ During a Node OTA update, the helper:
 
 During coprocessor self-OTA, the helper also receives a staged helper firmware image from the gateway over UART, writes the new image to its OTA slot, reports status back to the gateway, and reboots into the updated helper firmware.
 
-The gateway remains the OTA orchestrator. The ESP32-C3 only handles the helper-side transport and temporary OTA hosting.
+The gateway remains the OTA orchestrator. The ESP32-C3 only handles the helper-side transport and temporary OTA hosting. It does **not** host the gateway Offline Mode AP or router failover logic.
 
 This means incompatible uploads such as wrong-role firmware, wrong hardware-config firmware, or gateway firmware accidentally sent through the node OTA path are rejected by the gateway before the helper is engaged.
 
@@ -123,6 +124,8 @@ The newer release line moves board-selection and user-facing helper configuratio
 ## Coprocessor OTA from the Gateway Web Interface
 
 Once a compatible helper build is already running on the ESP32-C3, the gateway can update the helper itself from the browser.
+
+This remains available even when the gateway dashboard is currently being served through the ESP32-S3 Offline Mode AP.
 
 During this flow, the ESP32-S3 gateway:
 

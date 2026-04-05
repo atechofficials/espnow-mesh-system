@@ -34,17 +34,17 @@ Current file versions:
 
 | Component | Current Version |
 |----------|-----------------|
-| ESP32-S3 Gateway firmware `main.cpp` | `v2.3.1` |
+| ESP32-S3 Gateway firmware `main.cpp` | `v2.4.0` |
 | ESP32-C3 Gateway Coprocessor firmware `main.cpp` | `v0.3.0` |
 | ESP32 Sensor Node firmware `main.cpp` | `v2.2.0` |
 | ESP32 Actuator Relay Node firmware `main.cpp` | `v1.3.0` |
 | ESP32 Hybrid Relay Node firmware `main.cpp` | `v0.2.0` |
-| `user_config.h` | `v1.1.0` |
+| `user_config.h` | `v1.1.1` |
 | `mesh_protocol.h` | `v3.3.2` |
 | `coproc_ota_protocol.h` | `v1.1.0` |
-| `index.html` | `v3.9` |
-| `app.js` | `v4.5` |
-| `style.css` | `v3.7` |
+| `index.html` | `v4.0.1` |
+| `app.js` | `v4.6.2` |
+| `style.css` | `v3.7.0` |
 
 Current supported node categories:
 - Sensor nodes
@@ -65,6 +65,13 @@ The current Node OTA system has been validated with:
 - gateway coprocessor OTA via the web interface
 - coprocessor board mismatch rejection on the coprocessor OTA route
 - gateway main-firmware rejection on the coprocessor OTA route when the uploaded image is too large for the helper OTA slot
+- Gateway Main MCU OTA while the dashboard is served through Offline Mode
+- Gateway Coprocessor OTA while the dashboard is served through Offline Mode
+- Node OTA while the dashboard is served through Offline Mode
+- manual Gateway Offline Mode activation from the setup portal
+- automatic router-loss fallback from online mode to the ESP32-S3 Offline Mode AP
+- automatic recovery from the ESP32-S3 Offline Mode AP back to the saved router connection
+- runtime physical factory reset from the dedicated gateway reset button
 
 ---
 
@@ -273,9 +280,14 @@ Actuator nodes should also report current actuator state so the gateway and Web 
 ### 4. Clear separation of responsibilities
 
 - Node firmware owns hardware interaction and node-side OTA flashing
-- Gateway firmware owns pairing, routing, NVS tracking, browser communication, and Node OTA orchestration
+- Gateway firmware owns pairing, routing, NVS tracking, browser communication, Node OTA orchestration, router failover/recovery, and physical factory reset UX
 - Gateway coprocessor firmware owns helper AP hosting, staged firmware serving, and helper-side OTA status reporting
 - Web assets own rendering and user interaction only
+
+For the current release line:
+- the ESP32-S3 gateway main MCU owns the dedicated Offline Mode AP and all network transition logic
+- the ESP32-C3 helper does not host Offline Mode; it remains reserved for helper AP and OTA responsibilities
+- the gateway RGB LED may have temporary owner overrides for high-priority UX flows such as physical factory reset, so new LED behaviors should not fight with that ownership model
 
 OTA compatibility checks are split deliberately:
 - the gateway validates firmware type, firmware markers, and hardware-config compatibility
@@ -294,9 +306,9 @@ Useful contribution areas include:
 
 | Area | Examples |
 |------|----------|
-| Gateway firmware | pairing reliability, reconnect logic, Node OTA coordination, NVS robustness, diagnostics |
+| Gateway firmware | pairing reliability, reconnect logic, Offline Mode failover/recovery, Node OTA coordination, NVS robustness, factory reset UX, diagnostics |
 | Gateway coprocessor | helper AP behavior, staged firmware serving, transport resilience, helper diagnostics |
-| Web Interface | mobile improvements, cleaner UX, Hybrid node controls, RFID UX, Node OTA feedback, better actuator controls |
+| Web Interface | mobile improvements, cleaner UX, Hybrid node controls, RFID UX, Node OTA feedback, network transition toasts, Offline Mode settings UX, better actuator controls |
 | Sensor nodes | new hardware integrations, better power handling, schema-driven readings, node OTA robustness |
 | Actuator nodes | relay boards, dimmers, motor control, valve control, node OTA robustness |
 | Hybrid nodes | combined actuator/sensor devices, RFID workflows, mixed-capability nodes, node OTA robustness |
@@ -318,6 +330,7 @@ Shared protocols:
 
 Things typically handled in the gateway:
 - Wi-Fi and captive portal setup
+- offline AP setup and router failover/recovery
 - ESP-NOW peer management
 - node registration and re-registration
 - settings routing
@@ -328,13 +341,18 @@ Things typically handled in the gateway:
 - persistence of gateway-side state
 - Node OTA job scheduling, validation, progress reporting, reconnect detection, and persistence of node hardware-config metadata
 - gateway self-OTA and coprocessor self-OTA target selection, validation, UART transfer, and helper reboot/reconnect reporting
+- physical factory reset input handling and LED feedback sequencing
 
 Before changing gateway logic:
 - confirm whether the change belongs in the gateway, helper, or the node
 - keep settings and sensor handling schema-driven
 - do not hardcode node-specific behavior unless it is truly gateway-specific
+- retest online -> offline -> online router transition behavior when changing Wi-Fi reconnect logic, scan timing, access-point behavior, or saved-credential handling
+- retest dashboard reachability at both the router IP and `http://192.168.8.1/` when touching Offline Mode logic
 - retest end-to-end Node OTA when changing OTA job timing, status handling, or reconnect logic
 - retest both Main-MCU OTA and Coprocessor OTA when changing the **Gateway Firmware Update** flow, helper validation behavior, or helper reconnect timing
+- retest OTA flows from both normal router mode and Offline Mode whenever network-state logic changes
+- retest the physical factory reset button, hold timing, cancellation behavior, and reset LED sequence whenever input or LED ownership logic changes
 - preserve `GWHWCFG:` and `NODEHWCFG:` validation behavior when changing OTA upload parsing or firmware-marker scanning
 - keep UART pin definitions aligned with the actual gateway hardware variant being documented or built; the current gateway release line spans four valid PCB variants (`v1A` to `v1D`) and all helper routing / power assumptions should match the intended board pair
 
@@ -383,6 +401,8 @@ Important notes:
 - preserve schema-driven rendering wherever possible
 - when changing Node OTA UX, verify staging, reconnect, success, and failure states
 - keep explicit OTA error messages visible; do not replace specific mismatch errors with generic busy/rebooting text
+- keep network transition messaging aligned with real gateway state changes, especially when the router drops and the dashboard has to move between router IP and Offline Mode IP
+- treat reconnect loss, Offline Mode entry, and router restore as first-class UX states, not silent background transitions
 
 When modifying the dashboard:
 - keep `index.html`, `app.js`, and `style.css` version notes aligned
@@ -392,6 +412,10 @@ When modifying the dashboard:
 - test settings changes from the browser
 - test Node OTA status transitions
 - test both **Main MCU** and **Coprocessor** target selection in the **Gateway Firmware Update** section
+- test the router-loss toast / reconnect guidance flow
+- test reopening the dashboard from `http://192.168.8.1/` after a router-loss event
+- test the restored-online notification when the gateway returns to the router connection
+- test the factory-reset notification path for both dashboard-triggered and physical-button resets
 
 ---
 
@@ -612,6 +636,8 @@ Before opening a PR:
 - flash and test on real hardware when behavior changes
 - test serial monitor logs
 - test both gateway Main-MCU OTA and coprocessor OTA separately when the **Gateway Firmware Update** flow changes
+- test both online-mode and Offline Mode behavior when changing gateway networking, OTA availability, or dashboard reconnect handling
+- test the physical factory reset button and LED sequence when touching gateway input handling or LED ownership
 - update the correct README files
 - keep version references current
 - keep `mesh_protocol.h` synchronized everywhere

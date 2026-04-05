@@ -3,13 +3,16 @@
 /**
     * @file [user_config.h]
     * @brief Shared definitions for the ESP32 Mesh Gateway Firmware
-    * @version 1.1.0
+    * @version 1.1.1
     * @author Mrinal (@atechofficials)
  */
 
 // Gateway User Configurations
 #define AP_SSID_DEFAULT  "ESP32-Mesh-Gateway"
 #define AP_PASS_DEFAULT  "meshsetup"
+#define OFFLINE_AP_SSID_DEFAULT "ESP32-Mesh-Offline"
+#define OFFLINE_AP_PASS_DEFAULT "meshoffline"
+#define OFFLINE_AP_DEFAULT_CHANNEL 6
 #define NODE_OTA_HOST "192.168.4.1"
 
 // Select Main Dev Board
@@ -44,6 +47,7 @@
     #endif
     #define RESET_BTN_PIN    7
     #define GW_LED_PIN       38
+    #define GW_LED_COL_ORDER NEO_RGB
     #define COPROC_UART_TX_PIN 4
     #define COPROC_UART_RX_PIN 5
     #define COPROC_RESET_PIN 6
@@ -61,6 +65,7 @@
     #endif
     #define RESET_BTN_PIN    6
     #define GW_LED_PIN       3
+    #define GW_LED_COL_ORDER NEO_GRB
     #define COPROC_UART_TX_PIN 4
     #define COPROC_UART_RX_PIN 5
     #define COPROC_RESET_PIN 1

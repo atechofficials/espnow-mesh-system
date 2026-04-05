@@ -1,11 +1,24 @@
 ﻿# Gateway v1 - Build, Flash, and OTA Guide
 
-Firmware version: **2.3.1**  
+Firmware version: **2.4.0**  
 Target board: `esp32-s3-devkitc1-n8r8`
 
 Gateway helper coprocessor: **ESP32-C3 firmware v0.3.0**
 
 ---
+
+## Highlights in v2.4.0
+- Adds **Gateway Offline Mode** hosted directly on the ESP32-S3 so the dashboard remains reachable even when the home router is unavailable
+- Adds setup-portal controls for choosing **manual Offline Mode** and editing the dedicated Offline Mode AP credentials
+- Automatically falls back from router STA mode to the Offline Mode AP when the saved router link is lost
+- Automatically scans for the saved router SSID and returns from Offline Mode back to normal router STA mode when that network comes back
+- Keeps **Gateway OTA**, **Coprocessor OTA**, and **Node OTA** functional while the gateway is being accessed through the Offline Mode AP
+- Adds reconnect-aware dashboard notifications so users are told when the gateway loses the router, switches to Offline Mode, and later returns to router mode
+- Adds a runtime **physical factory reset** flow using the board-specific `RESET_BTN_PIN` from `include/user_config.h` instead of relying only on the dashboard action
+- Adds a dedicated RGB LED reset sequence for physical factory reset:
+  - blinking dark orange while the button is being held
+  - solid red once the reset hold threshold is reached
+- Increases the physical reset hold time to **6 seconds** for clearer visual confirmation
 
 ## Highlights in v2.3.1
 - Hardens OTA coordination so **Node OTA**, **Gateway OTA**, and **coprocessor OTA** cannot reserve the ESP32-C3 helper at the same time
@@ -214,20 +227,56 @@ Keep those copies synchronized.
    - SSID: **`ESP32-Mesh-Gateway`**
    - Password: **`meshsetup`**
 3. Connect to that AP from a phone or laptop
-4. Open the captive portal and select your home Wi-Fi network
-5. After connection, the dashboard becomes available at:
+4. Open the captive portal and either:
+   - select and save your home Wi-Fi network, or
+   - enable **Manual Offline Mode** so the gateway boots directly into its dedicated Offline Mode AP
+5. After connection to your router, the dashboard becomes available at:
 
 ```text
 http://<gateway-ip>/
+```
+
+6. If the gateway is running in Offline Mode instead, the dashboard becomes available at:
+
+```text
+http://192.168.8.1/
 ```
 
 Wi-Fi credentials, gateway settings, and paired-node records are stored in NVS and survive reboot.
 
 ---
 
+## Gateway Offline Mode
+
+The current gateway release line supports a dedicated **Offline Mode AP** hosted on the ESP32-S3 main MCU.
+
+This mode is intended for cases where:
+
+- the gateway has not been given router credentials yet
+- the user explicitly enables **Manual Offline Mode** from the setup portal
+- the saved home router disappears and the gateway must remain reachable locally
+
+### Offline Mode behavior
+
+- the gateway starts the dedicated Offline Mode AP with its own SSID/password
+- the dashboard is served from **`http://192.168.8.1/`**
+- paired nodes stay available over ESP-NOW on the last active mesh channel
+- the gateway keeps retrying for the saved router SSID in the background
+- once the saved router becomes visible again, the gateway automatically returns to normal online router mode
+
+### Configuration
+
+- Offline Mode AP credentials can be changed from the setup portal and later from the dashboard
+- setup-portal credentials and Offline Mode AP credentials are stored separately
+- router credentials are also mirrored into gateway config storage so reconnect and failover behavior remains reliable across reboot
+
+---
+
 ## Gateway OTA Update from the Web Interface
 
 Once an OTA-capable gateway build is already installed, the gateway can update its **own firmware** directly from the dashboard.
+
+This flow remains available when the dashboard is being served either from the normal router connection or from the ESP32-S3 Offline Mode AP.
 
 ### Steps
 
@@ -265,6 +314,8 @@ The **Gateway Firmware Update** panel now includes a target selector with **Main
 
 The same **Gateway Firmware Update** panel can now also update the attached **ESP32-C3 coprocessor** from the browser.
 
+This flow also remains available while the gateway is operating in Offline Mode.
+
 ### Steps
 
 1. Build the matching coprocessor helper firmware binary from `coprocessor_esp32c3/` using the correct environment for your helper board
@@ -293,6 +344,8 @@ The same **Gateway Firmware Update** panel can now also update the attached **ES
 ## Node OTA Update from the Web Interface
 
 The gateway can also update a paired **sensor node**, **actuator node**, or **hybrid node** from the dashboard.
+
+This flow remains available in both normal router mode and the ESP32-S3 Offline Mode AP.
 
 ### Supported flow
 
@@ -348,12 +401,24 @@ If credentials are forgotten, recover access by performing a **factory reset**.
 
 ## Factory Reset
 
-Hold the **BOOT button (GPIO 0)** for **5 seconds** while the gateway is running, or trigger **Factory Reset** from the dashboard.
+Hold the dedicated **physical factory reset button** connected to the currently selected `RESET_BTN_PIN` in `include/user_config.h` for **6 seconds** while the gateway is running, or trigger **Factory Reset** from the dashboard.
+
+The exact MCU pin is **board-dependent** and may differ between gateway hardware variants and build environments, so do not assume a universal reset-button pin across all gateway boards.
+
+During a physical reset hold, the gateway RGB LED shows:
+
+- **blinking dark orange** while the reset hold is in progress
+- **solid red** once the hold threshold has been reached and reset is about to trigger
+
+If the button is released early, the reset is canceled and LED ownership returns to the previous runtime state.
+
+The physical reset LED sequence is always shown, even if the user has disabled the normal Gateway Status LED from the dashboard.
 
 This clears:
 
 - saved Wi-Fi / router credentials
 - custom setup AP credentials
+- custom Offline Mode AP credentials
 - web interface credentials
 - paired node registry
 - saved relay label assignments
@@ -365,6 +430,8 @@ The gateway then reboots and returns to setup mode.
 ## Key Configuration (`user_config.h`)
 
 The current release line moves board selection, pin definitions, and user-facing firmware defaults into `user_config.h` so `main.cpp` can stay focused on runtime logic. Older checkouts may still keep some of the same constants in `src/main.cpp`.
+
+The newer `v2.4.0` line also keeps the setup-portal defaults, Offline Mode defaults, board-specific reset-button wiring through `RESET_BTN_PIN`, and gateway LED ownership behavior aligned through `user_config.h`.
 
 | Constant | Default | Description |
 |----------|---------|-------------|

@@ -1,4 +1,4 @@
-<!-- ESP32 Mesh Gateway Web Interface v3.9 -->
+<!-- ESP32 Mesh Gateway Web Interface v4.0.1 -->
 <!DOCTYPE html>
 <html lang="en" data-theme="dark">
 <head>
@@ -293,6 +293,21 @@
             <div class="settings-card">
               <div class="settings-card-hdr">Gateway Network</div>
 
+              <div class="ota-meta-grid" style="margin-bottom:1rem">
+                <div class="ota-meta-item">
+                  <span class="ota-meta-label">Access Mode</span>
+                  <span class="ota-meta-value" id="gw-net-mode">-</span>
+                </div>
+                <div class="ota-meta-item">
+                  <span class="ota-meta-label">Access IP</span>
+                  <span class="ota-meta-value" id="gw-access-ip">-</span>
+                </div>
+                <div class="ota-meta-item">
+                  <span class="ota-meta-label">Router Link</span>
+                  <span class="ota-meta-value" id="gw-router-link">-</span>
+                </div>
+              </div>
+
               <!-- Sub-section: AP config -->
               <div class="settings-subsec-hdr">Setup Portal Access Point</div>
               <p class="settings-subsec-desc">
@@ -317,6 +332,33 @@
                   Save AP Config
                 </button>
                 <span class="setting-save-note" id="ap-save-note"></span>
+              </div>
+
+              <div class="settings-divider"></div>
+
+              <div class="settings-subsec-hdr">Offline Mode Access Point</div>
+              <p class="settings-subsec-desc">
+                These credentials are used by the ESP32-S3 hosted fallback access point when the gateway is
+                running in offline mode. The same dashboard and OTA tools remain available over this local AP.
+              </p>
+              <div class="setting-row-2">
+                <div class="setting-field">
+                  <label>Offline AP SSID</label>
+                  <input type="text" class="setting-input" id="offline-ssid-input"
+                         placeholder="ESP32-Mesh-Offline" maxlength="32" autocomplete="off">
+                </div>
+                <div class="setting-field">
+                  <label>Offline AP Password</label>
+                  <input type="password" class="setting-input" id="offline-pass-input"
+                         placeholder="8+ chars · blank = open AP" maxlength="63" autocomplete="new-password">
+                </div>
+              </div>
+              <div class="setting-save-row">
+                <button class="settings-save-btn" id="save-offline-btn">
+                  <span class="icon icon-sm gw-ap-save-btn-icon"></span>
+                  Save Offline AP
+                </button>
+                <span class="setting-save-note" id="offline-save-note"></span>
               </div>
 
               <!-- Divider -->
@@ -561,6 +603,6 @@
   <!-- ── Pair timeout toast ─────────────────────────────────────── -->
   <div class="toast" id="toast" style="display:none"></div>
 
-  <script src="/js/app.js?v=4.3-name24"></script>
+<script src="/js/app.js?v=4.6.2"></script>
 </body>
 </html>

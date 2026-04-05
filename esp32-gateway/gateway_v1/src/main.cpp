@@ -1,10 +1,10 @@
 /**
     * @file [main.cpp]
     * @brief Main source file for the ESP32 Mesh Gateway firmware
-    * @version 2.3.1
+    * @version 2.4.0
     * @author Mrinal (@atechofficials)
  */
-#define FW_VERSION "2.3.1"
+#define FW_VERSION "2.4.0"
 
 #include <Arduino.h>
 #include <WiFi.h>
@@ -72,11 +72,20 @@
 #define COPROC_RECOVERY_COOLDOWN_MS 15000UL
 #define COPROC_ACK_RETRY_LIMIT 3
 #define COPROC_FRAME_MAX_PAYLOAD sizeof(CoprocUploadChunkPayload)
+#define GATEWAY_STA_CONNECT_TIMEOUT_MS 15000UL
+#define GATEWAY_NETWORK_MONITOR_MS 2000UL
+#define GATEWAY_OFFLINE_RETRY_MS 15000UL
+#define GATEWAY_FACTORY_RESET_HOLD_MS 6000UL
+#define GATEWAY_FACTORY_RESET_LED_BLINK_MS 300UL
 
 // Runtime AP credentials - loaded from NVS on boot, fall back to compile-time defaults.
 // These are the SSID / password the WiFiManager captive portal AP will use.
 static char gwApSsid[33]     = AP_SSID_DEFAULT;
 static char gwApPassword[64] = AP_PASS_DEFAULT;
+static char gwOfflineSsid[33] = OFFLINE_AP_SSID_DEFAULT;
+static char gwOfflinePassword[64] = OFFLINE_AP_PASS_DEFAULT;
+static char savedRouterSsid[33] = {0};
+static char savedRouterPassword[65] = {0};
 
 // Web Interface Auth
 static char webUsername[33]   = "";   // max 32 chars
@@ -167,15 +176,47 @@ static QueueHandle_t rxQueue;
 static AsyncWebServer server(WEB_PORT);
 static AsyncWebSocket ws("/ws");
 
+enum GatewayNetworkMode : uint8_t {
+    GATEWAY_SETUP_PORTAL = 0,
+    GATEWAY_ONLINE_STA,
+    GATEWAY_OFFLINE_AP,
+};
+
 // State
 static uint8_t   wifiChannel = 1;
 static uint32_t  bootMs      = 0;
+static GatewayNetworkMode gatewayNetworkMode = GATEWAY_SETUP_PORTAL;
+static bool gatewayRouterCredsSaved = false;
+static bool gatewayRouterOnline = false;
+static bool gatewayOfflineApActive = false;
+static bool gatewayManualOfflinePreferred = false;
+static bool gatewayForceSetupPortalNextBoot = false;
+static bool gatewayOfflineAutoFallback = false;
+static uint8_t gatewayLastKnownChannel = OFFLINE_AP_DEFAULT_CHANNEL;
+static unsigned long lastGatewayNetworkCheckAt = 0;
+static unsigned long lastGatewayRouterRetryAt = 0;
+static bool gatewayRouterRetryInProgress = false;
+static bool gatewayResetButtonReleased = false;
+static bool gatewayResetButtonHandled = false;
+static unsigned long gatewayResetButtonPressedAt = 0;
+static const IPAddress GATEWAY_OFFLINE_AP_IP(192, 168, 8, 1);
+static const IPAddress GATEWAY_OFFLINE_AP_GATEWAY(192, 168, 8, 1);
+static const IPAddress GATEWAY_OFFLINE_AP_SUBNET(255, 255, 255, 0);
 
 // Gateway Status LED
-static Adafruit_NeoPixel gwLed(1, GW_LED_PIN, NEO_GRB + NEO_KHZ800);
+static Adafruit_NeoPixel gwLed(1, GW_LED_PIN, GW_LED_COL_ORDER + NEO_KHZ800);
 static uint32_t          gwLedCurrent   = 0xDEADBEEF;
+static uint32_t          gwLedDesiredColor = 0;
 static unsigned long     gwLedFlashUntil = 0;
 bool gwLedEnabled = true;
+enum GatewayLedOverrideMode : uint8_t {
+    GW_LED_OVERRIDE_NONE = 0,
+    GW_LED_OVERRIDE_FACTORY_RESET_BLINK,
+    GW_LED_OVERRIDE_FACTORY_RESET_SOLID,
+};
+static GatewayLedOverrideMode gwLedOverrideMode = GW_LED_OVERRIDE_NONE;
+static unsigned long     gwLedOverrideLastBlinkAt = 0;
+static bool              gwLedOverrideBlinkOn = false;
 __attribute__((used)) static const char kGatewayFirmwareVersionMarker[] = OTA_FW_MARKER FW_VERSION;
 __attribute__((used)) static const char kGatewayHardwareConfigMarker[] = OTA_HWCFG_MARKER HW_CONFIG_ID;
 static volatile uint32_t gGatewayFirmwareMarkerChecksum = 0;
@@ -391,6 +432,7 @@ static unsigned long lastCoprocAckAt = 0;
 static unsigned long lastCoprocNoAckLogAt = 0;
 static unsigned long lastCoprocRecoveryPulseAt = 0;
 static bool coprocOtaSupportedRemote = false;
+static bool espNowReady = false;
 static uint32_t coprocOtaMaxBytes = 0;
 static char coprocFwVersion[COPROC_FW_VERSION_LEN] = {0};
 static char coprocHwConfigId[COPROC_HWCFG_ID_LEN] = {0};
@@ -399,11 +441,46 @@ static char coprocProjectName[COPROC_PROJECT_NAME_LEN] = {0};
 // *****************************************************************************
 // Gateway Status LED Helpers
 // *****************************************************************************
-static void setGwLed(uint32_t color) {
+static void applyGwLedHardware(uint32_t color) {
     if (color == gwLedCurrent) return;
     gwLedCurrent = color;
     gwLed.setPixelColor(0, color);
     gwLed.show();
+}
+
+static void setGwLed(uint32_t color) {
+    gwLedDesiredColor = color;
+    if (gwLedOverrideMode != GW_LED_OVERRIDE_NONE) return;
+    applyGwLedHardware(color);
+}
+
+static void startGatewayFactoryResetLedBlink(unsigned long now) {
+    gwLedOverrideMode = GW_LED_OVERRIDE_FACTORY_RESET_BLINK;
+    gwLedOverrideLastBlinkAt = now;
+    gwLedOverrideBlinkOn = true;
+    applyGwLedHardware(gwLed.Color(160, 60, 0));  // dark orange
+}
+
+static void showGatewayFactoryResetLedConfirm() {
+    gwLedOverrideMode = GW_LED_OVERRIDE_FACTORY_RESET_SOLID;
+    gwLedOverrideBlinkOn = true;
+    applyGwLedHardware(gwLed.Color(255, 0, 0));  // solid red
+}
+
+static void clearGatewayLedOverride() {
+    if (gwLedOverrideMode == GW_LED_OVERRIDE_NONE) return;
+    gwLedOverrideMode = GW_LED_OVERRIDE_NONE;
+    gwLedOverrideBlinkOn = false;
+    gwLedCurrent = 0xDEADBEEF;  // force immediate repaint from normal state
+    if (!gwLedEnabled) {
+        applyGwLedHardware(0);
+        return;
+    }
+    if (millis() < gwLedFlashUntil) {
+        applyGwLedHardware(gwLedDesiredColor);
+        return;
+    }
+    setGwLed(gwLed.Color(0, 0, 32));  // resume normal operational color
 }
 
 static void flashGwLed(uint32_t color, uint32_t durationMs) {
@@ -413,8 +490,30 @@ static void flashGwLed(uint32_t color, uint32_t durationMs) {
 }
 
 static void updateGwLed() {
-    if (!gwLedEnabled) return;
-    if (millis() < gwLedFlashUntil) return;
+    const unsigned long now = millis();
+
+    if (gwLedOverrideMode == GW_LED_OVERRIDE_FACTORY_RESET_SOLID) {
+        applyGwLedHardware(gwLed.Color(255, 0, 0));
+        return;
+    }
+
+    if (gwLedOverrideMode == GW_LED_OVERRIDE_FACTORY_RESET_BLINK) {
+        if ((now - gwLedOverrideLastBlinkAt) >= GATEWAY_FACTORY_RESET_LED_BLINK_MS) {
+            gwLedOverrideLastBlinkAt = now;
+            gwLedOverrideBlinkOn = !gwLedOverrideBlinkOn;
+        }
+        applyGwLedHardware(gwLedOverrideBlinkOn ? gwLed.Color(160, 60, 0) : 0);
+        return;
+    }
+
+    if (!gwLedEnabled) {
+        applyGwLedHardware(0);
+        return;
+    }
+    if (now < gwLedFlashUntil) {
+        applyGwLedHardware(gwLedDesiredColor);
+        return;
+    }
     setGwLed(gwLed.Color(0, 0, 32));  // dim blue = operational
 }
 
@@ -424,7 +523,7 @@ static void saveGwLedState(bool enabled) {
     prefs.putBool("led_enabled", enabled);
     prefs.end();
     gwLedEnabled = enabled;
-    if (!enabled) {
+    if (!enabled && gwLedOverrideMode == GW_LED_OVERRIDE_NONE) {
         setGwLed(0);  // turn off immediately
     }
 }
@@ -435,7 +534,7 @@ static void loadGwLedState() {
     gwLedEnabled = prefs.getBool("led_enabled", true);
     prefs.end();
     Serial.printf("[CFG]  Gateway LED is %s\n", gwLedEnabled ? "enabled" : "disabled");
-    if (!gwLedEnabled) {
+    if (!gwLedEnabled && gwLedOverrideMode == GW_LED_OVERRIDE_NONE) {
         setGwLed(0);
     }
 }
@@ -634,6 +733,10 @@ static bool nodeSupportsCapability(const NodeRecord& node, uint32_t capability) 
 static bool credentialsSet() {
     return webUsername[0] != '\0' && webPassHash[0] != '\0';
 }
+
+static void performGatewayFactoryReset(const char* sourceLabel);
+static void clearStoredRouterCredentials();
+static void saveGatewayForceSetupFlag(bool enabled);
 
 static bool isWsAuthenticated(uint32_t clientId) {
     if (!credentialsSet()) return true;
@@ -2617,17 +2720,162 @@ static void handleNodeOtaUpload(AsyncWebServerRequest* req,
 }
 
 // *****************************************************************************
-//  NVS — Gateway config (AP name / password)
+//  NVS / Network config helpers
 // *****************************************************************************
+static bool isValidGatewayChannel(uint8_t channel) {
+    return channel >= 1 && channel <= 13;
+}
+
+static const char* gatewayNetworkModeToString(GatewayNetworkMode mode) {
+    switch (mode) {
+        case GATEWAY_ONLINE_STA: return "Online (Router)";
+        case GATEWAY_OFFLINE_AP: return "Offline AP Active";
+        case GATEWAY_SETUP_PORTAL:
+        default:                return "Setup Portal";
+    }
+}
+
+static String gatewayAccessIpString() {
+    if (gatewayOfflineApActive) {
+        IPAddress ip = WiFi.softAPIP();
+        return ip ? ip.toString() : String("192.168.8.1");
+    }
+    IPAddress ip = WiFi.localIP();
+    return ip ? ip.toString() : String("-");
+}
+
+static String buildGatewayNetworkNoticeJson(const char* event,
+                                            const String& message = String(),
+                                            const String& targetIp = String(),
+                                            const String& targetSsid = String()) {
+    JsonDocument doc;
+    doc["type"] = "gw_network_notice";
+    doc["event"] = event ? event : "";
+    doc["network_mode"] = gatewayNetworkModeToString(gatewayNetworkMode);
+    doc["access_ip"] = gatewayAccessIpString();
+    if (savedRouterSsid[0] != '\0') doc["router_ssid"] = savedRouterSsid;
+    if (!message.isEmpty()) doc["message"] = message;
+    if (!targetIp.isEmpty()) doc["target_ip"] = targetIp;
+    if (!targetSsid.isEmpty()) doc["target_ssid"] = targetSsid;
+    String out;
+    serializeJson(doc, out);
+    return out;
+}
+
+static void performGatewayFactoryReset(const char* sourceLabel) {
+    Serial.printf("[GW]  Factory reset requested via %s.\n",
+                  sourceLabel ? sourceLabel : "unknown source");
+    ws.textAll("{\"type\":\"gw_factory_reset\"}");
+    ws.cleanupClients();
+    delay(200);
+    {
+        WiFiManager wm;
+        wm.resetSettings();
+    }
+    clearStoredRouterCredentials();
+    {
+        Preferences prefs;
+        prefs.begin("gwconfig", false);
+        prefs.clear();
+        prefs.end();
+    }
+    gatewayManualOfflinePreferred = false;
+    gatewayForceSetupPortalNextBoot = false;
+    gatewayOfflineApActive = false;
+    gatewayOfflineAutoFallback = false;
+    gatewayRouterOnline = false;
+    gatewayRouterRetryInProgress = false;
+    saveGatewayForceSetupFlag(true);
+    {
+        Preferences prefs;
+        prefs.begin("gwauth", false);
+        prefs.clear();
+        prefs.end();
+        memset(webUsername,   0, sizeof(webUsername));
+        memset(webPassHash,   0, sizeof(webPassHash));
+        memset(rememberToken, 0, sizeof(rememberToken));
+        memset(sessionToken,  0, sizeof(sessionToken));
+        authWsClients.clear();
+    }
+    {
+        Preferences prefs;
+        prefs.begin("gwnodes", false);
+        prefs.clear();
+        prefs.end();
+    }
+    {
+        Preferences prefs;
+        prefs.begin("gwrelay", false);
+        prefs.clear();
+        prefs.end();
+    }
+    delay(100);
+    ESP.restart();
+}
+
+static void processGatewayFactoryResetButton(unsigned long now) {
+    const bool pressed = digitalRead(RESET_BTN_PIN) == LOW;
+
+    if (!gatewayResetButtonReleased) {
+        if (!pressed) gatewayResetButtonReleased = true;
+        return;
+    }
+
+    if (!pressed) {
+        if (gatewayResetButtonPressedAt != 0 && !gatewayResetButtonHandled) {
+            clearGatewayLedOverride();
+        }
+        gatewayResetButtonPressedAt = 0;
+        gatewayResetButtonHandled = false;
+        return;
+    }
+
+    if (gatewayResetButtonHandled) return;
+
+    if (gatewayResetButtonPressedAt == 0) {
+        gatewayResetButtonPressedAt = now;
+        Serial.println("[GW]  Factory reset button pressed. Hold to confirm...");
+        startGatewayFactoryResetLedBlink(now);
+        return;
+    }
+
+    if ((now - gatewayResetButtonPressedAt) < GATEWAY_FACTORY_RESET_HOLD_MS) return;
+
+    gatewayResetButtonHandled = true;
+    showGatewayFactoryResetLedConfirm();
+    delay(250);
+    performGatewayFactoryReset("physical button");
+}
+
 static void loadApConfig() {
     Preferences prefs;
     prefs.begin("gwconfig", true);  // read-only
-    String ssid = prefs.getString("ap_ssid", AP_SSID_DEFAULT);
-    String pass = prefs.getString("ap_pass", AP_PASS_DEFAULT);
+    String setupSsid = prefs.getString("ap_ssid", AP_SSID_DEFAULT);
+    String setupPass = prefs.getString("ap_pass", AP_PASS_DEFAULT);
+    String offlineSsid = prefs.getString("offline_ssid", OFFLINE_AP_SSID_DEFAULT);
+    String offlinePass = prefs.getString("offline_pass", OFFLINE_AP_PASS_DEFAULT);
+    gatewayManualOfflinePreferred = prefs.getBool("offline_manual", false);
+    gatewayForceSetupPortalNextBoot = prefs.getBool("force_setup", false);
+    gatewayLastKnownChannel = prefs.getUChar("last_ch", OFFLINE_AP_DEFAULT_CHANNEL);
     prefs.end();
-    strncpy(gwApSsid,     ssid.c_str(), 32); gwApSsid[32]     = '\0';
-    strncpy(gwApPassword, pass.c_str(), 63); gwApPassword[63] = '\0';
-    Serial.printf("[CFG]  AP SSID loaded: \"%s\"\n", gwApSsid);
+
+    if (setupSsid.length() < 2 || setupSsid.length() > 32) setupSsid = AP_SSID_DEFAULT;
+    if (offlineSsid.length() < 2 || offlineSsid.length() > 32) offlineSsid = OFFLINE_AP_SSID_DEFAULT;
+    if ((setupPass.length() > 0 && setupPass.length() < 8) || setupPass.length() > 63) setupPass = AP_PASS_DEFAULT;
+    if ((offlinePass.length() > 0 && offlinePass.length() < 8) || offlinePass.length() > 63) offlinePass = OFFLINE_AP_PASS_DEFAULT;
+    if (!isValidGatewayChannel(gatewayLastKnownChannel)) gatewayLastKnownChannel = OFFLINE_AP_DEFAULT_CHANNEL;
+
+    strncpy(gwApSsid, setupSsid.c_str(), sizeof(gwApSsid) - 1);
+    gwApSsid[sizeof(gwApSsid) - 1] = '\0';
+    strncpy(gwApPassword, setupPass.c_str(), sizeof(gwApPassword) - 1);
+    gwApPassword[sizeof(gwApPassword) - 1] = '\0';
+    strncpy(gwOfflineSsid, offlineSsid.c_str(), sizeof(gwOfflineSsid) - 1);
+    gwOfflineSsid[sizeof(gwOfflineSsid) - 1] = '\0';
+    strncpy(gwOfflinePassword, offlinePass.c_str(), sizeof(gwOfflinePassword) - 1);
+    gwOfflinePassword[sizeof(gwOfflinePassword) - 1] = '\0';
+
+    Serial.printf("[CFG]  Setup portal SSID loaded: \"%s\"\n", gwApSsid);
+    Serial.printf("[CFG]  Offline AP SSID loaded: \"%s\"\n", gwOfflineSsid);
 }
 
 static void saveApConfig(const char* ssid, const char* pass) {
@@ -2636,9 +2884,610 @@ static void saveApConfig(const char* ssid, const char* pass) {
     prefs.putString("ap_ssid", ssid);
     prefs.putString("ap_pass", pass);
     prefs.end();
-    strncpy(gwApSsid,     ssid, 32); gwApSsid[32]     = '\0';
-    strncpy(gwApPassword, pass, 63); gwApPassword[63] = '\0';
-    Serial.printf("[CFG]  AP config saved: SSID=\"%s\"\n", gwApSsid);
+    strncpy(gwApSsid, ssid, sizeof(gwApSsid) - 1);
+    gwApSsid[sizeof(gwApSsid) - 1] = '\0';
+    strncpy(gwApPassword, pass, sizeof(gwApPassword) - 1);
+    gwApPassword[sizeof(gwApPassword) - 1] = '\0';
+    Serial.printf("[CFG]  Setup portal config saved: SSID=\"%s\"\n", gwApSsid);
+}
+
+static void saveOfflineApConfig(const char* ssid, const char* pass) {
+    Preferences prefs;
+    prefs.begin("gwconfig", false);
+    prefs.putString("offline_ssid", ssid);
+    prefs.putString("offline_pass", pass);
+    prefs.end();
+    strncpy(gwOfflineSsid, ssid, sizeof(gwOfflineSsid) - 1);
+    gwOfflineSsid[sizeof(gwOfflineSsid) - 1] = '\0';
+    strncpy(gwOfflinePassword, pass, sizeof(gwOfflinePassword) - 1);
+    gwOfflinePassword[sizeof(gwOfflinePassword) - 1] = '\0';
+    Serial.printf("[CFG]  Offline AP config saved: SSID=\"%s\"\n", gwOfflineSsid);
+}
+
+static void saveGatewayManualOfflinePreference(bool enabled) {
+    Preferences prefs;
+    prefs.begin("gwconfig", false);
+    prefs.putBool("offline_manual", enabled);
+    prefs.end();
+    gatewayManualOfflinePreferred = enabled;
+    Serial.printf("[CFG]  Manual offline mode %s\n", enabled ? "enabled" : "disabled");
+}
+
+static void saveGatewayForceSetupFlag(bool enabled) {
+    Preferences prefs;
+    prefs.begin("gwconfig", false);
+    prefs.putBool("force_setup", enabled);
+    prefs.end();
+    gatewayForceSetupPortalNextBoot = enabled;
+}
+
+static bool consumeGatewayForceSetupFlag() {
+    const bool force = gatewayForceSetupPortalNextBoot;
+    if (force) saveGatewayForceSetupFlag(false);
+    return force;
+}
+
+static void saveGatewayLastKnownChannel(uint8_t channel) {
+    if (!isValidGatewayChannel(channel)) return;
+    Preferences prefs;
+    prefs.begin("gwconfig", false);
+    prefs.putUChar("last_ch", channel);
+    prefs.end();
+    gatewayLastKnownChannel = channel;
+}
+
+static bool isPrintableCredentialString(const String& value, bool allowEmpty = false) {
+    if (value.isEmpty()) return allowEmpty;
+    for (size_t i = 0; i < value.length(); i++) {
+        const unsigned char c = static_cast<unsigned char>(value[i]);
+        if (c < 32 || c > 126) return false;
+    }
+    return true;
+}
+
+static bool isUsableRouterCredentialPair(const String& ssid, const String& pass) {
+    if (ssid.isEmpty() || ssid.length() > 32) return false;
+    if (pass.length() > 63) return false;
+    if (pass.length() > 0 && pass.length() < 8) return false;
+    if (!isPrintableCredentialString(ssid)) return false;
+    if (!isPrintableCredentialString(pass, true)) return false;
+    return true;
+}
+
+static void cacheRouterCredentials(const String& ssid, const String& pass) {
+    strncpy(savedRouterSsid, ssid.c_str(), sizeof(savedRouterSsid) - 1);
+    savedRouterSsid[sizeof(savedRouterSsid) - 1] = '\0';
+    strncpy(savedRouterPassword, pass.c_str(), sizeof(savedRouterPassword) - 1);
+    savedRouterPassword[sizeof(savedRouterPassword) - 1] = '\0';
+    gatewayRouterCredsSaved = savedRouterSsid[0] != '\0';
+}
+
+static void persistStoredRouterCredentials(const String& ssid, const String& pass) {
+    if (!isUsableRouterCredentialPair(ssid, pass)) return;
+    Preferences prefs;
+    prefs.begin("gwconfig", false);
+    prefs.putString("router_ssid", ssid);
+    prefs.putString("router_pass", pass);
+    prefs.end();
+}
+
+static void clearStoredRouterCredentials() {
+    Preferences prefs;
+    prefs.begin("gwconfig", false);
+    prefs.remove("router_ssid");
+    prefs.remove("router_pass");
+    prefs.end();
+
+    savedRouterSsid[0] = '\0';
+    savedRouterPassword[0] = '\0';
+    gatewayRouterCredsSaved = false;
+    gatewayRouterRetryInProgress = false;
+}
+
+static bool loadRouterCredentialsFromSource(const String& ssid,
+                                            const String& pass,
+                                            const char* sourceLabel,
+                                            bool persistCopy) {
+    if (!isUsableRouterCredentialPair(ssid, pass)) return false;
+    cacheRouterCredentials(ssid, pass);
+    if (persistCopy) persistStoredRouterCredentials(ssid, pass);
+    Serial.printf("[WiFi] Saved router credentials found for \"%s\" (%s).\n",
+                  savedRouterSsid, sourceLabel);
+    return true;
+}
+
+static void loadStoredRouterCredentials() {
+    savedRouterSsid[0] = '\0';
+    savedRouterPassword[0] = '\0';
+    gatewayRouterCredsSaved = false;
+
+    {
+        Preferences prefs;
+        prefs.begin("gwconfig", true);
+        const String ssid = prefs.getString("router_ssid", "");
+        const String pass = prefs.getString("router_pass", "");
+        prefs.end();
+        if (loadRouterCredentialsFromSource(ssid, pass, "gwconfig", false)) return;
+    }
+
+    const wifi_mode_t priorMode = WiFi.getMode();
+    bool restoreWifiMode = false;
+    if (priorMode == WIFI_MODE_NULL) {
+        WiFi.setAutoReconnect(false);
+        WiFi.mode(WIFI_STA);
+        restoreWifiMode = true;
+        delay(50);
+    } else if (priorMode == WIFI_MODE_AP) {
+        WiFi.setAutoReconnect(false);
+        WiFi.mode(WIFI_AP_STA);
+        restoreWifiMode = true;
+        delay(50);
+    }
+
+    wifi_config_t staCfg = {};
+    if (esp_wifi_get_config(WIFI_IF_STA, &staCfg) == ESP_OK) {
+        const String driverSsid(reinterpret_cast<const char*>(staCfg.sta.ssid));
+        const String driverPass(reinterpret_cast<const char*>(staCfg.sta.password));
+        if (loadRouterCredentialsFromSource(driverSsid, driverPass, "wifi-driver", true)) {
+            if (restoreWifiMode) {
+                WiFi.mode(priorMode == WIFI_MODE_AP ? WIFI_AP : WIFI_OFF);
+            }
+            return;
+        }
+    }
+
+    if (restoreWifiMode) {
+        WiFi.mode(priorMode == WIFI_MODE_AP ? WIFI_AP : WIFI_OFF);
+    }
+
+    WiFiManager wm;
+    const String wmSsid = wm.getWiFiSSID(true);
+    const String wmPass = wm.getWiFiPass(true);
+    if (loadRouterCredentialsFromSource(wmSsid, wmPass, "WiFiManager", true)) return;
+
+    Serial.println("[WiFi] No saved router credentials found.");
+}
+
+static bool scanForSavedRouter(uint8_t* outChannel = nullptr, uint8_t* outBssid = nullptr) {
+    if (outChannel) *outChannel = 0;
+    if (outBssid) memset(outBssid, 0, 6);
+    if (!gatewayRouterCredsSaved || savedRouterSsid[0] == '\0') return false;
+
+    WiFi.scanDelete();
+    const int16_t count = WiFi.scanNetworks(false, true, false, 200, 0, savedRouterSsid);
+    if (count <= 0) {
+        WiFi.scanDelete();
+        return false;
+    }
+
+    bool found = false;
+    for (int16_t i = 0; i < count; i++) {
+        if (WiFi.SSID(i) != String(savedRouterSsid)) continue;
+        found = true;
+        if (outChannel) {
+            const int32_t ch = WiFi.channel(i);
+            *outChannel = (ch >= 1 && ch <= 14) ? static_cast<uint8_t>(ch) : 0;
+        }
+        if (outBssid) {
+            uint8_t* bssid = WiFi.BSSID(i);
+            if (bssid) memcpy(outBssid, bssid, 6);
+        }
+        break;
+    }
+
+    WiFi.scanDelete();
+    return found;
+}
+
+// *****************************************************************************
+//  Network state machine / Wi-Fi transitions
+// *****************************************************************************
+static String buildMetaJson();
+static void broadcastMetaIfClientsConnected();
+static bool addPeer(const uint8_t* mac, uint8_t channel = 0);
+static void onDataRecv(const esp_now_recv_info_t* info, const uint8_t* data, int len);
+static void onDataSent(const wifi_tx_info_t*, esp_now_send_status_t);
+static void sendSettingsGet(const uint8_t* mac, uint8_t nodeId, NodeType nodeType);
+static void sendSensorSchemaGet(const uint8_t* mac, uint8_t nodeId, NodeType nodeType);
+static void sendActuatorSchemaGet(const uint8_t* mac, uint8_t nodeId, NodeType nodeType);
+static void sendRfidConfigGet(const uint8_t* mac, uint8_t nodeId, NodeType nodeType);
+static void requestNodeDynamicData(uint8_t nodeId);
+
+static bool reinitializeEspNowForCurrentWifiMode() {
+    if (!espNowReady) return true;
+
+    esp_now_deinit();
+    if (esp_now_init() != ESP_OK) {
+        Serial.println("[ESP-NOW] Reinit failed.");
+        return false;
+    }
+
+    esp_now_register_recv_cb(onDataRecv);
+    esp_now_register_send_cb(onDataSent);
+
+    uint8_t broadcast[6] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
+    addPeer(broadcast, 0);
+
+    if (xSemaphoreTake(nodesMutex, pdMS_TO_TICKS(150)) == pdTRUE) {
+        for (uint8_t i = 1; i < nextId; i++) {
+            if (nodes[i].mac[0] == 0 && nodes[i].mac[1] == 0) continue;
+            addPeer(nodes[i].mac, 0);
+        }
+        xSemaphoreGive(nodesMutex);
+    }
+
+    Serial.printf("[ESP-NOW] Reinitialized on channel %u\n", wifiChannel);
+    return true;
+}
+
+static bool connectGatewayToSavedRouter() {
+    if (!gatewayRouterCredsSaved || savedRouterSsid[0] == '\0') return false;
+
+    gatewayNetworkMode = GATEWAY_ONLINE_STA;
+    gatewayOfflineApActive = false;
+    gatewayOfflineAutoFallback = false;
+    gatewayRouterOnline = false;
+    gatewayRouterRetryInProgress = false;
+
+    WiFi.setAutoReconnect(false);
+    WiFi.softAPdisconnect(true);
+    WiFi.mode(WIFI_STA);
+    WiFi.disconnect(false, false);
+    delay(150);
+
+    Serial.printf("[WiFi] Connecting to saved router \"%s\"...\n", savedRouterSsid);
+    WiFi.begin(savedRouterSsid, savedRouterPassword);
+
+    const unsigned long start = millis();
+    while (millis() - start < GATEWAY_STA_CONNECT_TIMEOUT_MS) {
+        const wl_status_t status = WiFi.status();
+        if (status == WL_CONNECTED) {
+            wifiChannel = (uint8_t)WiFi.channel();
+            gatewayLastKnownChannel = isValidGatewayChannel(wifiChannel)
+                ? wifiChannel
+                : gatewayLastKnownChannel;
+            saveGatewayLastKnownChannel(wifiChannel);
+            gatewayRouterOnline = true;
+            persistStoredRouterCredentials(String(savedRouterSsid), String(savedRouterPassword));
+            Serial.printf("[WiFi] Connected: %s  IP: %s  Ch: %u\n",
+                          WiFi.SSID().c_str(), WiFi.localIP().toString().c_str(), wifiChannel);
+            if (!reinitializeEspNowForCurrentWifiMode()) {
+                Serial.println("[ESP-NOW] Reinit failed after router connect - rebooting.");
+                delay(500);
+                ESP.restart();
+            }
+            broadcastMetaIfClientsConnected();
+            return true;
+        }
+        delay(250);
+    }
+
+    Serial.printf("[WiFi] Router connect timeout for \"%s\".\n", savedRouterSsid);
+    WiFi.disconnect(false, false);
+    return false;
+}
+
+static bool startGatewayOfflineAp(bool manualMode, bool shouldRetryRouter) {
+    const uint8_t channel = isValidGatewayChannel(gatewayLastKnownChannel)
+        ? gatewayLastKnownChannel
+        : OFFLINE_AP_DEFAULT_CHANNEL;
+
+    gatewayNetworkMode = GATEWAY_OFFLINE_AP;
+    gatewayOfflineApActive = true;
+    gatewayOfflineAutoFallback = !manualMode;
+    gatewayRouterOnline = false;
+    gatewayRouterRetryInProgress = false;
+
+    WiFi.setAutoReconnect(false);
+    WiFi.softAPdisconnect(true);
+    WiFi.mode(WIFI_AP_STA);
+    WiFi.disconnect(false, false);
+    WiFi.softAPConfig(GATEWAY_OFFLINE_AP_IP, GATEWAY_OFFLINE_AP_GATEWAY, GATEWAY_OFFLINE_AP_SUBNET);
+    delay(100);
+
+    bool ok = false;
+    if (strlen(gwOfflinePassword) == 0) {
+        ok = WiFi.softAP(gwOfflineSsid, nullptr, channel);
+    } else {
+        ok = WiFi.softAP(gwOfflineSsid, gwOfflinePassword, channel);
+    }
+
+    if (!ok) {
+        Serial.println("[WiFi] Failed to start offline AP.");
+        gatewayOfflineApActive = false;
+        return false;
+    }
+
+    wifiChannel = channel;
+    Serial.printf("[WiFi] Offline AP active: SSID=\"%s\"  IP: %s  Ch: %u%s\n",
+                  gwOfflineSsid,
+                  WiFi.softAPIP().toString().c_str(),
+                  wifiChannel,
+                  manualMode ? " (manual)" : " (auto-fallback)");
+
+    if (!reinitializeEspNowForCurrentWifiMode()) {
+        Serial.println("[ESP-NOW] Reinit failed after offline AP start - rebooting.");
+        delay(500);
+        ESP.restart();
+    }
+
+    if (shouldRetryRouter && gatewayRouterCredsSaved && !manualMode) {
+        lastGatewayRouterRetryAt = millis();
+    }
+
+    broadcastMetaIfClientsConnected();
+    return true;
+}
+
+struct GatewaySetupPortalState {
+    bool saveTriggered = false;
+    bool offlineSelected = false;
+    bool offlineConfigTouched = false;
+    char offlineSsid[33] = OFFLINE_AP_SSID_DEFAULT;
+    char offlinePassword[64] = OFFLINE_AP_PASS_DEFAULT;
+};
+
+static GatewaySetupPortalState* activePortalState = nullptr;
+static WiFiManagerParameter* activePortalOfflineModeParam = nullptr;
+static WiFiManagerParameter* activePortalOfflineSsidParam = nullptr;
+static WiFiManagerParameter* activePortalOfflinePassParam = nullptr;
+
+static void onGatewayPortalParamsSaved() {
+    if (!activePortalState) return;
+    activePortalState->saveTriggered = true;
+
+    const char* mode = activePortalOfflineModeParam ? activePortalOfflineModeParam->getValue() : "0";
+    activePortalState->offlineSelected = mode && strcmp(mode, "1") == 0;
+
+    String ssid = activePortalOfflineSsidParam ? String(activePortalOfflineSsidParam->getValue()) : String(gwOfflineSsid);
+    String pass = activePortalOfflinePassParam ? String(activePortalOfflinePassParam->getValue()) : String(gwOfflinePassword);
+    ssid.trim();
+
+    if (ssid.length() < 2 || ssid.length() > 32) ssid = gwOfflineSsid;
+    if ((pass.length() > 0 && pass.length() < 8) || pass.length() > 63) pass = gwOfflinePassword;
+
+    strncpy(activePortalState->offlineSsid, ssid.c_str(), sizeof(activePortalState->offlineSsid) - 1);
+    activePortalState->offlineSsid[sizeof(activePortalState->offlineSsid) - 1] = '\0';
+    strncpy(activePortalState->offlinePassword, pass.c_str(), sizeof(activePortalState->offlinePassword) - 1);
+    activePortalState->offlinePassword[sizeof(activePortalState->offlinePassword) - 1] = '\0';
+    activePortalState->offlineConfigTouched = true;
+}
+
+static bool runGatewaySetupPortal(bool forcePortalOnly, bool* offlineChosen = nullptr) {
+    if (offlineChosen) *offlineChosen = false;
+
+    gatewayNetworkMode = GATEWAY_SETUP_PORTAL;
+    gatewayOfflineApActive = false;
+    gatewayRouterOnline = false;
+
+    GatewaySetupPortalState portalState{};
+    strncpy(portalState.offlineSsid, gwOfflineSsid, sizeof(portalState.offlineSsid) - 1);
+    strncpy(portalState.offlinePassword, gwOfflinePassword, sizeof(portalState.offlinePassword) - 1);
+
+    WiFiManager wm;
+    WiFiManagerParameter offlineIntro(
+        "<hr><h3>Gateway Offline Mode</h3><p>Enable this to skip router setup and start a dedicated ESP32-S3 access point for local dashboard access.</p>"
+        "<label style='display:flex;align-items:center;gap:.5rem;margin:.4rem 0 1rem 0;'>"
+        "<input id='offline_toggle' type='checkbox' style='width:auto;margin:0;'>"
+        "<span>Start the gateway in offline mode</span></label>"
+        "<p id='offline_hint' style='display:none;font-size:.92em;opacity:.8;margin-top:-.4rem;margin-bottom:1rem;'>"
+        "When offline mode is enabled, router Wi-Fi fields are ignored and the gateway will start its own local Wi-Fi network instead."
+        "</p>");
+    WiFiManagerParameter offlineModeParam("offline_mode", "", gatewayManualOfflinePreferred ? "1" : "0", 2, "type='hidden'");
+    WiFiManagerParameter offlineSsidParam("offline_ssid", "Offline AP SSID", gwOfflineSsid, 32);
+    WiFiManagerParameter offlinePassParam("offline_pass", "Offline AP Password", gwOfflinePassword, 63, "type='password'");
+
+    activePortalState = &portalState;
+    activePortalOfflineModeParam = &offlineModeParam;
+    activePortalOfflineSsidParam = &offlineSsidParam;
+    activePortalOfflinePassParam = &offlinePassParam;
+
+    wm.setTitle("ESP32 Mesh Gateway Setup");
+    wm.setConfigPortalTimeout(180);
+    wm.setHttpPort(8080);
+    wm.setBreakAfterConfig(true);
+    wm.setSaveParamsCallback(onGatewayPortalParamsSaved);
+    wm.setCustomHeadElement(
+        "<style>#offline_mode{display:none}</style>"
+        "<script>"
+        "window.addEventListener('load',function(){"
+        "var hidden=document.getElementById('offline_mode');"
+        "var toggle=document.getElementById('offline_toggle');"
+        "var hint=document.getElementById('offline_hint');"
+        "var ssid=document.getElementById('s');"
+        "var pass=document.getElementById('p');"
+        "function sync(){"
+        "if(!hidden||!toggle)return;"
+        "hidden.value=toggle.checked?'1':'0';"
+        "if(ssid){ssid.disabled=toggle.checked;if(toggle.checked)ssid.value='';}"
+        "if(pass){pass.disabled=toggle.checked;if(toggle.checked)pass.value='';}"
+        "if(hint)hint.style.display=toggle.checked?'block':'none';"
+        "}"
+        "if(toggle){toggle.checked=hidden&&hidden.value==='1';toggle.addEventListener('change',sync);sync();}"
+        "});"
+        "</script>");
+    wm.addParameter(&offlineIntro);
+    wm.addParameter(&offlineModeParam);
+    wm.addParameter(&offlineSsidParam);
+    wm.addParameter(&offlinePassParam);
+
+    Serial.println(forcePortalOnly
+        ? "[WiFi] Opening setup portal..."
+        : "[WiFi] Starting setup portal because no router credentials are saved...");
+
+    bool connected = forcePortalOnly
+        ? wm.startConfigPortal(gwApSsid, gwApPassword)
+        : wm.autoConnect(gwApSsid, gwApPassword);
+
+    activePortalState = nullptr;
+    activePortalOfflineModeParam = nullptr;
+    activePortalOfflineSsidParam = nullptr;
+    activePortalOfflinePassParam = nullptr;
+
+    if (portalState.offlineConfigTouched) {
+        saveOfflineApConfig(portalState.offlineSsid, portalState.offlinePassword);
+    }
+
+    if (portalState.offlineSelected) {
+        saveGatewayManualOfflinePreference(true);
+        saveGatewayForceSetupFlag(false);
+        if (offlineChosen) *offlineChosen = true;
+        Serial.println("[WiFi] Offline mode selected in setup portal.");
+        return false;
+    }
+
+    if (connected && WiFi.status() == WL_CONNECTED) {
+        saveGatewayManualOfflinePreference(false);
+        saveGatewayForceSetupFlag(false);
+        const String portalSsid = wm.getWiFiSSID(true);
+        const String portalPass = wm.getWiFiPass(true);
+        loadRouterCredentialsFromSource(portalSsid, portalPass, "WiFiManager", true);
+        loadStoredRouterCredentials();
+        if (!gatewayRouterCredsSaved) {
+            const String currentSsid = WiFi.SSID();
+            if (isUsableRouterCredentialPair(currentSsid, String(savedRouterPassword))) {
+                cacheRouterCredentials(currentSsid, String(savedRouterPassword));
+                persistStoredRouterCredentials(String(savedRouterSsid), String(savedRouterPassword));
+            }
+        }
+        wifiChannel = (uint8_t)WiFi.channel();
+        saveGatewayLastKnownChannel(wifiChannel);
+        gatewayRouterOnline = true;
+        gatewayOfflineApActive = false;
+        gatewayOfflineAutoFallback = false;
+        gatewayRouterRetryInProgress = false;
+        gatewayNetworkMode = GATEWAY_ONLINE_STA;
+        WiFi.setAutoReconnect(false);
+        WiFi.softAPdisconnect(true);
+        WiFi.mode(WIFI_STA);
+        delay(100);
+        if (!reinitializeEspNowForCurrentWifiMode()) {
+            Serial.println("[ESP-NOW] Reinit failed after setup portal connect - rebooting.");
+            delay(500);
+            ESP.restart();
+        }
+        Serial.printf("[WiFi] Connected from setup portal: %s  IP: %s  Ch: %u\n",
+                      WiFi.SSID().c_str(), WiFi.localIP().toString().c_str(), wifiChannel);
+        return true;
+    }
+
+    Serial.println("[WiFi] Setup portal exited without a usable router connection.");
+    return false;
+}
+
+static void processGatewayNetworkState(unsigned long now) {
+    if (gatewayNetworkMode == GATEWAY_SETUP_PORTAL) return;
+    if ((now - lastGatewayNetworkCheckAt) < GATEWAY_NETWORK_MONITOR_MS) return;
+    lastGatewayNetworkCheckAt = now;
+
+    if (gatewayNetworkMode == GATEWAY_ONLINE_STA) {
+        if (WiFi.status() == WL_CONNECTED) {
+            gatewayRouterOnline = true;
+            gatewayRouterRetryInProgress = false;
+            const uint8_t currentChannel = (uint8_t)WiFi.channel();
+            if (isValidGatewayChannel(currentChannel) && currentChannel != wifiChannel) {
+                wifiChannel = currentChannel;
+                saveGatewayLastKnownChannel(currentChannel);
+            }
+            return;
+        }
+
+        gatewayRouterOnline = false;
+        if (!gatewayRouterCredsSaved || gatewayManualOfflinePreferred) return;
+
+        const String offlineIp = GATEWAY_OFFLINE_AP_IP.toString();
+        const String offlineUrl = String("http://") + offlineIp + "/";
+        const String notice = String("Router connection lost. Gateway is switching to Offline mode. Connect to \"")
+            + gwOfflineSsid + "\" and open " + offlineUrl;
+        wsBroadcast(buildGatewayNetworkNoticeJson("router_lost", notice, offlineIp, gwOfflineSsid));
+        delay(100);
+        Serial.println("[WiFi] Router link lost. Switching to offline AP fallback...");
+        startGatewayOfflineAp(false, true);
+        return;
+    }
+
+    if (gatewayNetworkMode != GATEWAY_OFFLINE_AP) return;
+
+    if (WiFi.status() == WL_CONNECTED) {
+        gatewayRouterOnline = true;
+        if (gatewayManualOfflinePreferred) return;
+        if (otaUploadBusy || nodeOtaJob.active || nodeOtaJob.uploadBusy || coprocOtaJob.active || coprocOtaJob.uploadBusy) {
+            return;
+        }
+
+        const String routerIp = WiFi.localIP().toString();
+        const String routerUrl = String("http://") + routerIp + "/";
+        const String notice = String("Router connection restored. Gateway is switching to Online mode. Reconnect to \"")
+            + savedRouterSsid + "\" and open " + routerUrl;
+        wsBroadcast(buildGatewayNetworkNoticeJson("switching_online", notice, routerIp, savedRouterSsid));
+        delay(150);
+        Serial.println("[WiFi] Router link restored. Returning to online mode...");
+        wifiChannel = (uint8_t)WiFi.channel();
+        saveGatewayLastKnownChannel(wifiChannel);
+        gatewayOfflineApActive = false;
+        gatewayOfflineAutoFallback = false;
+        gatewayRouterRetryInProgress = false;
+        gatewayNetworkMode = GATEWAY_ONLINE_STA;
+        WiFi.setAutoReconnect(false);
+        WiFi.softAPdisconnect(true);
+        WiFi.mode(WIFI_STA);
+        delay(100);
+        if (!reinitializeEspNowForCurrentWifiMode()) {
+            Serial.println("[ESP-NOW] Reinit failed while leaving offline mode - rebooting.");
+            delay(500);
+            ESP.restart();
+        }
+        broadcastMetaIfClientsConnected();
+        return;
+    }
+
+    gatewayRouterOnline = false;
+    if (gatewayManualOfflinePreferred || !gatewayRouterCredsSaved) return;
+    if (gatewayRouterRetryInProgress) {
+        const wl_status_t retryStatus = WiFi.status();
+        if (retryStatus == WL_NO_SSID_AVAIL || retryStatus == WL_CONNECT_FAILED) {
+            gatewayRouterRetryInProgress = false;
+            WiFi.disconnect(false, false);
+            Serial.printf("[WiFi] Router retry failed for \"%s\". Staying in offline AP mode.\n", savedRouterSsid);
+            return;
+        }
+        if ((now - lastGatewayRouterRetryAt) >= GATEWAY_STA_CONNECT_TIMEOUT_MS) {
+            gatewayRouterRetryInProgress = false;
+            WiFi.disconnect(false, false);
+            Serial.printf("[WiFi] Router retry timed out for \"%s\". Staying in offline AP mode.\n", savedRouterSsid);
+        }
+        return;
+    }
+    if ((now - lastGatewayRouterRetryAt) < GATEWAY_OFFLINE_RETRY_MS) return;
+
+    uint8_t routerChannel = 0;
+    uint8_t routerBssid[6] = {0};
+    if (!scanForSavedRouter(&routerChannel, routerBssid)) {
+        lastGatewayRouterRetryAt = now;
+        Serial.printf("[WiFi] Router \"%s\" not visible yet. Staying in offline AP mode.\n", savedRouterSsid);
+        return;
+    }
+
+    lastGatewayRouterRetryAt = now;
+    gatewayRouterRetryInProgress = true;
+    wsBroadcast(buildGatewayNetworkNoticeJson(
+        "router_visible",
+        String("Router \"") + savedRouterSsid + "\" found. Gateway is reconnecting now...",
+        String(),
+        savedRouterSsid));
+    Serial.printf("[WiFi] Router \"%s\" visible on channel %u. Attempting reconnect...\n",
+                  savedRouterSsid, routerChannel ? routerChannel : 0);
+    WiFi.disconnect(false, false);
+    delay(50);
+    const bool hasBssid = std::any_of(std::begin(routerBssid), std::end(routerBssid),
+                                      [](uint8_t v) { return v != 0; });
+    if (routerChannel && hasBssid) {
+        WiFi.begin(savedRouterSsid, savedRouterPassword, routerChannel, routerBssid, true);
+    } else if (routerChannel) {
+        WiFi.begin(savedRouterSsid, savedRouterPassword, routerChannel);
+    } else {
+        WiFi.begin(savedRouterSsid, savedRouterPassword);
+    }
 }
 
 // *****************************************************************************
@@ -2647,13 +3496,6 @@ static void saveApConfig(const char* ssid, const char* pass) {
 //  (lastSeen, online, temperature, pressure, uptime, actuators [relays], settings)
 //  are repopulated naturally when the node sends its first message.
 // *****************************************************************************
-// Forward declarations needed by loadNodesFromNvs (defined further below)
-static bool addPeer(const uint8_t* mac, uint8_t channel = 0);
-static void sendSettingsGet(const uint8_t* mac, uint8_t nodeId, NodeType nodeType);
-static void sendSensorSchemaGet(const uint8_t* mac, uint8_t nodeId, NodeType nodeType);
-static void sendActuatorSchemaGet(const uint8_t* mac, uint8_t nodeId, NodeType nodeType);
-static void sendRfidConfigGet(const uint8_t* mac, uint8_t nodeId, NodeType nodeType);
-static void requestNodeDynamicData(uint8_t nodeId);
 struct NodeNvsRecordV1 {
     uint8_t  mac[6];
     NodeType type;
@@ -3177,8 +4019,10 @@ static String buildNodesJson() {
 
 static String buildMetaJson() {
     JsonDocument doc;
+    const String accessIp = gatewayAccessIpString();
     doc["type"]            = "meta";
-    doc["ip"]              = WiFi.localIP().toString();
+    doc["ip"]              = accessIp;
+    doc["access_ip"]       = accessIp;
     doc["mac"]             = WiFi.macAddress();
     doc["channel"]         = wifiChannel;
     doc["uptime"]          = (millis() - bootMs) / 1000;
@@ -3186,6 +4030,12 @@ static String buildMetaJson() {
     doc["hw_config_id"]    = HW_CONFIG_ID;
     doc["gw_led_enabled"] = gwLedEnabled;
     doc["ap_ssid"]         = gwApSsid;
+    doc["offline_ap_ssid"] = gwOfflineSsid;
+    doc["offline_ap_active"] = gatewayOfflineApActive;
+    doc["offline_manual"]  = gatewayManualOfflinePreferred;
+    doc["network_mode"]    = gatewayNetworkModeToString(gatewayNetworkMode);
+    doc["router_online"]   = gatewayRouterOnline;
+    doc["router_ssid"]     = gatewayRouterCredsSaved ? savedRouterSsid : "";
     doc["credentials_set"] = credentialsSet();
     doc["ota_supported"]   = gatewayOtaSupported();
     doc["ota_busy"]        = otaUploadBusy;
@@ -4160,6 +5010,37 @@ static void onWsEvent(AsyncWebSocket*, AsyncWebSocketClient* client,
                 saveApConfig(newSsid, newPass);
                 client->text("{\"type\":\"ap_config_ack\",\"ok\":true}");
 
+            // Update offline AP SSID / password
+            } else if (strcmp(msgType, "set_offline_ap_config") == 0) {
+                const char* newSsid = doc["ssid"]     | "";
+                const char* newPass = doc["password"] | "";
+                size_t ssidLen = strlen(newSsid);
+                size_t passLen = strlen(newPass);
+
+                if (ssidLen < 2 || ssidLen > 32) {
+                    client->text("{\"type\":\"offline_ap_config_ack\",\"ok\":false,"
+                                 "\"err\":\"SSID must be 2\\u201332 characters\"}");
+                    break;
+                }
+                if (passLen > 0 && passLen < 8) {
+                    client->text("{\"type\":\"offline_ap_config_ack\",\"ok\":false,"
+                                 "\"err\":\"Password must be 8+ chars or blank (open AP)\"}");
+                    break;
+                }
+
+                saveOfflineApConfig(newSsid, newPass);
+                {
+                    JsonDocument ack;
+                    ack["type"] = "offline_ap_config_ack";
+                    ack["ok"] = true;
+                    ack["active_now"] = gatewayOfflineApActive;
+                    ack["access_ip"] = gatewayAccessIpString();
+                    String out;
+                    serializeJson(ack, out);
+                    client->text(out);
+                }
+                broadcastMetaIfClientsConnected();
+
             // Set web interface login credentials
             } else if (strcmp(msgType, "set_web_credentials") == 0) {
                 const char* newUser = doc["username"] | "";
@@ -4197,10 +5078,7 @@ static void onWsEvent(AsyncWebSocket*, AsyncWebSocketClient* client,
                 ws.textAll("{\"type\":\"gw_portal_starting\"}");
                 ws.cleanupClients();
                 delay(200);
-                {
-                    WiFiManager wm;
-                    wm.resetSettings();  // wipe saved STA credentials -> portal opens on boot
-                }
+                saveGatewayForceSetupFlag(true);
                 delay(100);
                 ESP.restart();
 
@@ -4377,45 +5255,7 @@ static void onWsEvent(AsyncWebSocket*, AsyncWebSocketClient* client,
 
             // Factory reset: wipe ALL config and paired nodes, then reboot
             } else if (strcmp(msgType, "factory_reset") == 0) {
-                Serial.println("[GW]  Factory reset requested via dashboard.");
-                ws.textAll("{\"type\":\"gw_factory_reset\"}");
-                ws.cleanupClients();
-                delay(200);
-                {
-                    WiFiManager wm;
-                    wm.resetSettings();  // wipe saved WiFi credentials
-                }
-                {
-                    Preferences prefs;
-                    prefs.begin("gwconfig", false);
-                    prefs.clear();        // wipe custom AP name / password
-                    prefs.end();
-                }
-                {
-                    Preferences prefs;
-                    prefs.begin("gwauth", false);
-                    prefs.clear();        // wipe web interface credentials
-                    prefs.end();
-                    memset(webUsername,   0, sizeof(webUsername));
-                    memset(webPassHash,   0, sizeof(webPassHash));
-                    memset(rememberToken, 0, sizeof(rememberToken));
-                    memset(sessionToken,  0, sizeof(sessionToken));
-                    authWsClients.clear();
-                }
-                {
-                    Preferences prefs;
-                    prefs.begin("gwnodes", false);
-                    prefs.clear();        // wipe paired node registry
-                    prefs.end();
-                }
-                {
-                    Preferences prefs;
-                    prefs.begin("gwrelay", false);
-                    prefs.clear();        // wipe saved relay label assignments
-                    prefs.end();
-                }
-                delay(100);
-                ESP.restart();
+                performGatewayFactoryReset("dashboard");
             }
             break;
         }
@@ -4843,40 +5683,46 @@ void setup() {
     // LittleFS
     mountFilesystem();
 
-    // WiFi credentials reset
+    // Physical factory reset button
     pinMode(RESET_BTN_PIN, INPUT_PULLUP);
-    if (digitalRead(RESET_BTN_PIN) == LOW) {
-        Serial.println("[WiFi] Clearing credentials...");
-        WiFiManager wm;
-        wm.resetSettings();
-        delay(500);
-    }
+    gatewayResetButtonReleased = digitalRead(RESET_BTN_PIN) != LOW;
+    gatewayResetButtonHandled = false;
+    gatewayResetButtonPressedAt = 0;
 
     // Load gateway config (AP name / password) from NVS
     loadApConfig();
+    loadStoredRouterCredentials();
 
     // Load web interface credentials from NVS
     loadWebCredentials();
 
-    // WiFiManager
-    {
-        WiFiManager wm;
-        wm.setTitle("ESP32 Mesh Gateway Setup");
-        wm.setConfigPortalTimeout(180);
-        wm.setHttpPort(8080);  // use port 8080 so WiFiManager never conflicts with AsyncWebServer on port 80
-        Serial.println("[WiFi] Connecting (portal if needed)...");
-        if (!wm.autoConnect(gwApSsid, gwApPassword)) {
-            Serial.println("[WiFi] Failed - rebooting");
-            delay(1000);
-            ESP.restart();
+    bool portalOfflineSelected = false;
+    const bool forceSetupPortal = consumeGatewayForceSetupFlag();
+    bool networkReady = false;
+
+    if (forceSetupPortal) {
+        networkReady = runGatewaySetupPortal(true, &portalOfflineSelected);
+    } else if (gatewayManualOfflinePreferred) {
+        networkReady = startGatewayOfflineAp(true, false);
+    } else if (gatewayRouterCredsSaved) {
+        networkReady = connectGatewayToSavedRouter();
+        if (!networkReady) {
+            Serial.println("[WiFi] Saved router unavailable. Entering offline AP fallback.");
+            networkReady = startGatewayOfflineAp(false, true);
         }
-        wifiChannel = (uint8_t)WiFi.channel();
-        Serial.printf("[WiFi] Connected: %s  IP: %s  Ch: %d\n",
-                      WiFi.SSID().c_str(), WiFi.localIP().toString().c_str(), wifiChannel);
+    } else {
+        networkReady = runGatewaySetupPortal(false, &portalOfflineSelected);
     }
-    WiFi.softAPdisconnect(true);
-    WiFi.mode(WIFI_STA);
-    delay(1000);
+
+    if (!networkReady && portalOfflineSelected) {
+        networkReady = startGatewayOfflineAp(true, false);
+    }
+
+    if (!networkReady) {
+        Serial.println("[WiFi] Could not establish router or offline AP mode - rebooting");
+        delay(1000);
+        ESP.restart();
+    }
 
     // ESP-NOW
     if (esp_now_init() != ESP_OK) {
@@ -4884,6 +5730,7 @@ void setup() {
         delay(1000);
         ESP.restart();
     }
+    espNowReady = true;
     esp_now_register_recv_cb(onDataRecv);
     esp_now_register_send_cb(onDataSent);
 
@@ -4903,7 +5750,7 @@ void setup() {
     // Web server
     setupRoutes();
     server.begin();
-    Serial.printf("[HTTP]  Dashboard -> http://%s/\n", WiFi.localIP().toString().c_str());
+    Serial.printf("[HTTP]  Dashboard -> http://%s/\n", gatewayAccessIpString().c_str());
     
     if (gwLedEnabled) {
         setGwLed(gwLed.Color(0, 0, 32));  // settle to dim blue
@@ -4925,11 +5772,13 @@ static unsigned long lastDiscBcast = 0;
 void loop() {
     unsigned long now = millis();
 
+    processGatewayFactoryResetButton(now);
     processRxQueue();
     processCoprocSerial();
     processCoprocHeartbeat(now);
     processNodeOtaJob(now);
     processCoprocOtaJob(now);
+    processGatewayNetworkState(now);
     updateGwLed();
 
     if (otaRebootPending && now >= otaRebootAtMs) {

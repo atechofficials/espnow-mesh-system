@@ -1,6 +1,6 @@
 ﻿# ESP32 Gateway
 
-The gateway is the heart of the ESPNow Mesh System. It runs on an **ESP32-S3** and bridges your Wi-Fi network with the ESP-NOW mesh while serving a live web dashboard, managing paired nodes, supporting **web-based gateway OTA firmware updates**, and coordinating **gateway-managed Node OTA updates** for sensor, actuator, and hybrid nodes with a companion **ESP32-C3 coprocessor**.
+The gateway is the heart of the ESPNow Mesh System. It runs on an **ESP32-S3** and bridges your Wi-Fi network with the ESP-NOW mesh while serving a live web dashboard, managing paired nodes, supporting **web-based gateway OTA firmware updates**, coordinating **gateway-managed Node OTA updates** for sensor, actuator, and hybrid nodes with a companion **ESP32-C3 coprocessor**, and now providing an **Offline Mode AP** so the dashboard stays reachable even when your home router is unavailable.
 
 ---
 
@@ -13,7 +13,7 @@ The gateway is the heart of the ESPNow Mesh System. It runs on an **ESP32-S3** a
 | Flash | 8 MB (Quad) |
 | PSRAM | 8 MB (Octal) |
 | Status LED | WS2812B on GPIO 38 (on-board) |
-| Boot / Reset button | GPIO 0 (on-board BOOT button, used for factory reset) |
+| Factory reset button | Board-dependent and configured by `RESET_BTN_PIN` in `gateway_v1/include/user_config.h` |
 
 The current gateway hardware release line now tracks four single-layer, thick-trace, THT-friendly PCB variants under `gateway_v1/hardware/`:
 
@@ -31,6 +31,8 @@ All four variants include connection points for a future **BME280** gateway-side
 ## Responsibilities
 
 - Connects to your home Wi-Fi using a captive portal (WiFiManager) on first boot or when reconfigured
+- Can also run in an **ESP32-S3-hosted Offline Mode AP** with separate offline AP credentials
+- Automatically falls back to the Offline Mode AP when the router Wi-Fi link is lost and returns to router mode when the saved router SSID is visible again
 - Accepts ESP-NOW registrations from nodes and assigns them IDs
 - Receives sensor data, heartbeats, and actuator states from paired nodes
 - Forwards dashboard commands to the correct node (pair, unpair, reboot, actuator toggle, settings change)
@@ -38,6 +40,8 @@ All four variants include connection points for a future **BME280** gateway-side
 - Stores gateway configuration, web credentials, paired node records, node hardware-config IDs, and relay label assignments in NVS
 - Supports **gateway self-OTA** from the web interface with validation, hardware-config ID checking, progress reporting, and automatic reboot
 - Coordinates **Gateway OTA**, **coprocessor OTA**, and **Node OTA** so the ESP32-C3 helper cannot be reserved by conflicting update flows at the same time
+- Keeps **gateway OTA**, **coprocessor OTA**, and **Node OTA** available while the gateway is serving the dashboard through Offline Mode
+- Supports both dashboard-triggered and physical-button-triggered factory reset flows, including LED feedback during the hold sequence
 - Supports **Hybrid nodes** with capability-aware state handling, actuator-schema sync, RFID config sync, and RFID scan-event forwarding to the web UI
 
 ---
@@ -50,7 +54,11 @@ All four variants include connection points for a future **BME280** gateway-side
 | Dim blue | Gateway operational |
 | Green flash | Activity / success pulse |
 | Orange flash | Node disconnect feedback |
+| Dark-orange blink | Physical factory reset button is being held |
+| Solid red | Factory reset hold threshold reached; reset is being confirmed |
 | Off | Gateway LED disabled from the web UI |
+
+The factory-reset LED sequence temporarily overrides the normal gateway LED owner and still appears even if the user has disabled the status LED from the web dashboard.
 
 ---
 
@@ -74,6 +82,7 @@ All four variants include connection points for a future **BME280** gateway-side
 | v2.1.4 | Increased the shared node-name limit from 15 to 24 visible characters, updated gateway discovery/registry/rename handling for longer node names, added backward-compatible NVS restore support while saving new node records in the expanded-name format, and allowed fresh nodes to appear with MAC-suffixed default names for easier identification before manual rename |
 | v2.2.0 | Polished gateway-side discovery timing so available nodes appear and expire more predictably, aligned the release docs with the new Gateway v1A-v1D PCB family, and documents the move toward `user_config.h` for user-facing firmware configuration |
 | v2.3.1 | Hardened OTA coordination so Node OTA, Gateway OTA, and coprocessor OTA cannot fight over the ESP32-C3 helper, surfaced the shared **Coprocessor Busy** feedback across both gateway MCU targets, fixed a Node OTA helper-target regression, and auto-clears stale OTA panel state after backend cleanup |
+| v2.4.0 | Added **Gateway Offline Mode** on the ESP32-S3 with manual setup-portal selection, automatic router-loss fallback, automatic router-return recovery, reconnect-safe dashboard notifications, runtime physical factory reset handling via the configurable `RESET_BTN_PIN`, and a dedicated factory-reset RGB LED sequence |
 
 ---
 
@@ -103,14 +112,14 @@ gateway_v1/
 
 ## Current Release Notes
 
-- Gateway firmware version: **v2.3.1**
+- Gateway firmware version: **v2.4.0**
 - Gateway coprocessor firmware version: **v0.3.0**
 - Shared helper transport: `coproc_ota_protocol.h` **v1.1.0**
 - Shared mesh protocol: `mesh_protocol.h` **v3.3.2**
-- User configuration header: **`user_config.h v1.1.0`**
+- User configuration header: **`user_config.h v1.1.1`**
 - Web UI assets:
-  - `app.js` v4.5
-  - `index.html` v3.9
+  - `app.js` v4.6.2
+  - `index.html` v4.0.1
   - `style.css` v3.7
 - Active partition layout: **`partitions_8mb_ota.csv`**
 

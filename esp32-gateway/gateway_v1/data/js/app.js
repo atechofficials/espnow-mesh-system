@@ -1,8 +1,10 @@
 /**
- * ESP32 Mesh Gateway Web Interface Client v4.5
+ * ESP32 Mesh Gateway Web Interface Client v4.6.2
  *
  * WS Inbound:  { type:"meta"|"update"|"discovered"|"pair_timeout"|"pair_capacity_full"|"ap_config_ack"|
+ *                     "offline_ap_config_ack"|
  *                     "gw_portal_starting"|"gw_factory_reset"|"gw_rebooting"|
+ *                     "gw_network_notice"|
  *                     "auth_required"|"auth_ok"|"auth_fail"|"session_expired"|
  *                     "coproc_ota_state"|
  *                     "web_creds_ack"|"node_settings"|"node_sensor_schema"|
@@ -10,7 +12,7 @@
  *                     "node_rfid_config_ack"|"rfid_scan_event"|
  *                     "relay_labels_ack" }
  * WS Outbound: { type:"auth"|"actuator_cmd"|"pair_cmd"|"unpair_cmd"|"rename_node"|
- *                     "reboot_gw"|"reboot_node"|"set_ap_config"|"set_web_credentials"|
+ *                     "reboot_gw"|"reboot_node"|"set_ap_config"|"set_offline_ap_config"|"set_web_credentials"|
  *                     "start_wifi_portal"|"factory_reset"|"node_settings_get"|
  *                     "node_settings_set"|"node_sensor_schema_get"|
  *                     "node_actuator_schema_get"|"node_rfid_config_get"|
@@ -77,7 +79,14 @@ const $apSsidInput  = $("ap-ssid-input");
 const $apPassInput  = $("ap-pass-input");
 const $saveApBtn    = $("save-ap-btn");
 const $apSaveNote   = $("ap-save-note");
+const $offlineSsidInput = $("offline-ssid-input");
+const $offlinePassInput = $("offline-pass-input");
+const $saveOfflineBtn = $("save-offline-btn");
+const $offlineSaveNote = $("offline-save-note");
 const $wifiPortalBtn = $("wifi-portal-btn");
+const $gwNetMode = $("gw-net-mode");
+const $gwAccessIp = $("gw-access-ip");
+const $gwRouterLink = $("gw-router-link");
 const $gwOtaTarget = $("gw-ota-target");
 const $gwOtaFileInput = $("gw-ota-file");
 const $gwOtaBtn = $("gw-ota-btn");
@@ -115,6 +124,13 @@ let gatewayOtaMaxBytes = 0;
 let gatewayOtaProject = "";
 let gatewayOtaUploading = false;
 let gatewayOtaTarget = "main";
+const GW_NETWORK_SNAPSHOT_KEY = "gwNetworkSnapshot";
+let gatewayNetworkMode = "Online (Router)";
+let gatewayAccessIp = "-";
+let gatewayRouterOnline = false;
+let gatewayOfflineApActive = false;
+let gatewayOfflineApSsid = "";
+let gatewayRouterSsid = "";
 const COPROC_BUSY_MSG = "Coprocessor Busy. Please try after some time.";
 let coprocOnline = false;
 let coprocFwVersion = "";
@@ -372,6 +388,100 @@ function setWebCredsSaveNote(msg, cls) {
 
 // ── WebSocket ─────────────────────────────────────────────────────────────────
 let authSentThisConnection = false;  // prevents double-auth when proactive send races auth_required
+let pageUnloading = false;
+let wsHadLiveConnection = false;
+let wsDisconnectNotified = false;
+let suppressNextWsCloseToast = false;
+
+function loadGatewayNetworkSnapshot() {
+  try {
+    const raw = localStorage.getItem(GW_NETWORK_SNAPSHOT_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === "object" ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+function saveGatewayNetworkSnapshot() {
+  try {
+    localStorage.setItem(GW_NETWORK_SNAPSHOT_KEY, JSON.stringify({
+      network_mode: gatewayNetworkMode,
+      access_ip: gatewayAccessIp,
+      offline_ap_ssid: gatewayOfflineApSsid,
+      router_ssid: gatewayRouterSsid
+    }));
+  } catch {}
+}
+
+function showGatewayTransitionToast(previous, next) {
+  if (!previous || !next) return;
+  if (previous.network_mode === next.network_mode &&
+      previous.access_ip === next.access_ip) {
+    return;
+  }
+
+  if (next.network_mode === "Offline AP Active") {
+    const ssid = next.offline_ap_ssid || gatewayOfflineApSsid || "the gateway offline AP";
+    const ip = next.access_ip || "192.168.8.1";
+    showToast(`Gateway switched to Offline mode. Connect to "${ssid}" and open http://${ip}/.`, "warn", 10000);
+    return;
+  }
+
+  if (next.network_mode === "Online (Router)") {
+    const router = next.router_ssid || gatewayRouterSsid || "your router";
+    const ip = next.access_ip || "";
+    const suffix = ip && ip !== "-" ? ` and open http://${ip}/.` : ".";
+    showToast(`Gateway is back Online. Reconnect to "${router}"${suffix}`, "success", 10000);
+  }
+}
+
+function handleGatewayNetworkNotice(msg) {
+  const event = msg?.event || "";
+  const message = msg?.message || "";
+  if (event === "router_lost" || event === "switching_online") {
+    wsDisconnectNotified = true;
+  }
+  if (message) {
+    showToast(message, event === "switching_online" ? "success" : "warn", 10000);
+    return;
+  }
+
+  if (event === "router_visible") {
+    const router = msg.router_ssid || gatewayRouterSsid || "saved router";
+    showToast(`Router "${router}" found. Gateway is reconnecting now...`, "warn", 8000);
+  }
+}
+
+function handleGatewayWsClose() {
+  if (pageUnloading) return;
+
+  if (gatewayNetworkMode === "Online (Router)" && gatewayOfflineApSsid) {
+    showToast(
+      `Gateway connection lost. If it switched to Offline mode, connect to "${gatewayOfflineApSsid}" and open http://192.168.8.1/.`,
+      "warn",
+      12000
+    );
+    return;
+  }
+
+  if (gatewayNetworkMode === "Offline AP Active") {
+    const router = gatewayRouterSsid || "your router";
+    showToast(
+      `Gateway connection lost. If it returned Online, reconnect to "${router}" and reopen the gateway dashboard.`,
+      "warn",
+      12000
+    );
+    return;
+  }
+
+  showToast("Gateway connection lost. Attempting to reconnect...", "warn", 8000);
+}
+
+window.addEventListener("beforeunload", () => {
+  pageUnloading = true;
+});
 
 function connect() {
   setWs("connecting");
@@ -380,6 +490,8 @@ function connect() {
   ws.addEventListener("open", () => {
     setWs("live");
     authSentThisConnection = false;
+    wsHadLiveConnection = true;
+    wsDisconnectNotified = false;
     // Send token proactively so auth completes before the server's auth_required arrives.
     if (authToken) {
       send({ type: "auth", token: authToken });
@@ -389,6 +501,12 @@ function connect() {
   ws.addEventListener("close", () => {
     setWs("error");
     authSentThisConnection = false;
+    if (suppressNextWsCloseToast) {
+      suppressNextWsCloseToast = false;
+    } else if (wsHadLiveConnection && !wsDisconnectNotified) {
+      wsDisconnectNotified = true;
+      handleGatewayWsClose();
+    }
     setTimeout(connect, 3000);
   });
   ws.addEventListener("error", () => ws.close());
@@ -675,10 +793,25 @@ function connect() {
         }
         $saveApBtn.disabled = false;
         break;
+      case "offline_ap_config_ack":
+        if (msg.ok) {
+          const note = msg.active_now
+            ? "✓ Saved — active offline AP credentials will update after the next restart."
+            : "✓ Saved — takes effect next time offline mode starts.";
+          setOfflineApSaveNote(note, "ok");
+          showToast("✓ Offline AP config saved.", "success");
+        } else {
+          setOfflineApSaveNote("✕ " + (msg.err || "Error"), "err");
+          showToast("✕ " + (msg.err || "Could not save offline AP config"), "error");
+        }
+        if ($saveOfflineBtn) $saveOfflineBtn.disabled = false;
+        break;
       case "gw_portal_starting":
+        suppressNextWsCloseToast = true;
         showToast("📶 Gateway restarting into WiFi setup portal…", "warn");
         break;
       case "gw_rebooting":
+        suppressNextWsCloseToast = true;
         if (gatewayOtaUploading || $gwOtaProgress?.style.display !== "none") {
           gatewayOtaUploading = false;
           gatewayOtaBusy = true;
@@ -688,7 +821,11 @@ function connect() {
         }
         showToast("Gateway rebooting...", "warn");
         break;
+      case "gw_network_notice":
+        handleGatewayNetworkNotice(msg);
+        break;
       case "gw_factory_reset":
+        suppressNextWsCloseToast = true;
         showToast("🗑 Factory reset in progress — gateway restarting…", "warn");
         break;
     }
@@ -708,12 +845,27 @@ function setWs(state) {
 
 // ── Meta ──────────────────────────────────────────────────────────────────────
 function applyMeta(m) {
+  const previousSnapshot = loadGatewayNetworkSnapshot();
+  gatewayAccessIp = m.access_ip || m.ip || "-";
+  gatewayNetworkMode = m.network_mode || "Online (Router)";
+  gatewayRouterOnline = !!m.router_online;
+  gatewayOfflineApActive = !!m.offline_ap_active;
+  gatewayOfflineApSsid = m.offline_ap_ssid || gatewayOfflineApSsid || "";
+  gatewayRouterSsid = m.router_ssid || gatewayRouterSsid || "";
   $mIp.textContent  = m.ip      ?? "—";
   $mMac.textContent = m.mac     ?? "—";
   $mCh.textContent  = m.channel ?? "—";
   serverUptime   = m.uptime ?? 0;
   uptimeSyncedAt = performance.now();
   $mUp.textContent = fmtUptime(serverUptime);
+  $mIp.textContent = gatewayAccessIp;
+  if ($gwNetMode) $gwNetMode.textContent = gatewayNetworkMode;
+  if ($gwAccessIp) $gwAccessIp.textContent = gatewayAccessIp;
+  if ($gwRouterLink) {
+    $gwRouterLink.textContent = gatewayRouterOnline
+      ? "Connected"
+      : (gatewayOfflineApActive ? "Unavailable (offline fallback)" : "Disconnected");
+  }
   if (m.fw_version) {
     fwVersion = m.fw_version;
     const sbFw = $("sb-fw");
@@ -726,6 +878,9 @@ function applyMeta(m) {
   // Populate AP SSID field only when user isn't actively editing it
   if (m.ap_ssid && document.activeElement !== $apSsidInput) {
     $apSsidInput.value = m.ap_ssid;
+  }
+  if (gatewayOfflineApSsid && document.activeElement !== $offlineSsidInput) {
+    $offlineSsidInput.value = gatewayOfflineApSsid;
   }
   // Sync gateway LED toggle state
   if ($gwLedToggle && m.gw_led_enabled !== undefined) {
@@ -750,6 +905,14 @@ function applyMeta(m) {
   }
   refreshGatewayOtaUi();
   refreshNodeOtaUi();
+  const currentSnapshot = {
+    network_mode: gatewayNetworkMode,
+    access_ip: gatewayAccessIp,
+    offline_ap_ssid: gatewayOfflineApSsid,
+    router_ssid: gatewayRouterSsid
+  };
+  showGatewayTransitionToast(previousSnapshot, currentSnapshot);
+  saveGatewayNetworkSnapshot();
 }
 
 // ── Badges ────────────────────────────────────────────────────────────────────
@@ -1546,6 +1709,35 @@ function saveApConfig() {
 
 $saveApBtn.addEventListener("click", saveApConfig);
 
+function setOfflineApSaveNote(msg, type = "") {
+  if (!$offlineSaveNote) return;
+  $offlineSaveNote.textContent = msg;
+  $offlineSaveNote.className = "setting-save-note" + (type ? " " + type : "");
+  if (msg) setTimeout(() => {
+    if ($offlineSaveNote.textContent === msg) $offlineSaveNote.textContent = "";
+  }, 5000);
+}
+
+function saveOfflineApConfig() {
+  const ssid = $offlineSsidInput?.value.trim() || "";
+  const pass = $offlinePassInput?.value || "";
+  if (ssid.length < 2 || ssid.length > 32) {
+    setOfflineApSaveNote("✕ SSID must be 2-32 characters.", "err");
+    $offlineSsidInput?.focus();
+    return;
+  }
+  if (pass.length > 0 && pass.length < 8) {
+    setOfflineApSaveNote("✕ Password must be 8+ chars or blank.", "err");
+    $offlinePassInput?.focus();
+    return;
+  }
+  if ($saveOfflineBtn) $saveOfflineBtn.disabled = true;
+  setOfflineApSaveNote("Saving...");
+  send({ type: "set_offline_ap_config", ssid, password: pass });
+}
+
+if ($saveOfflineBtn) $saveOfflineBtn.addEventListener("click", saveOfflineApConfig);
+
 function setGatewayOtaNote(msg, type = "") {
   if (!$gwOtaNote) return;
   $gwOtaNote.textContent = msg;
@@ -1605,6 +1797,10 @@ function isCoprocessorReservedByCoprocOta() {
   return coprocOtaBusy || isGatewayUploadingToCoprocessor();
 }
 
+function isGatewayFirmwareUpdateBlockedByNodeOta() {
+  return isCoprocessorReservedByNodeOta();
+}
+
 function isGatewayFirmwareUpdateBlockedByCoproc() {
   return isCoprocessorReservedByNodeOta() || isCoprocessorReservedByCoprocOta();
 }
@@ -1656,7 +1852,10 @@ function refreshGatewayOtaUi() {
   const targetLabel = getGatewayOtaTargetLabel(target);
   const supported = getGatewayOtaSelectedSupported(target);
   const busy = getGatewayOtaSelectedBusy(target);
+  const nodeOtaBlocksGatewaySection = isGatewayFirmwareUpdateBlockedByNodeOta();
   const coprocBlocksGatewaySection = isGatewayFirmwareUpdateBlockedByCoproc();
+  const coprocOtaOwnsGatewaySection = target === "coprocessor"
+    && (isGatewayUploadingToCoprocessor() || coprocOtaBusy || coprocOtaState.active);
 
   if ($gwOtaCurrent) $gwOtaCurrent.textContent = getGatewayOtaSelectedVersion(target);
   if ($gwOtaSlot) $gwOtaSlot.textContent = supported ? getGatewayOtaSelectedSlotSize(target) : "Not available";
@@ -1686,11 +1885,15 @@ function refreshGatewayOtaUi() {
       setGatewayOtaNote("OTA is unavailable until the gateway is flashed with the OTA partition layout.", "err");
     }
   } else if (busy) {
-    if (coprocBlocksGatewaySection) {
+    if (nodeOtaBlocksGatewaySection) {
       setGatewayOtaNote(COPROC_BUSY_MSG, "err");
+    } else if (coprocOtaOwnsGatewaySection) {
+      // Preserve the active coprocessor OTA note/progress owned by this panel.
     } else if (!hasExplicitNote) {
-      if (target === "coprocessor") {
+      if (target === "coprocessor" && isCoprocessorReservedByCoprocOta()) {
         setGatewayOtaNote("A coprocessor firmware update is already in progress.", "ok");
+      } else if (target !== "coprocessor" && isCoprocessorReservedByCoprocOta()) {
+        setGatewayOtaNote("Coprocessor firmware update is in progress.", "err");
       } else {
         setGatewayOtaNote("Another firmware update is already in progress or the gateway is rebooting.", "err");
       }
@@ -1823,7 +2026,8 @@ function uploadGatewayFirmware() {
   const supported = getGatewayOtaSelectedSupported(target);
   const busy = getGatewayOtaSelectedBusy(target);
   const slotSize = target === "coprocessor" ? coprocOtaMaxBytes : gatewayOtaMaxBytes;
-  const coprocBlocksGatewaySection = isGatewayFirmwareUpdateBlockedByCoproc();
+  const nodeOtaBlocksGatewaySection = isGatewayFirmwareUpdateBlockedByNodeOta();
+  const coprocOtaActive = isCoprocessorReservedByCoprocOta();
 
   if (!$gwOtaFileInput?.files?.length) {
     setGatewayOtaNote("Select a .bin firmware file first.", "err");
@@ -1835,8 +2039,12 @@ function uploadGatewayFirmware() {
       : "OTA is not available on the current gateway partition layout.", "err");
     return;
   }
-  if (coprocBlocksGatewaySection) {
+  if (nodeOtaBlocksGatewaySection) {
     setGatewayOtaNote(COPROC_BUSY_MSG, "err");
+    return;
+  }
+  if (target === "main" && coprocOtaActive) {
+    setGatewayOtaNote("Coprocessor firmware update is already in progress.", "err");
     return;
   }
   if (busy || gatewayOtaUploading) {
@@ -2553,12 +2761,12 @@ function deleteRfidConfig(nodeId) {
 
 // ── Toast ─────────────────────────────────────────────────────────────────────
 let toastTimer = null;
-function showToast(msg, type = "success") {
+function showToast(msg, type = "success", durationMs = 4000) {
   $toast.textContent = msg;
   $toast.className = `toast ${type}`;
   $toast.style.display = "";
   clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => { $toast.style.display = "none"; }, 4000);
+  toastTimer = setTimeout(() => { $toast.style.display = "none"; }, durationMs);
 }
 
 
