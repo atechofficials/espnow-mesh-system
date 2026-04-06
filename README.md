@@ -1,13 +1,13 @@
-﻿# ESPNow Mesh System
+# ESPNow Mesh System
 
 A local-first ESP32 smart-home system for **wireless sensing and control**.
 
 This project lets you build a small home mesh using **ESP32-based nodes** and a central **ESP32-S3 gateway**.  
-The gateway connects to your Wi-Fi, hosts a browser-based dashboard, communicates with nearby nodes over **ESP-NOW**, can now fall back to its own **offline access-point mode** when your router is unavailable, and uses a companion **ESP32-C3 coprocessor** to handle **gateway-managed Node OTA updates** and future helper tasks.
+The gateway connects to your Wi-Fi, hosts a browser-based dashboard, can optionally expose its own built-in **BMP280/BME280 room sensor**, communicates with nearby nodes over **ESP-NOW**, can fall back to its own **Offline Mode AP** when your router is unavailable, and uses a companion **ESP32-C3 coprocessor** to handle **gateway-managed Node OTA updates** and future helper tasks.
 
 That means you can:
 
-- monitor room conditions like temperature, humidity, pressure, and light
+- monitor room conditions like temperature, humidity, pressure, and light- use the gateway by itself with an optional built-in room sensor before you add wireless nodes
 - control actuator devices like relays from a web dashboard
 - pair nodes without entering Wi-Fi credentials on each node
 - keep everything running on your own local network
@@ -154,7 +154,7 @@ The current gateway hardware release line now consists of four single-layer, thi
 | `ESP32_Mesh_Gateway_v1D` | Waveshare ESP32-S3-DevKit-C-N8R8 | ESP32-C3 Super Mini |
 
 Shared board-level notes for all four variants:
-- All four variants provide connection points for a future **BME280** module on the gateway PCB
+- All four variants provide solder pads for an optional built-in **BMP280** or **BME280** gateway room sensor module
 - All four variants are intentionally kept on a single copper layer with thick traces for easier home fabrication
 - The earlier ESP32-S3 Super Mini based gateway carrier should now be considered deprecated because that board's 4 MB flash is not suitable for the current gateway firmware line, which expects an 8 MB class ESP32-S3 target
 
@@ -224,7 +224,7 @@ http://192.168.8.1/
 The current dashboard supports:
 
 - viewing all paired nodes
-- seeing live sensor readings
+- seeing live sensor readings- viewing the optional gateway built-in sensor separately from paired-node cards
 - controlling relay outputs
 - managing Hybrid-node RFID card actions
 - opening node settings
@@ -233,7 +233,7 @@ The current dashboard supports:
 - updating supported nodes with Node OTA
 - updating the gateway main MCU or the ESP32-C3 coprocessor from the **Gateway Firmware Update** section
 - disconnecting nodes
-- changing gateway settings
+- changing gateway settings- editing built-in gateway sensor temperature-unit / altitude settings when that feature is enabled
 - editing Offline Mode AP settings and viewing current network mode / access IP
 - launching Wi-Fi setup mode
 - factory reset options, including a physical long-press reset button on the gateway and graceful node unpairing before the gateway wipes its own state
@@ -355,4 +355,3 @@ Planned future growth may include:
 MIT License
 
 See [`LICENSE`](LICENSE)
-```

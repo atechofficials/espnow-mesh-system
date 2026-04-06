@@ -1,11 +1,19 @@
-﻿# Gateway v1 - Build, Flash, and OTA Guide
+# Gateway v1 - Build, Flash, and OTA Guide
 
-Firmware version: **2.4.1**  
+Firmware version: **2.5.0**  
 Target board: `esp32-s3-devkitc1-n8r8`
 
-Gateway helper coprocessor: **ESP32-C3 firmware v0.3.0**
+Gateway helper coprocessor: **ESP32-C3 firmware v0.3.1**
 
 ---
+
+## Highlights in v2.5.0
+- Adds optional gateway built-in **BMP280/BME280** sensor support on the dedicated gateway PCB header/pads
+- Adds a dedicated **Gateway Built-in Sensor** dashboard card plus Settings-page controls for temperature unit and altitude reference
+- Keeps the built-in sensor separate from paired-node management and shows a clear Sensor not detected state when the feature is enabled but the hardware is missing or faulty
+- Aligns built-in sensor selection with build configuration using `GATEWAY_BUILTIN_SENSOR_TYPE`
+- Hardens **ESP32-C3 Super Mini** helper AP behavior for Node OTA by applying the documented **8.5 dBm** Wi-Fi TX power cap after Wi-Fi startup and preserving helper-side Wi-Fi stability safeguards
+- Refines gateway-side Node OTA status wording so accepted OTA requests report that the gateway is waiting for the node to connect to the helper AP
 
 ## Highlights in v2.4.1
 - Updates the gateway factory reset flow so all currently paired nodes receive an explicit `UNPAIR_CMD` before the gateway wipes its own state
@@ -106,7 +114,7 @@ The current gateway PCB release line documents four valid single-layer, thick-tr
 
 Shared board-level notes:
 
-- all four variants keep connection points for a future **BME280** gateway-side sensor module
+- all four variants keep solder pads for an optional **BMP280** or **BME280** gateway-side built-in sensor module
 - all four variants are intentionally laid out on a single copper layer with thick traces for easier home fabrication
 - the earlier ESP32-S3 Super Mini based gateway carrier should now be treated as deprecated because that board only has 4 MB flash and is not suitable for the current gateway firmware line
 
@@ -127,6 +135,8 @@ The gateway release line now exposes explicit build environments in `platformio.
 | `development` | Espressif ESP32-S3-DevKitC-1-N8R8 | DFRobot Beetle ESP32-C3 |
 
 When building or uploading from USB, select the environment that matches the actual gateway hardware pair you are using.
+
+The same build-configuration flow can also select the optional gateway built-in sensor type per environment through `GATEWAY_BUILTIN_SENSOR_TYPE` (`NONE`, `BMP280`, or `BME280`).
 ## Dependencies
 
 Managed automatically by PlatformIO via `platformio.ini`:
@@ -138,6 +148,9 @@ Managed automatically by PlatformIO via `platformio.ini`:
 | AsyncTCP | 3.3.2 |
 | ArduinoJson | 7.4.3 |
 | Adafruit NeoPixel | 1.15.4 |
+| Adafruit Unified Sensor | 1.1.15 |
+| Adafruit BMP280 Library | 2.6.8 |
+| Adafruit BME280 Library | 2.3.0 |
 
 Framework libraries used directly (no extra install needed): `LittleFS`, `Preferences`, `WiFi`, `esp_now`, `Update`.
 
@@ -278,6 +291,26 @@ This mode is intended for cases where:
 - Offline Mode AP credentials can be changed from the setup portal and later from the dashboard
 - setup-portal credentials and Offline Mode AP credentials are stored separately
 - router credentials are also mirrored into gateway config storage so reconnect and failover behavior remains reliable across reboot
+
+---
+
+## Gateway Built-in Sensor
+
+The current gateway release line can optionally expose a gateway-side **BMP280** or **BME280** module soldered to the built-in sensor pads on the PCB.
+
+### Configuration
+
+- the sensor type is selected at build time with `GATEWAY_BUILTIN_SENSOR_TYPE`
+- valid options are `NONE`, `BMP280`, and `BME280`
+- the gateway reuses the board-specific SPI pin mapping defined in `user_config.h`
+
+### Dashboard and Settings behavior
+
+- the dashboard shows a dedicated **Gateway Built-in Sensor** card instead of treating the sensor like a paired node
+- temperature and sea-level-corrected pressure are shown for both BMP280 and BME280 builds
+- humidity is shown only for BME280 builds
+- the Settings page exposes temperature-unit and altitude-reference controls for the built-in sensor
+- if the feature is enabled in firmware but the module is missing or faulty, the dashboard and Settings page remain visible and report **Sensor not detected**
 
 ---
 

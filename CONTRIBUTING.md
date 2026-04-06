@@ -34,16 +34,16 @@ Current file versions:
 
 | Component | Current Version |
 |----------|-----------------|
-| ESP32-S3 Gateway firmware `main.cpp` | `v2.4.1` |
-| ESP32-C3 Gateway Coprocessor firmware `main.cpp` | `v0.3.0` |
+| ESP32-S3 Gateway firmware `main.cpp` | `v2.5.0` |
+| ESP32-C3 Gateway Coprocessor firmware `main.cpp` | `v0.3.1` |
 | ESP32 Sensor Node firmware `main.cpp` | `v2.2.0` |
 | ESP32 Actuator Relay Node firmware `main.cpp` | `v1.3.0` |
 | ESP32 Hybrid Relay Node firmware `main.cpp` | `v0.2.0` |
-| `user_config.h` | `v1.1.1` |
+| `user_config.h` | `v1.1.2` |
 | `mesh_protocol.h` | `v3.3.2` |
 | `coproc_ota_protocol.h` | `v1.1.0` |
-| `index.html` | `v4.0.1` |
-| `app.js` | `v4.6.2` |
+| `index.html` | `v4.1.0` |
+| `app.js` | `v4.7.0` |
 | `style.css` | `v3.7.0` |
 
 Current supported node categories:
@@ -73,6 +73,8 @@ The current Node OTA system has been validated with:
 - automatic recovery from the ESP32-S3 Offline Mode AP back to the saved router connection
 - runtime physical factory reset from the dedicated gateway reset button
 - graceful node unpair/disconnect before gateway factory reset wipes the local node registry
+- gateway built-in sensor dashboard/settings behavior for disabled, enabled-not-detected, and detected runtime states
+- Node OTA helper AP stability on ESP32-C3 Super Mini coprocessor builds with the board-specific Wi-Fi TX power cap enabled
 
 ---
 
@@ -156,7 +158,7 @@ For the gateway hardware release, the current documentation line tracks four sin
 - `ESP32_Mesh_Gateway_v1C` - Seeed Studio XIAO ESP32-S3 + DFRobot Beetle ESP32-C3
 - `ESP32_Mesh_Gateway_v1D` - Waveshare ESP32-S3-DevKit-C-N8R8 + ESP32-C3 Super Mini
 
-Each gateway PCB variant keeps connection points for a future BME280 module. The older ESP32-S3 Super Mini based carrier should be treated as deprecated because the current gateway firmware line expects an 8 MB class ESP32-S3 target.
+Each gateway PCB variant keeps solder pads for an optional gateway-side BMP280 or BME280 built-in room sensor. The older ESP32-S3 Super Mini based carrier should be treated as deprecated because the current gateway firmware line expects an 8 MB class ESP32-S3 target.
 
 PlatformIO manages:
 - ESP32 toolchains
@@ -281,7 +283,7 @@ Actuator nodes should also report current actuator state so the gateway and Web 
 ### 4. Clear separation of responsibilities
 
 - Node firmware owns hardware interaction and node-side OTA flashing
-- Gateway firmware owns pairing, routing, NVS tracking, browser communication, Node OTA orchestration, router failover/recovery, and physical factory reset UX
+- Gateway firmware owns pairing, routing, built-in sensor sampling/settings, NVS tracking, browser communication, Node OTA orchestration, router failover/recovery, and physical factory reset UX
 - Gateway coprocessor firmware owns helper AP hosting, staged firmware serving, and helper-side OTA status reporting
 - Web assets own rendering and user interaction only
 
@@ -336,6 +338,7 @@ Things typically handled in the gateway:
 - node registration and re-registration
 - settings routing
 - sensor data handling
+- optional gateway built-in sensor sampling, unit conversion, and settings persistence
 - actuator state caching
 - WebSocket communication
 - HTTP API endpoints
@@ -348,6 +351,7 @@ Before changing gateway logic:
 - confirm whether the change belongs in the gateway, helper, or the node
 - keep settings and sensor handling schema-driven
 - do not hardcode node-specific behavior unless it is truly gateway-specific
+- retest the built-in gateway sensor feature in the relevant compile-time modes (`NONE` / `BMP280` / `BME280`) when changing gateway sensor sampling, metadata, or settings persistence
 - retest online -> offline -> online router transition behavior when changing Wi-Fi reconnect logic, scan timing, access-point behavior, or saved-credential handling
 - retest dashboard reachability at both the router IP and `http://192.168.8.1/` when touching Offline Mode logic
 - retest end-to-end Node OTA when changing OTA job timing, status handling, or reconnect logic
@@ -383,6 +387,7 @@ Before changing helper logic:
 - test the full S3 -> C3 -> node OTA flow on hardware
 - test the gateway-driven S3 -> C3 coprocessor self-OTA flow when changing helper-side self-OTA handling or helper hardware-ID reporting
 - validate helper cleanup after OTA success and abort paths
+- when changing helper AP or Wi-Fi behavior, retest `esp32c3_sm` builds and preserve the board-gated ESP32-C3 Super Mini Wi-Fi TX power cap after Wi-Fi startup
 - keep the documented UART wiring aligned with the active gateway hardware release and the helper board actually being used on the PCB
 
 ---
@@ -404,6 +409,7 @@ Important notes:
 - when changing Node OTA UX, verify staging, reconnect, success, and failure states
 - keep explicit OTA error messages visible; do not replace specific mismatch errors with generic busy/rebooting text
 - keep network transition messaging aligned with real gateway state changes, especially when the router drops and the dashboard has to move between router IP and Offline Mode IP
+- keep the optional Gateway Built-in Sensor card and settings panel aligned with the firmware-reported enabled/present state; do not treat it like a paired node
 - treat reconnect loss, Offline Mode entry, and router restore as first-class UX states, not silent background transitions
 
 When modifying the dashboard:
@@ -418,6 +424,7 @@ When modifying the dashboard:
 - test reopening the dashboard from `http://192.168.8.1/` after a router-loss event
 - test the restored-online notification when the gateway returns to the router connection
 - test the factory-reset notification path for both dashboard-triggered and physical-button resets
+- test built-in gateway sensor visibility, settings persistence, and not-detected state handling when that feature is touched
 
 ---
 
@@ -641,6 +648,8 @@ Before opening a PR:
 - test both online-mode and Offline Mode behavior when changing gateway networking, OTA availability, or dashboard reconnect handling
 - test the physical factory reset button and LED sequence when touching gateway input handling or LED ownership
 - test gateway factory reset with a paired node and verify that the node receives `UNPAIR_CMD`, clears its saved master binding, and can be paired again cleanly afterward
+- test the built-in gateway sensor flow (disabled / enabled / not-detected at minimum) when touching gateway sensor logic or its dashboard/settings UX
+- test Node OTA on an ESP32-C3 Super Mini helper build when changing helper Wi-Fi / AP behavior or Super Mini-specific stability handling
 - update the correct README files
 - keep version references current
 - keep `mesh_protocol.h` synchronized everywhere

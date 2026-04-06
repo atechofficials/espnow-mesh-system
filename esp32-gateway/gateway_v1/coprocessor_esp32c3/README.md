@@ -1,17 +1,17 @@
-﻿# ESP32-C3 Gateway Coprocessor
+# ESP32-C3 Gateway Coprocessor
 
-Firmware version: **0.3.0**
+Firmware version: **0.3.1**
 Default target board: `dfrobot_beetle_esp32c3`
 
 This firmware runs on the **ESP32-C3 coprocessor** attached to the ESP32-S3 gateway. It is not a standalone mesh node. Its main job is to help the gateway perform **Node OTA updates** by staging node firmware, creating a temporary helper access point, serving the staged `firmware.bin` over HTTP, and sending helper status back to the gateway over UART.
 
 The current helper release line can also be updated from the same **Gateway Firmware Update** section in the dashboard, where the ESP32-S3 gateway stages a compatible helper `firmware.bin`, validates the helper board type, transfers it over UART, and waits for the ESP32-C3 to reboot into the new firmware.
 
-In the current **Gateway v2.4.0** release line, the new Offline Mode AP is hosted by the **ESP32-S3 main MCU**, not by this coprocessor. That means the helper remains available for Node OTA staging and helper self-OTA while the dashboard is being accessed through the gateway's Offline Mode AP.
+In the current **Gateway v2.5.0** release line, the Offline Mode AP is hosted by the **ESP32-S3 main MCU**, not by this coprocessor. That means the helper remains available for Node OTA staging and helper self-OTA while the dashboard is being accessed through the gateway's Offline Mode AP.
 
 The gateway also coordinates helper ownership now: if the ESP32-C3 is already busy serving a Node OTA session, the dashboard blocks helper self-OTA requests with a **Coprocessor Busy** message, and if helper self-OTA is already running, Node OTA requests are blocked until the helper returns to the idle state.
 
-Current helper releases are used for sensor-node, actuator-node, and hybrid-node OTA jobs. The `v0.3.0` line also adds gateway-driven coprocessor self-OTA support, board-specific helper hardware validation, and alignment with the current gateway release line built around `user_config.h v1.1.1` and `coproc_ota_protocol.h v1.1.0`.
+Current helper releases are used for sensor-node, actuator-node, and hybrid-node OTA jobs. The `v0.3.1` line keeps gateway-driven coprocessor self-OTA support, board-specific helper hardware validation, and alignment with the current gateway release line built around `user_config.h v1.1.2` and `coproc_ota_protocol.h v1.1.0`. On `esp32c3_sm` builds it also applies the documented **8.5 dBm** Wi-Fi TX power cap after Wi-Fi startup for more stable Node OTA helper AP behavior on Gateway v1A and v1D hardware.
 
 ---
 
@@ -46,7 +46,7 @@ This means incompatible uploads such as wrong-role firmware, wrong hardware-conf
 | Helper AP IP | `192.168.4.1` |
 | Helper HTTP port | `80` |
 
-The current gateway hardware release line may host this helper role on an **ESP32-C3 Super Mini**, **Seeed Studio XIAO ESP32-C3**, or **DFRobot Beetle ESP32-C3**, depending on the selected gateway PCB variant. Contributors should keep helper UART routing, reset pins, and other board-level assumptions aligned with the intended hardware variant.
+The current gateway hardware release line may host this helper role on an **ESP32-C3 Super Mini**, **Seeed Studio XIAO ESP32-C3**, or **DFRobot Beetle ESP32-C3**, depending on the selected gateway PCB variant. Contributors should keep helper UART routing, reset pins, and other board-level assumptions aligned with the intended hardware variant. Super Mini helper builds should also preserve the board-gated Wi-Fi TX power cap behavior and apply it only after Wi-Fi startup has completed.
 
 ---
 

@@ -1,14 +1,15 @@
 /**
     * @file [main.cpp]
     * @brief Main source file for the (ESP32-C3) Gateway Coprocessor firmware
-    * @version 0.3.0
+    * @version 0.3.1
     * @author Mrinal (@atechofficials)
  */
 
-#define FW_VERSION "0.3.0"
+#define FW_VERSION "0.3.1"
 
 #include <Arduino.h>
 #include <WiFi.h>
+#include <esp_wifi.h>
 #include <WebServer.h>
 #include <LittleFS.h>
 #include <ArduinoJson.h>
@@ -126,6 +127,14 @@ static uint16_t crc16Ccitt(const uint8_t* data, size_t len) {
 
 static void resetRxState() {
     rxState = RxState{};
+}
+
+static void applyBoardSpecificWifiTxPowerLimit() {
+#ifdef COPROC_ESP32C3_SUPER_MINI
+    const bool txPowerApplied = WiFi.setTxPower(WIFI_POWER_8_5dBm);
+    Serial.printf("[C3] WiFi TX power cap (8.5 dBm) -> %s\n",
+                  txPowerApplied ? "ok" : "failed");
+#endif
 }
 
 static size_t getCoprocOtaSlotSize() {
@@ -251,9 +260,12 @@ static void resetSelfOtaState(bool abortUpdate) {
 
 static bool startAccessPoint() {
     WiFi.mode(WIFI_AP);
+    WiFi.persistent(false);
+    WiFi.setSleep(false);
     WiFi.softAPConfig(OTA_AP_IP, OTA_AP_GW, OTA_AP_MASK);
     const bool ok = WiFi.softAP(helper.ssid, helper.password, helper.apChannel, false, 1);
     if (!ok) return false;
+    applyBoardSpecificWifiTxPowerLimit();
 
     Serial.printf("[C3] OTA AP started: SSID=%s CH=%u IP=%s\n",
                   helper.ssid,
@@ -701,6 +713,9 @@ void loop() {
 
     delay(2);
 }
+
+
+
 
 
 

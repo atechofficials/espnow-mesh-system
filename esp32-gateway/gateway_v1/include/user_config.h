@@ -3,7 +3,7 @@
 /**
     * @file [user_config.h]
     * @brief Shared definitions for the ESP32 Mesh Gateway Firmware
-    * @version 1.1.1
+    * @version 1.1.2
     * @author Mrinal (@atechofficials)
  */
 
@@ -14,6 +14,16 @@
 #define OFFLINE_AP_PASS_DEFAULT "meshoffline"
 #define OFFLINE_AP_DEFAULT_CHANNEL 6
 #define NODE_OTA_HOST "192.168.4.1"
+
+// Optional gateway built-in room environment sensor selection.
+// Select exactly one sensor type or disable the feature completely.
+#define GATEWAY_BUILTIN_SENSOR_NONE   0
+#define GATEWAY_BUILTIN_SENSOR_BMP280 1
+#define GATEWAY_BUILTIN_SENSOR_BME280 2
+
+#ifndef GATEWAY_BUILTIN_SENSOR_TYPE
+    #define GATEWAY_BUILTIN_SENSOR_TYPE GATEWAY_BUILTIN_SENSOR_NONE
+#endif
 
 // Select Main Dev Board
 // These can be provided from platformio.ini build_flags per environment.
@@ -73,6 +83,12 @@
     #define BME_MISO 8
     #define BME_MOSI 9
     #define BME_CS   2
+#endif
+
+#if (GATEWAY_BUILTIN_SENSOR_TYPE != GATEWAY_BUILTIN_SENSOR_NONE) && \
+    (GATEWAY_BUILTIN_SENSOR_TYPE != GATEWAY_BUILTIN_SENSOR_BMP280) && \
+    (GATEWAY_BUILTIN_SENSOR_TYPE != GATEWAY_BUILTIN_SENSOR_BME280)
+    #error "GATEWAY_BUILTIN_SENSOR_TYPE must be NONE, BMP280, or BME280."
 #endif
 
 // Coprocessor board-specific hardware config ID used by coprocessor OTA firmware validation.

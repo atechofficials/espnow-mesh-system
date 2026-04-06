@@ -1,5 +1,5 @@
 /**
- * ESP32 Mesh Gateway Web Interface Client v4.6.2
+ * ESP32 Mesh Gateway Web Interface Client v4.7.0
  *
  * WS Inbound:  { type:"meta"|"update"|"discovered"|"pair_timeout"|"pair_capacity_full"|"ap_config_ack"|
  *                     "offline_ap_config_ack"|
@@ -7,13 +7,13 @@
  *                     "gw_network_notice"|
  *                     "auth_required"|"auth_ok"|"auth_fail"|"session_expired"|
  *                     "coproc_ota_state"|
- *                     "web_creds_ack"|"node_settings"|"node_sensor_schema"|
+ *                     "web_creds_ack"|"gw_builtin_sensor_settings_ack"|"node_settings"|"node_sensor_schema"|
  *                     "node_actuator_schema"|"node_rfid_config"|
  *                     "node_rfid_config_ack"|"rfid_scan_event"|
  *                     "relay_labels_ack" }
  * WS Outbound: { type:"auth"|"actuator_cmd"|"pair_cmd"|"unpair_cmd"|"rename_node"|
  *                     "reboot_gw"|"reboot_node"|"set_ap_config"|"set_offline_ap_config"|"set_web_credentials"|
- *                     "start_wifi_portal"|"factory_reset"|"node_settings_get"|
+ *                     "start_wifi_portal"|"factory_reset"|"gw_builtin_sensor_settings_set"|"node_settings_get"|
  *                     "node_settings_set"|"node_sensor_schema_get"|
  *                     "node_actuator_schema_get"|"node_rfid_config_get"|
  *                     "node_rfid_config_set"|"relay_labels_set"|"ping" }
@@ -44,6 +44,7 @@ let   fwVersion      = "—";
 
 // ── DOM ───────────────────────────────────────────────────────────────────────
 const $ = id => document.getElementById(id);
+const $gwBuiltinSensorGrid = $("gw-builtin-sensor-grid");
 const $nodeGrid   = $("node-grid");
 const $dashEmpty  = $("dash-empty");
 const $nodesTbody = $("nodes-tbody");
@@ -87,6 +88,15 @@ const $wifiPortalBtn = $("wifi-portal-btn");
 const $gwNetMode = $("gw-net-mode");
 const $gwAccessIp = $("gw-access-ip");
 const $gwRouterLink = $("gw-router-link");
+const $gwBuiltinSensorSettingsCard = $("gw-builtin-sensor-settings-card");
+const $gwBuiltinSensorStatus = $("gw-builtin-sensor-status");
+const $gwBuiltinSensorUnitView = $("gw-builtin-sensor-unit-view");
+const $gwBuiltinSensorAltView = $("gw-builtin-sensor-alt-view");
+const $gwBuiltinTempUnit = $("gw-builtin-temp-unit");
+const $gwBuiltinAltitudeValue = $("gw-builtin-altitude-value");
+const $gwBuiltinAltitudeUnit = $("gw-builtin-altitude-unit");
+const $gwBuiltinSensorSaveBtn = $("gw-builtin-sensor-save-btn");
+const $gwBuiltinSensorSaveNote = $("gw-builtin-sensor-save-note");
 const $gwOtaTarget = $("gw-ota-target");
 const $gwOtaFileInput = $("gw-ota-file");
 const $gwOtaBtn = $("gw-ota-btn");
@@ -131,6 +141,25 @@ let gatewayRouterOnline = false;
 let gatewayOfflineApActive = false;
 let gatewayOfflineApSsid = "";
 let gatewayRouterSsid = "";
+let gatewayBuiltinSensor = {
+  enabled: false,
+  model: "disabled",
+  present: false,
+  tempUnit: "C",
+  altitudeConfigured: false,
+  altitudeValue: 0,
+  altitudeUnit: "m",
+  temperature: null,
+  pressureHpa: null,
+  humidity: null
+};
+let gatewayBuiltinSensorDraft = {
+  dirty: false,
+  saving: false,
+  tempUnit: "C",
+  altitudeValueText: "",
+  altitudeUnit: "m"
+};
 const COPROC_BUSY_MSG = "Coprocessor Busy. Please try after some time.";
 let coprocOnline = false;
 let coprocFwVersion = "";
@@ -575,6 +604,19 @@ function connect() {
         const scBtn = $("save-web-creds-btn");
         if (scBtn) scBtn.disabled = false;
         break;
+      case "gw_builtin_sensor_settings_ack":
+        if (msg.ok) {
+          syncGatewayBuiltinSensorDraftFromMeta(true);
+          setGatewayBuiltinSensorSaveNote("Saved. Sensor settings updated.", "ok");
+          showToast("Gateway built-in sensor settings saved.", "success");
+          renderGatewayBuiltinSensorSettings();
+        } else {
+          gatewayBuiltinSensorDraft.saving = false;
+          setGatewayBuiltinSensorSaveNote(msg.err || "Could not save sensor settings.", "err");
+          showToast(msg.err || "Could not save sensor settings.", "error");
+        }
+        if ($gwBuiltinSensorSaveBtn) $gwBuiltinSensorSaveBtn.disabled = false;
+        break;
 
       case "node_settings":
         nodeSettings.set(msg.node_id, msg.settings || []);
@@ -844,6 +886,215 @@ function setWs(state) {
 }
 
 // ── Meta ──────────────────────────────────────────────────────────────────────
+function getGatewayBuiltinSensorStatusLabel() {
+  if (!gatewayBuiltinSensor.enabled) return "Disabled in firmware";
+  if (!gatewayBuiltinSensor.present) return "Sensor not detected";
+  return gatewayBuiltinSensor.model === "bme280" ? "BME280" : "BMP280";
+}
+
+function formatGatewayBuiltinSensorValue(value, digits = 1) {
+  const num = Number(value);
+  return Number.isFinite(num) ? num.toFixed(digits) : "\u2014";
+}
+
+function convertGatewayBuiltinAltitudeValue(value, fromUnit, toUnit) {
+  const num = Number(value);
+  if (!Number.isFinite(num) || fromUnit === toUnit) return num;
+  return toUnit === "ft" ? (num * 3.2808399) : (num / 3.2808399);
+}
+
+function setGatewayBuiltinSensorSaveNote(msg, type = "") {
+  if (!$gwBuiltinSensorSaveNote) return;
+  $gwBuiltinSensorSaveNote.textContent = msg;
+  $gwBuiltinSensorSaveNote.className = "setting-save-note" + (type ? " " + type : "");
+  if (msg) {
+    setTimeout(() => {
+      if ($gwBuiltinSensorSaveNote.textContent === msg) $gwBuiltinSensorSaveNote.textContent = "";
+    }, 5000);
+  }
+}
+
+function renderGatewayBuiltinSensorCard() {
+  if (!$gwBuiltinSensorGrid) return;
+
+  if (!gatewayBuiltinSensor.enabled) {
+    $gwBuiltinSensorGrid.style.display = "none";
+    $gwBuiltinSensorGrid.innerHTML = "";
+    return;
+  }
+
+  const present = !!gatewayBuiltinSensor.present;
+  const modelLabel = gatewayBuiltinSensor.model === "bme280" ? "BME280" : "BMP280";
+  let card = $gwBuiltinSensorGrid.querySelector(".gateway-builtin-sensor-card");
+  if (!card) {
+    $gwBuiltinSensorGrid.innerHTML = `
+      <div class="node-card gateway-builtin-sensor-card">
+        <div class="card-hdr">
+          <span class="card-dot"></span>
+          <span class="card-name">Gateway Built-in Sensor</span>
+          <span class="card-badge sensor"></span>
+        </div>
+        <div class="card-rows"></div>
+      </div>`;
+    card = $gwBuiltinSensorGrid.querySelector(".gateway-builtin-sensor-card");
+  }
+  const dot = card?.querySelector(".card-dot");
+  const badge = card?.querySelector(".card-badge");
+  const rowsEl = card?.querySelector(".card-rows");
+  const rows = [];
+
+  if (present) {
+    rows.push(`
+      <div class="card-row">
+        <span class="lbl">Temperature</span>
+        <span class="val val-temp">${formatGatewayBuiltinSensorValue(gatewayBuiltinSensor.temperature, 1)} \u00b0${gatewayBuiltinSensor.tempUnit}</span>
+      </div>`);
+    rows.push(`
+      <div class="card-row">
+        <span class="lbl">Sea-Level Pressure</span>
+        <span class="val val-pres">${formatGatewayBuiltinSensorValue(gatewayBuiltinSensor.pressureHpa, 1)} hPa</span>
+      </div>`);
+    if (gatewayBuiltinSensor.model === "bme280") {
+      rows.push(`
+        <div class="card-row">
+          <span class="lbl">Humidity</span>
+          <span class="val">${formatGatewayBuiltinSensorValue(gatewayBuiltinSensor.humidity, 1)} %</span>
+        </div>`);
+    }
+    if (gatewayBuiltinSensor.altitudeConfigured) {
+      rows.push(`
+        <div class="card-row">
+          <span class="lbl">Pressure Reference</span>
+          <span class="val">${formatGatewayBuiltinSensorValue(gatewayBuiltinSensor.altitudeValue, 1)} ${gatewayBuiltinSensor.altitudeUnit}</span>
+        </div>`);
+    }
+  } else {
+    rows.push(`
+      <div class="card-row">
+        <span class="lbl">Status</span>
+        <span class="val val-muted">Sensor not detected</span>
+      </div>`);
+  }
+
+  $gwBuiltinSensorGrid.style.display = "";
+  if (card) {
+    card.classList.toggle("offline", !present);
+  }
+  if (dot) {
+    dot.className = `card-dot ${present ? "online" : "offline"}`;
+  }
+  if (badge) {
+    badge.textContent = modelLabel;
+  }
+  if (rowsEl) {
+    rowsEl.innerHTML = rows.join("");
+  }
+}
+
+function syncGatewayBuiltinSensorDraftFromMeta(force = false) {
+  if (!force && gatewayBuiltinSensorDraft.dirty) return;
+  gatewayBuiltinSensorDraft.tempUnit = gatewayBuiltinSensor.tempUnit || "C";
+  gatewayBuiltinSensorDraft.altitudeUnit = gatewayBuiltinSensor.altitudeUnit || "m";
+  gatewayBuiltinSensorDraft.altitudeValueText = gatewayBuiltinSensor.altitudeConfigured
+    ? formatGatewayBuiltinSensorValue(gatewayBuiltinSensor.altitudeValue, 1)
+    : "";
+  gatewayBuiltinSensorDraft.dirty = false;
+  gatewayBuiltinSensorDraft.saving = false;
+}
+
+function markGatewayBuiltinSensorDraftDirty() {
+  gatewayBuiltinSensorDraft.dirty = true;
+}
+
+function renderGatewayBuiltinSensorSettings() {
+  if (!$gwBuiltinSensorSettingsCard) return;
+
+  if (!gatewayBuiltinSensor.enabled) {
+    $gwBuiltinSensorSettingsCard.style.display = "none";
+    gatewayBuiltinSensorDraft.dirty = false;
+    gatewayBuiltinSensorDraft.saving = false;
+    return;
+  }
+
+  $gwBuiltinSensorSettingsCard.style.display = "";
+  if ($gwBuiltinSensorStatus) {
+    $gwBuiltinSensorStatus.textContent = getGatewayBuiltinSensorStatusLabel();
+  }
+  if ($gwBuiltinSensorUnitView) {
+    $gwBuiltinSensorUnitView.textContent = gatewayBuiltinSensor.tempUnit === "F"
+      ? "Fahrenheit (\u00b0F)"
+      : "Celsius (\u00b0C)";
+  }
+  if ($gwBuiltinSensorAltView) {
+    $gwBuiltinSensorAltView.textContent = gatewayBuiltinSensor.altitudeConfigured
+      ? `${formatGatewayBuiltinSensorValue(gatewayBuiltinSensor.altitudeValue, 1)} ${gatewayBuiltinSensor.altitudeUnit}`
+      : "Not configured";
+  }
+
+  const formTempUnit = gatewayBuiltinSensorDraft.dirty
+    ? gatewayBuiltinSensorDraft.tempUnit
+    : gatewayBuiltinSensor.tempUnit;
+  const formAltitudeValue = gatewayBuiltinSensorDraft.dirty
+    ? gatewayBuiltinSensorDraft.altitudeValueText
+    : (gatewayBuiltinSensor.altitudeConfigured
+        ? formatGatewayBuiltinSensorValue(gatewayBuiltinSensor.altitudeValue, 1)
+        : "");
+  const formAltitudeUnit = gatewayBuiltinSensorDraft.dirty
+    ? gatewayBuiltinSensorDraft.altitudeUnit
+    : gatewayBuiltinSensor.altitudeUnit;
+
+  if ($gwBuiltinTempUnit) {
+    $gwBuiltinTempUnit.value = formTempUnit;
+  }
+  if ($gwBuiltinAltitudeValue) {
+    $gwBuiltinAltitudeValue.value = formAltitudeValue;
+  }
+  if ($gwBuiltinAltitudeUnit) {
+    $gwBuiltinAltitudeUnit.value = formAltitudeUnit;
+  }
+  if ($gwBuiltinAltitudeUnit) {
+    $gwBuiltinAltitudeUnit.dataset.prevValue = formAltitudeUnit;
+  }
+}
+
+function saveGatewayBuiltinSensorSettings() {
+  if (!gatewayBuiltinSensor.enabled) return;
+
+  const tempUnit = $gwBuiltinTempUnit?.value || "C";
+  const altitudeUnit = $gwBuiltinAltitudeUnit?.value || "m";
+  const altitudeValue = Number($gwBuiltinAltitudeValue?.value ?? "0");
+
+  if (!["C", "F"].includes(tempUnit)) {
+    setGatewayBuiltinSensorSaveNote("\u2715 Temperature unit must be C or F.", "err");
+    $gwBuiltinTempUnit?.focus();
+    return;
+  }
+  if (!["m", "ft"].includes(altitudeUnit)) {
+    setGatewayBuiltinSensorSaveNote("\u2715 Altitude unit must be m or ft.", "err");
+    $gwBuiltinAltitudeUnit?.focus();
+    return;
+  }
+  if (!Number.isFinite(altitudeValue)) {
+    setGatewayBuiltinSensorSaveNote("\u2715 Altitude must be a valid number.", "err");
+    $gwBuiltinAltitudeValue?.focus();
+    return;
+  }
+
+  gatewayBuiltinSensorDraft.tempUnit = tempUnit;
+  gatewayBuiltinSensorDraft.altitudeValueText = $gwBuiltinAltitudeValue?.value ?? "";
+  gatewayBuiltinSensorDraft.altitudeUnit = altitudeUnit;
+  gatewayBuiltinSensorDraft.dirty = true;
+  gatewayBuiltinSensorDraft.saving = true;
+  if ($gwBuiltinSensorSaveBtn) $gwBuiltinSensorSaveBtn.disabled = true;
+  setGatewayBuiltinSensorSaveNote("Saving...");
+  send({
+    type: "gw_builtin_sensor_settings_set",
+    temp_unit: tempUnit,
+    altitude_value: altitudeValue,
+    altitude_unit: altitudeUnit
+  });
+}
+
 function applyMeta(m) {
   const previousSnapshot = loadGatewayNetworkSnapshot();
   gatewayAccessIp = m.access_ip || m.ip || "-";
@@ -852,6 +1103,19 @@ function applyMeta(m) {
   gatewayOfflineApActive = !!m.offline_ap_active;
   gatewayOfflineApSsid = m.offline_ap_ssid || gatewayOfflineApSsid || "";
   gatewayRouterSsid = m.router_ssid || gatewayRouterSsid || "";
+  gatewayBuiltinSensor = {
+    enabled: !!m.gw_builtin_sensor_enabled,
+    model: m.gw_builtin_sensor_model || "disabled",
+    present: !!m.gw_builtin_sensor_present,
+    tempUnit: m.gw_builtin_sensor_temp_unit || "C",
+    altitudeConfigured: !!m.gw_builtin_sensor_altitude_configured,
+    altitudeValue: Number(m.gw_builtin_sensor_altitude_value ?? 0),
+    altitudeUnit: m.gw_builtin_sensor_altitude_unit || "m",
+    temperature: m.gw_builtin_sensor_temperature !== undefined ? Number(m.gw_builtin_sensor_temperature) : null,
+    pressureHpa: m.gw_builtin_sensor_pressure_hpa !== undefined ? Number(m.gw_builtin_sensor_pressure_hpa) : null,
+    humidity: m.gw_builtin_sensor_humidity !== undefined ? Number(m.gw_builtin_sensor_humidity) : null
+  };
+  syncGatewayBuiltinSensorDraftFromMeta(false);
   $mIp.textContent  = m.ip      ?? "—";
   $mMac.textContent = m.mac     ?? "—";
   $mCh.textContent  = m.channel ?? "—";
@@ -905,6 +1169,8 @@ function applyMeta(m) {
   }
   refreshGatewayOtaUi();
   refreshNodeOtaUi();
+  renderGatewayBuiltinSensorCard();
+  renderGatewayBuiltinSensorSettings();
   const currentSnapshot = {
     network_mode: gatewayNetworkMode,
     access_ip: gatewayAccessIp,
@@ -3055,6 +3321,40 @@ if ($gwLedToggle) {
       state: enabled ? 1 : 0
     });
 
+  });
+}
+
+if ($gwBuiltinSensorSaveBtn) {
+  $gwBuiltinSensorSaveBtn.addEventListener("click", saveGatewayBuiltinSensorSettings);
+}
+if ($gwBuiltinTempUnit) {
+  $gwBuiltinTempUnit.addEventListener("change", () => {
+    gatewayBuiltinSensorDraft.tempUnit = $gwBuiltinTempUnit.value || "C";
+    markGatewayBuiltinSensorDraftDirty();
+    setGatewayBuiltinSensorSaveNote("");
+  });
+}
+if ($gwBuiltinAltitudeValue) {
+  $gwBuiltinAltitudeValue.addEventListener("input", () => {
+    gatewayBuiltinSensorDraft.altitudeValueText = $gwBuiltinAltitudeValue.value;
+    markGatewayBuiltinSensorDraftDirty();
+    setGatewayBuiltinSensorSaveNote("");
+  });
+}
+if ($gwBuiltinAltitudeUnit) {
+  $gwBuiltinAltitudeUnit.addEventListener("change", () => {
+    const prevUnit = $gwBuiltinAltitudeUnit.dataset.prevValue || gatewayBuiltinSensor.altitudeUnit || "m";
+    const nextUnit = $gwBuiltinAltitudeUnit.value || "m";
+    const currentValue = Number($gwBuiltinAltitudeValue?.value ?? "0");
+    const converted = convertGatewayBuiltinAltitudeValue(currentValue, prevUnit, nextUnit);
+    if ($gwBuiltinAltitudeValue && Number.isFinite(converted)) {
+      $gwBuiltinAltitudeValue.value = converted.toFixed(1);
+    }
+    $gwBuiltinAltitudeUnit.dataset.prevValue = nextUnit;
+    gatewayBuiltinSensorDraft.altitudeUnit = nextUnit;
+    gatewayBuiltinSensorDraft.altitudeValueText = $gwBuiltinAltitudeValue?.value ?? "";
+    markGatewayBuiltinSensorDraftDirty();
+    setGatewayBuiltinSensorSaveNote("");
   });
 }
 

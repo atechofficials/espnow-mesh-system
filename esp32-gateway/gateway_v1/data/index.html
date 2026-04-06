@@ -1,4 +1,4 @@
-<!-- ESP32 Mesh Gateway Web Interface v4.0.1 -->
+<!-- ESP32 Mesh Gateway Web Interface v4.1.0 -->
 <!DOCTYPE html>
 <html lang="en" data-theme="dark">
 <head>
@@ -176,6 +176,7 @@
             <h2>Dashboard</h2>
             <p>Live sensor data and node controls</p>
           </div>
+          <div class="node-grid" id="gw-builtin-sensor-grid" style="display:none;margin-bottom:1rem"></div>
           <div class="node-grid" id="node-grid">
             <div class="empty-state" id="dash-empty">
               <div class="empty-glyph">⬡</div>
@@ -402,6 +403,62 @@
                 </div>
               </div>
 
+            </div>
+
+            <div class="settings-card" id="gw-builtin-sensor-settings-card" style="display:none">
+              <div class="settings-card-hdr">Gateway Built-in Sensor</div>
+
+              <p class="settings-subsec-desc">
+                Configure the optional BMP280 or BME280 module soldered on the gateway PCB.
+                Sea-level pressure is calculated from the saved altitude.
+              </p>
+
+              <div class="ota-meta-grid" style="margin-bottom:1rem">
+                <div class="ota-meta-item">
+                  <span class="ota-meta-label">Sensor Status</span>
+                  <span class="ota-meta-value" id="gw-builtin-sensor-status">Disabled in firmware</span>
+                </div>
+                <div class="ota-meta-item">
+                  <span class="ota-meta-label">Temperature Unit</span>
+                  <span class="ota-meta-value" id="gw-builtin-sensor-unit-view">-</span>
+                </div>
+                <div class="ota-meta-item">
+                  <span class="ota-meta-label">Altitude Reference</span>
+                  <span class="ota-meta-value" id="gw-builtin-sensor-alt-view">-</span>
+                </div>
+              </div>
+
+              <div class="setting-row-2">
+                <div class="setting-field">
+                  <label>Temperature Unit</label>
+                  <select class="setting-input" id="gw-builtin-temp-unit">
+                    <option value="C">Celsius (°C)</option>
+                    <option value="F">Fahrenheit (°F)</option>
+                  </select>
+                </div>
+                <div class="setting-field">
+                  <label>Altitude Above Sea Level</label>
+                  <input type="number" class="setting-input" id="gw-builtin-altitude-value"
+                         placeholder="0" step="0.1" inputmode="decimal">
+                </div>
+              </div>
+
+              <div class="setting-row-2" style="margin-top:.5rem">
+                <div class="setting-field" style="max-width:220px">
+                  <label>Altitude Unit</label>
+                  <select class="setting-input" id="gw-builtin-altitude-unit">
+                    <option value="m">Meters (m)</option>
+                    <option value="ft">Feet (ft)</option>
+                  </select>
+                </div>
+              </div>
+
+              <div class="setting-save-row" style="margin-top:.8rem">
+                <button class="settings-save-btn" id="gw-builtin-sensor-save-btn" type="button">
+                  Save Sensor Settings
+                </button>
+                <span class="setting-save-note" id="gw-builtin-sensor-save-note"></span>
+              </div>
             </div>
 
             <div class="settings-card">

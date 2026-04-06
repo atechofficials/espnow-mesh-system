@@ -1,10 +1,10 @@
 /**
     * @file [main.cpp]
     * @brief Main source file for the ESP32 Mesh Gateway firmware
-    * @version 2.4.1
+    * @version 2.5.0
     * @author Mrinal (@atechofficials)
  */
-#define FW_VERSION "2.4.1"
+#define FW_VERSION "2.5.0"
 
 #include <Arduino.h>
 #include <WiFi.h>
@@ -15,6 +15,7 @@
 #include <ESPAsyncWebServer.h>
 #include <ArduinoJson.h>
 #include <Adafruit_NeoPixel.h>
+#include <math.h>
 #include <Update.h>
 #include <esp_app_format.h>
 #include <esp_ota_ops.h>
@@ -26,6 +27,16 @@
 #include <ctype.h>
 #include <set>
 #include "user_config.h"
+
+#if GATEWAY_BUILTIN_SENSOR_TYPE != GATEWAY_BUILTIN_SENSOR_NONE
+    #include <SPI.h>
+#endif
+
+#if GATEWAY_BUILTIN_SENSOR_TYPE == GATEWAY_BUILTIN_SENSOR_BME280
+    #include <Adafruit_BME280.h>
+#elif GATEWAY_BUILTIN_SENSOR_TYPE == GATEWAY_BUILTIN_SENSOR_BMP280
+    #include <Adafruit_BMP280.h>
+#endif
 
 // Other Configuration
 #define WEB_PORT         80
@@ -217,6 +228,33 @@ enum GatewayLedOverrideMode : uint8_t {
 static GatewayLedOverrideMode gwLedOverrideMode = GW_LED_OVERRIDE_NONE;
 static unsigned long     gwLedOverrideLastBlinkAt = 0;
 static bool              gwLedOverrideBlinkOn = false;
+
+enum GatewayBuiltinSensorTempUnit : uint8_t {
+    GATEWAY_SENSOR_TEMP_C = 0,
+    GATEWAY_SENSOR_TEMP_F,
+};
+
+enum GatewayBuiltinSensorAltitudeUnit : uint8_t {
+    GATEWAY_SENSOR_ALT_M = 0,
+    GATEWAY_SENSOR_ALT_FT,
+};
+
+static bool gatewayBuiltinSensorPresent = false;
+static float gatewayBuiltinSensorTempC = NAN;
+static float gatewayBuiltinSensorPressureHpa = NAN;
+static float gatewayBuiltinSensorHumidity = NAN;
+static unsigned long gatewayBuiltinSensorLastSampleAt = 0;
+static GatewayBuiltinSensorTempUnit gatewayBuiltinSensorTempUnit = GATEWAY_SENSOR_TEMP_C;
+static GatewayBuiltinSensorAltitudeUnit gatewayBuiltinSensorAltitudeUnit = GATEWAY_SENSOR_ALT_M;
+static float gatewayBuiltinSensorAltitudeMeters = 0.0f;
+static bool gatewayBuiltinSensorAltitudeConfigured = false;
+
+#if GATEWAY_BUILTIN_SENSOR_TYPE == GATEWAY_BUILTIN_SENSOR_BME280
+static Adafruit_BME280 gatewayBuiltinBme(BME_CS, BME_MOSI, BME_MISO, BME_SCK);
+#elif GATEWAY_BUILTIN_SENSOR_TYPE == GATEWAY_BUILTIN_SENSOR_BMP280
+static Adafruit_BMP280 gatewayBuiltinBmp(BME_CS, BME_MOSI, BME_MISO, BME_SCK);
+#endif
+
 __attribute__((used)) static const char kGatewayFirmwareVersionMarker[] = OTA_FW_MARKER FW_VERSION;
 __attribute__((used)) static const char kGatewayHardwareConfigMarker[] = OTA_HWCFG_MARKER HW_CONFIG_ID;
 static volatile uint32_t gGatewayFirmwareMarkerChecksum = 0;
@@ -536,6 +574,192 @@ static void loadGwLedState() {
     Serial.printf("[CFG]  Gateway LED is %s\n", gwLedEnabled ? "enabled" : "disabled");
     if (!gwLedEnabled && gwLedOverrideMode == GW_LED_OVERRIDE_NONE) {
         setGwLed(0);
+    }
+}
+
+// *****************************************************************************
+//  Gateway Built-in Sensor Helpers
+// *****************************************************************************
+static bool gatewayBuiltinSensorFeatureEnabled() {
+    return GATEWAY_BUILTIN_SENSOR_TYPE != GATEWAY_BUILTIN_SENSOR_NONE;
+}
+
+static const char* gatewayBuiltinSensorModelString() {
+#if GATEWAY_BUILTIN_SENSOR_TYPE == GATEWAY_BUILTIN_SENSOR_BME280
+    return "bme280";
+#elif GATEWAY_BUILTIN_SENSOR_TYPE == GATEWAY_BUILTIN_SENSOR_BMP280
+    return "bmp280";
+#else
+    return "disabled";
+#endif
+}
+
+static const char* gatewayBuiltinSensorTempUnitString() {
+    return gatewayBuiltinSensorTempUnit == GATEWAY_SENSOR_TEMP_F ? "F" : "C";
+}
+
+static const char* gatewayBuiltinSensorAltitudeUnitString() {
+    return gatewayBuiltinSensorAltitudeUnit == GATEWAY_SENSOR_ALT_FT ? "ft" : "m";
+}
+
+static bool parseGatewayBuiltinTempUnit(const char* value,
+                                        GatewayBuiltinSensorTempUnit* outUnit) {
+    if (!outUnit || !value) return false;
+    if (strcmp(value, "F") == 0 || strcmp(value, "f") == 0) {
+        *outUnit = GATEWAY_SENSOR_TEMP_F;
+        return true;
+    }
+    if (strcmp(value, "C") == 0 || strcmp(value, "c") == 0) {
+        *outUnit = GATEWAY_SENSOR_TEMP_C;
+        return true;
+    }
+    return false;
+}
+
+static bool parseGatewayBuiltinAltitudeUnit(const char* value,
+                                            GatewayBuiltinSensorAltitudeUnit* outUnit) {
+    if (!outUnit || !value) return false;
+    if (strcmp(value, "ft") == 0 || strcmp(value, "FT") == 0 ||
+        strcmp(value, "feet") == 0 || strcmp(value, "Feet") == 0) {
+        *outUnit = GATEWAY_SENSOR_ALT_FT;
+        return true;
+    }
+    if (strcmp(value, "m") == 0 || strcmp(value, "M") == 0 ||
+        strcmp(value, "meter") == 0 || strcmp(value, "meters") == 0) {
+        *outUnit = GATEWAY_SENSOR_ALT_M;
+        return true;
+    }
+    return false;
+}
+
+static float gatewayBuiltinAltitudeDisplayValue() {
+    if (!isfinite(gatewayBuiltinSensorAltitudeMeters)) return 0.0f;
+    if (gatewayBuiltinSensorAltitudeUnit == GATEWAY_SENSOR_ALT_FT) {
+        return gatewayBuiltinSensorAltitudeMeters * 3.2808399f;
+    }
+    return gatewayBuiltinSensorAltitudeMeters;
+}
+
+static float gatewayBuiltinAltitudeMetersFromDisplay(float value,
+                                                     GatewayBuiltinSensorAltitudeUnit unit) {
+    if (!isfinite(value)) return 0.0f;
+    return unit == GATEWAY_SENSOR_ALT_FT ? (value / 3.2808399f) : value;
+}
+
+static float gatewayBuiltinDisplayTemperature() {
+    if (!isfinite(gatewayBuiltinSensorTempC)) return NAN;
+    if (gatewayBuiltinSensorTempUnit == GATEWAY_SENSOR_TEMP_F) {
+        return (gatewayBuiltinSensorTempC * 9.0f / 5.0f) + 32.0f;
+    }
+    return gatewayBuiltinSensorTempC;
+}
+
+static float gatewayBuiltinSeaLevelPressureHpa() {
+    if (!isfinite(gatewayBuiltinSensorPressureHpa) || gatewayBuiltinSensorPressureHpa <= 0.0f) {
+        return NAN;
+    }
+    const float ratio = 1.0f - (gatewayBuiltinSensorAltitudeMeters / 44330.0f);
+    if (ratio <= 0.0f) return gatewayBuiltinSensorPressureHpa;
+    return gatewayBuiltinSensorPressureHpa / powf(ratio, 5.255f);
+}
+
+static void loadGatewayBuiltinSensorSettings() {
+    Preferences prefs;
+    prefs.begin("gwconfig", true);
+    const uint8_t tempUnit = prefs.isKey("bs_temp_u")
+        ? prefs.getUChar("bs_temp_u", (uint8_t)GATEWAY_SENSOR_TEMP_C)
+        : (uint8_t)GATEWAY_SENSOR_TEMP_C;
+    const uint8_t altitudeUnit = prefs.isKey("bs_alt_u")
+        ? prefs.getUChar("bs_alt_u", (uint8_t)GATEWAY_SENSOR_ALT_M)
+        : (uint8_t)GATEWAY_SENSOR_ALT_M;
+    const bool altitudeConfigured = prefs.isKey("bs_alt_m");
+    const float altitudeMeters = altitudeConfigured ? prefs.getFloat("bs_alt_m", 0.0f) : 0.0f;
+    prefs.end();
+
+    gatewayBuiltinSensorTempUnit = tempUnit == (uint8_t)GATEWAY_SENSOR_TEMP_F
+        ? GATEWAY_SENSOR_TEMP_F
+        : GATEWAY_SENSOR_TEMP_C;
+    gatewayBuiltinSensorAltitudeUnit = altitudeUnit == (uint8_t)GATEWAY_SENSOR_ALT_FT
+        ? GATEWAY_SENSOR_ALT_FT
+        : GATEWAY_SENSOR_ALT_M;
+    gatewayBuiltinSensorAltitudeMeters = isfinite(altitudeMeters)
+        ? constrain(altitudeMeters, -500.0f, 10000.0f)
+        : 0.0f;
+    gatewayBuiltinSensorAltitudeConfigured = altitudeConfigured;
+}
+
+static void saveGatewayBuiltinSensorSettings(GatewayBuiltinSensorTempUnit tempUnit,
+                                             GatewayBuiltinSensorAltitudeUnit altitudeUnit,
+                                             float altitudeMeters) {
+    Preferences prefs;
+    prefs.begin("gwconfig", false);
+    prefs.putUChar("bs_temp_u", (uint8_t)tempUnit);
+    prefs.putUChar("bs_alt_u", (uint8_t)altitudeUnit);
+    prefs.putFloat("bs_alt_m", altitudeMeters);
+    prefs.end();
+
+    gatewayBuiltinSensorTempUnit = tempUnit;
+    gatewayBuiltinSensorAltitudeUnit = altitudeUnit;
+    gatewayBuiltinSensorAltitudeMeters = altitudeMeters;
+    gatewayBuiltinSensorAltitudeConfigured = true;
+}
+
+static bool initGatewayBuiltinSensor() {
+#if GATEWAY_BUILTIN_SENSOR_TYPE == GATEWAY_BUILTIN_SENSOR_BME280
+    gatewayBuiltinSensorPresent = gatewayBuiltinBme.begin();
+#elif GATEWAY_BUILTIN_SENSOR_TYPE == GATEWAY_BUILTIN_SENSOR_BMP280
+    gatewayBuiltinSensorPresent = gatewayBuiltinBmp.begin();
+#else
+    gatewayBuiltinSensorPresent = false;
+#endif
+
+    if (!gatewayBuiltinSensorFeatureEnabled()) {
+        gatewayBuiltinSensorPresent = false;
+        return false;
+    }
+
+    if (gatewayBuiltinSensorPresent) {
+        Serial.printf("[GW SENS] Built-in %s detected on SPI.\n", gatewayBuiltinSensorModelString());
+    } else {
+        Serial.printf("[GW SENS] Built-in %s not detected.\n", gatewayBuiltinSensorModelString());
+    }
+    return gatewayBuiltinSensorPresent;
+}
+
+static bool sampleGatewayBuiltinSensor() {
+    if (!gatewayBuiltinSensorFeatureEnabled() || !gatewayBuiltinSensorPresent) return false;
+    gatewayBuiltinSensorLastSampleAt = millis();
+
+#if GATEWAY_BUILTIN_SENSOR_TYPE == GATEWAY_BUILTIN_SENSOR_BME280
+    const float tempC = gatewayBuiltinBme.readTemperature();
+    const float pressurePa = gatewayBuiltinBme.readPressure();
+    const float humidity = gatewayBuiltinBme.readHumidity();
+#elif GATEWAY_BUILTIN_SENSOR_TYPE == GATEWAY_BUILTIN_SENSOR_BMP280
+    const float tempC = gatewayBuiltinBmp.readTemperature();
+    const float pressurePa = gatewayBuiltinBmp.readPressure();
+    const float humidity = NAN;
+#else
+    const float tempC = NAN;
+    const float pressurePa = NAN;
+    const float humidity = NAN;
+#endif
+
+    if (!isfinite(tempC) || !isfinite(pressurePa) || pressurePa <= 0.0f) {
+        Serial.println("[GW SENS] Built-in sensor read failed.");
+        return false;
+    }
+
+    gatewayBuiltinSensorTempC = tempC;
+    gatewayBuiltinSensorPressureHpa = pressurePa / 100.0f;
+    gatewayBuiltinSensorHumidity = isfinite(humidity) ? humidity : NAN;
+    return true;
+}
+
+static void sampleGatewayBuiltinSensorIfDue(unsigned long now) {
+    if (!gatewayBuiltinSensorFeatureEnabled() || !gatewayBuiltinSensorPresent) return;
+    if (gatewayBuiltinSensorLastSampleAt == 0 ||
+        (now - gatewayBuiltinSensorLastSampleAt) >= WS_META_MS) {
+        sampleGatewayBuiltinSensor();
     }
 }
 
@@ -4095,6 +4319,28 @@ static String buildMetaJson() {
     doc["network_mode"]    = gatewayNetworkModeToString(gatewayNetworkMode);
     doc["router_online"]   = gatewayRouterOnline;
     doc["router_ssid"]     = gatewayRouterCredsSaved ? savedRouterSsid : "";
+    doc["gw_builtin_sensor_enabled"] = gatewayBuiltinSensorFeatureEnabled();
+    doc["gw_builtin_sensor_model"] = gatewayBuiltinSensorModelString();
+    doc["gw_builtin_sensor_present"] = gatewayBuiltinSensorPresent;
+    doc["gw_builtin_sensor_temp_unit"] = gatewayBuiltinSensorTempUnitString();
+    doc["gw_builtin_sensor_altitude_configured"] = gatewayBuiltinSensorAltitudeConfigured;
+    doc["gw_builtin_sensor_altitude_value"] = gatewayBuiltinAltitudeDisplayValue();
+    doc["gw_builtin_sensor_altitude_unit"] = gatewayBuiltinSensorAltitudeUnitString();
+    if (gatewayBuiltinSensorFeatureEnabled() && gatewayBuiltinSensorPresent) {
+        const float displayTemp = gatewayBuiltinDisplayTemperature();
+        const float seaLevelPressure = gatewayBuiltinSeaLevelPressureHpa();
+        if (isfinite(displayTemp)) {
+            doc["gw_builtin_sensor_temperature"] = displayTemp;
+        }
+        if (isfinite(seaLevelPressure)) {
+            doc["gw_builtin_sensor_pressure_hpa"] = seaLevelPressure;
+        }
+#if GATEWAY_BUILTIN_SENSOR_TYPE == GATEWAY_BUILTIN_SENSOR_BME280
+        if (isfinite(gatewayBuiltinSensorHumidity)) {
+            doc["gw_builtin_sensor_humidity"] = gatewayBuiltinSensorHumidity;
+        }
+#endif
+    }
     doc["credentials_set"] = credentialsSet();
     doc["ota_supported"]   = gatewayOtaSupported();
     doc["ota_busy"]        = otaUploadBusy;
@@ -4726,7 +4972,7 @@ static void processRxQueue() {
                 nodeOtaJob.nodeAccepted = true;
                 nodeOtaJob.lastActivityAt = millis();
                 if (st->phase == NODE_OTA_ACCEPTED) {
-                    setNodeOtaJobMessage("Node accepted OTA request. Switching to OTA Wi-Fi...", 72);
+                    setNodeOtaJobMessage("OTA request accepted. Waiting for node to connect to OTA helper AP...", 72);
                 } else if (st->phase == NODE_OTA_ERROR) {
                     setNodeOtaJobError(st->message[0] ? st->message : "Node rejected the OTA request.");
                 } else {
@@ -5099,6 +5345,55 @@ static void onWsEvent(AsyncWebSocket*, AsyncWebSocketClient* client,
                     client->text(out);
                 }
                 broadcastMetaIfClientsConnected();
+
+            } else if (strcmp(msgType, "gw_builtin_sensor_settings_set") == 0) {
+                JsonDocument ack;
+                ack["type"] = "gw_builtin_sensor_settings_ack";
+
+                if (!gatewayBuiltinSensorFeatureEnabled()) {
+                    ack["ok"] = false;
+                    ack["err"] = "Gateway built-in sensor is disabled in firmware.";
+                } else {
+                    const char* tempUnitText = doc["temp_unit"] | "";
+                    const char* altitudeUnitText = doc["altitude_unit"] | "";
+                    const float altitudeValue = doc["altitude_value"] | 0.0f;
+                    GatewayBuiltinSensorTempUnit tempUnit;
+                    GatewayBuiltinSensorAltitudeUnit altitudeUnit;
+
+                    if (!parseGatewayBuiltinTempUnit(tempUnitText, &tempUnit)) {
+                        ack["ok"] = false;
+                        ack["err"] = "Temperature unit must be C or F.";
+                    } else if (!parseGatewayBuiltinAltitudeUnit(altitudeUnitText, &altitudeUnit)) {
+                        ack["ok"] = false;
+                        ack["err"] = "Altitude unit must be m or ft.";
+                    } else if (!isfinite(altitudeValue)) {
+                        ack["ok"] = false;
+                        ack["err"] = "Altitude must be a valid number.";
+                    } else {
+                        const float altitudeMeters = gatewayBuiltinAltitudeMetersFromDisplay(
+                            altitudeValue, altitudeUnit);
+                        if (!isfinite(altitudeMeters) || altitudeMeters < -500.0f || altitudeMeters > 10000.0f) {
+                            ack["ok"] = false;
+                            ack["err"] = "Altitude must stay within -500 m to 10000 m.";
+                        } else {
+                            saveGatewayBuiltinSensorSettings(
+                                tempUnit,
+                                altitudeUnit,
+                                altitudeMeters);
+                            Serial.printf("[GW SENS] Built-in sensor settings saved: temp_unit=%s altitude=%.1f m display_unit=%s\n",
+                                          tempUnit == GATEWAY_SENSOR_TEMP_F ? "F" : "C",
+                                          gatewayBuiltinSensorAltitudeMeters,
+                                          gatewayBuiltinSensorAltitudeUnitString());
+                            ack["ok"] = true;
+                            sampleGatewayBuiltinSensor();
+                            broadcastMetaIfClientsConnected();
+                        }
+                    }
+                }
+
+                String out;
+                serializeJson(ack, out);
+                client->text(out);
 
             // Set web interface login credentials
             } else if (strcmp(msgType, "set_web_credentials") == 0) {
@@ -5750,6 +6045,7 @@ void setup() {
 
     // Load gateway config (AP name / password) from NVS
     loadApConfig();
+    loadGatewayBuiltinSensorSettings();
     loadStoredRouterCredentials();
 
     // Load web interface credentials from NVS
@@ -5801,6 +6097,9 @@ void setup() {
     // addPeer() calls inside loadNodesFromNvs() succeed.
     loadNodesFromNvs();
 
+    initGatewayBuiltinSensor();
+    sampleGatewayBuiltinSensor();
+
     initCoprocLink();
 
     Serial.printf("[ESP-NOW] Ready - MAC: %s  Ch: %d\n",
@@ -5838,6 +6137,7 @@ void loop() {
     processNodeOtaJob(now);
     processCoprocOtaJob(now);
     processGatewayNetworkState(now);
+    sampleGatewayBuiltinSensorIfDue(now);
     updateGwLed();
 
     if (otaRebootPending && now >= otaRebootAtMs) {
@@ -5893,6 +6193,7 @@ void loop() {
     ws.cleanupClients();
     delay(10);
 }
+
 
 
 
