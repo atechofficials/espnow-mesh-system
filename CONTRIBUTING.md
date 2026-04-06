@@ -34,7 +34,7 @@ Current file versions:
 
 | Component | Current Version |
 |----------|-----------------|
-| ESP32-S3 Gateway firmware `main.cpp` | `v2.4.0` |
+| ESP32-S3 Gateway firmware `main.cpp` | `v2.4.1` |
 | ESP32-C3 Gateway Coprocessor firmware `main.cpp` | `v0.3.0` |
 | ESP32 Sensor Node firmware `main.cpp` | `v2.2.0` |
 | ESP32 Actuator Relay Node firmware `main.cpp` | `v1.3.0` |
@@ -72,6 +72,7 @@ The current Node OTA system has been validated with:
 - automatic router-loss fallback from online mode to the ESP32-S3 Offline Mode AP
 - automatic recovery from the ESP32-S3 Offline Mode AP back to the saved router connection
 - runtime physical factory reset from the dedicated gateway reset button
+- graceful node unpair/disconnect before gateway factory reset wipes the local node registry
 
 ---
 
@@ -353,6 +354,7 @@ Before changing gateway logic:
 - retest both Main-MCU OTA and Coprocessor OTA when changing the **Gateway Firmware Update** flow, helper validation behavior, or helper reconnect timing
 - retest OTA flows from both normal router mode and Offline Mode whenever network-state logic changes
 - retest the physical factory reset button, hold timing, cancellation behavior, and reset LED sequence whenever input or LED ownership logic changes
+- retest gateway factory reset with at least one paired node and confirm the node returns to unpaired / pairing-ready state instead of acting like the gateway only rebooted temporarily
 - preserve `GWHWCFG:` and `NODEHWCFG:` validation behavior when changing OTA upload parsing or firmware-marker scanning
 - keep UART pin definitions aligned with the actual gateway hardware variant being documented or built; the current gateway release line spans four valid PCB variants (`v1A` to `v1D`) and all helper routing / power assumptions should match the intended board pair
 
@@ -638,6 +640,7 @@ Before opening a PR:
 - test both gateway Main-MCU OTA and coprocessor OTA separately when the **Gateway Firmware Update** flow changes
 - test both online-mode and Offline Mode behavior when changing gateway networking, OTA availability, or dashboard reconnect handling
 - test the physical factory reset button and LED sequence when touching gateway input handling or LED ownership
+- test gateway factory reset with a paired node and verify that the node receives `UNPAIR_CMD`, clears its saved master binding, and can be paired again cleanly afterward
 - update the correct README files
 - keep version references current
 - keep `mesh_protocol.h` synchronized everywhere

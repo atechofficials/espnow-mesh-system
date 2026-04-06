@@ -1,11 +1,20 @@
 ﻿# Gateway v1 - Build, Flash, and OTA Guide
 
-Firmware version: **2.4.0**  
+Firmware version: **2.4.1**  
 Target board: `esp32-s3-devkitc1-n8r8`
 
 Gateway helper coprocessor: **ESP32-C3 firmware v0.3.0**
 
 ---
+
+## Highlights in v2.4.1
+- Updates the gateway factory reset flow so all currently paired nodes receive an explicit `UNPAIR_CMD` before the gateway wipes its own state
+- Applies this graceful node disconnect behavior to both reset entry points:
+  - dashboard **Factory Reset**
+  - physical reset button hold sequence
+- Prevents previously paired nodes from treating gateway factory reset like a temporary gateway reboot
+- Leaves nodes in their expected unpaired / pairing-ready state after factory reset so they can be paired again cleanly
+- Uses each node's actual node type in the unpair command path instead of stamping every unpair as `NODE_SENSOR`
 
 ## Highlights in v2.4.0
 - Adds **Gateway Offline Mode** hosted directly on the ESP32-S3 so the dashboard remains reachable even when the home router is unavailable
@@ -414,6 +423,8 @@ If the button is released early, the reset is canceled and LED ownership returns
 
 The physical reset LED sequence is always shown, even if the user has disabled the normal Gateway Status LED from the dashboard.
 
+Before the gateway wipes its own registry and saved credentials, it now sends a graceful unpair/disconnect command to every currently paired node. This allows those nodes to clear their saved gateway binding and return to pairing mode instead of briefly behaving as though the gateway only rebooted temporarily.
+
 This clears:
 
 - saved Wi-Fi / router credentials
@@ -431,7 +442,7 @@ The gateway then reboots and returns to setup mode.
 
 The current release line moves board selection, pin definitions, and user-facing firmware defaults into `user_config.h` so `main.cpp` can stay focused on runtime logic. Older checkouts may still keep some of the same constants in `src/main.cpp`.
 
-The newer `v2.4.0` line also keeps the setup-portal defaults, Offline Mode defaults, board-specific reset-button wiring through `RESET_BTN_PIN`, and gateway LED ownership behavior aligned through `user_config.h`.
+The newer `v2.4.1` line also keeps the setup-portal defaults, Offline Mode defaults, board-specific reset-button wiring through `RESET_BTN_PIN`, and gateway LED ownership behavior aligned through `user_config.h`.
 
 | Constant | Default | Description |
 |----------|---------|-------------|

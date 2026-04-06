@@ -110,14 +110,14 @@ This makes the setup especially useful for small ESP32 devices that only need to
 
 ```text
 Browser
-   â”‚
-   â”‚  Dashboard
-   â–¼
+  |
+  | Dashboard
+  |
 ESP32-S3 Gateway
-   â”‚
-   â”‚  ESP-NOW
-   â”œâ”€â”€ Sensor Nodes
-   â””â”€â”€ Actuator Nodes
+  |
+  | ESP-NOW
+  |-- Sensor Nodes
+  |-- Actuator Nodes
 ```
 
 The gateway acts as the bridge between:
@@ -236,7 +236,7 @@ The current dashboard supports:
 - changing gateway settings
 - editing Offline Mode AP settings and viewing current network mode / access IP
 - launching Wi-Fi setup mode
-- factory reset options, including a physical long-press reset button on the gateway
+- factory reset options, including a physical long-press reset button on the gateway and graceful node unpairing before the gateway wipes its own state
 
 The dashboard is served directly by the gateway itself.
 
@@ -289,10 +289,11 @@ More detailed documentation is available in the subproject README files.
 
 ```text
 espnow-mesh-system/
-â”œâ”€â”€ README.md
-â”œâ”€â”€ CONTRIBUTING.md
-â”œâ”€â”€ esp32-gateway/
-â””â”€â”€ esp32-nodes/
+|-- README.md
+|-- CONTRIBUTING.md
+|-- esp32-gateway/
+|-- esp32-nodes/
+|-- docs/
 ```
 
 ### Main sections

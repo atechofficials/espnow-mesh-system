@@ -10,6 +10,7 @@
 # Claude workspace files
 .claude/
 .claude_cache/
+CLAUDE.md
 
 # Codex workspace files
 .codex/

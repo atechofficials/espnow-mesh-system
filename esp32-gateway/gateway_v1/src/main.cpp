@@ -1,10 +1,10 @@
 /**
     * @file [main.cpp]
     * @brief Main source file for the ESP32 Mesh Gateway firmware
-    * @version 2.4.0
+    * @version 2.4.1
     * @author Mrinal (@atechofficials)
  */
-#define FW_VERSION "2.4.0"
+#define FW_VERSION "2.4.1"
 
 #include <Arduino.h>
 #include <WiFi.h>
@@ -737,6 +737,7 @@ static bool credentialsSet() {
 static void performGatewayFactoryReset(const char* sourceLabel);
 static void clearStoredRouterCredentials();
 static void saveGatewayForceSetupFlag(bool enabled);
+static void disconnectAllNodesForFactoryReset();
 
 static bool isWsAuthenticated(uint32_t clientId) {
     if (!credentialsSet()) return true;
@@ -2768,6 +2769,7 @@ static void performGatewayFactoryReset(const char* sourceLabel) {
     ws.textAll("{\"type\":\"gw_factory_reset\"}");
     ws.cleanupClients();
     delay(200);
+    disconnectAllNodesForFactoryReset();
     {
         WiFiManager wm;
         wm.resetSettings();
@@ -3726,11 +3728,11 @@ static void sendPairCmd(const uint8_t* mac) {
     esp_now_send(mac, (uint8_t*)&cmd, sizeof(cmd));
 }
 
-static void sendUnpairCmd(const uint8_t* mac, uint8_t nodeId) {
+static void sendUnpairCmd(const uint8_t* mac, uint8_t nodeId, NodeType nodeType) {
     MsgUnpairCmd cmd;
     cmd.hdr.type      = MSG_UNPAIR_CMD;
     cmd.hdr.node_id   = nodeId;
-    cmd.hdr.node_type = NODE_SENSOR;
+    cmd.hdr.node_type = nodeType;
 
     // For Debugging: print the command being sent to the Serial console
     Serial.printf("[MESH] Sending UNPAIR command to node #%d (%s)\n",
@@ -3926,28 +3928,85 @@ static bool cleanupDiscovered() {
 //  Disconnect a paired node
 // *****************************************************************************
 static String buildNodesJson();  // forward declaration
-static void disconnectNode(uint8_t nodeId) {
+static void disconnectNodeInternal(uint8_t nodeId,
+                                   bool persistRegistry,
+                                   bool broadcastUi,
+                                   bool showLedFeedback,
+                                   bool removeRelayPrefs) {
     if (nodeId == 0 || nodeId >= nextId) return;
 
     uint8_t mac[6];
-    memcpy(mac, nodes[nodeId].mac, 6);
-
     if (xSemaphoreTake(nodesMutex, pdMS_TO_TICKS(100)) == pdTRUE) {
+        memcpy(mac, nodes[nodeId].mac, 6);
         memset(&nodes[nodeId], 0, sizeof(NodeRecord));  // free the slot
         xSemaphoreGive(nodesMutex);
+    } else {
+        Serial.printf("[MESH] Failed to lock node registry while disconnecting node #%d\n", nodeId);
+        return;
     }
 
     if (esp_now_is_peer_exist(mac)) esp_now_del_peer(mac);
-    if(gwLedEnabled) {
+    if (showLedFeedback && gwLedEnabled) {
         flashGwLed(gwLed.Color(255, 80, 0), 200);  // orange pulse
     }
-    else {    
+    else if (showLedFeedback) {    
         setGwLed(0); // turn off immediately
     }
     Serial.printf("[MESH] Node #%d disconnected\n", nodeId);
-    removeRelayLabelsForMac(mac);
-    saveNodesToNvs();  // persist the freed slot so it doesn't reappear after reboot
-    wsBroadcast(buildNodesJson());  // forward declaration - defined below
+    if (removeRelayPrefs) removeRelayLabelsForMac(mac);
+    if (persistRegistry) saveNodesToNvs();  // persist the freed slot so it doesn't reappear after reboot
+    if (broadcastUi) wsBroadcast(buildNodesJson());  // forward declaration - defined below
+}
+
+static void disconnectNode(uint8_t nodeId) {
+    disconnectNodeInternal(nodeId, true, true, true, true);
+}
+
+static void disconnectAllNodesForFactoryReset() {
+    struct FactoryResetNodeSnapshot {
+        uint8_t id;
+        uint8_t mac[6];
+        NodeType type;
+    };
+
+    FactoryResetNodeSnapshot paired[MESH_MAX_NODES]{};
+    uint8_t pairedCount = 0;
+
+    if (xSemaphoreTake(nodesMutex, pdMS_TO_TICKS(150)) == pdTRUE) {
+        for (uint8_t i = 1; i < nextId && pairedCount < MESH_MAX_NODES; i++) {
+            if (nodes[i].mac[0] == 0 && nodes[i].mac[1] == 0) continue;
+            paired[pairedCount].id = i;
+            memcpy(paired[pairedCount].mac, nodes[i].mac, 6);
+            paired[pairedCount].type = nodes[i].type;
+            pairedCount++;
+        }
+        xSemaphoreGive(nodesMutex);
+    } else {
+        Serial.println("[GW]  Could not lock node registry before factory reset. Proceeding without graceful node disconnect.");
+        return;
+    }
+
+    if (pairedCount == 0) return;
+
+    Serial.printf("[GW]  Disconnecting %u paired node(s) before factory reset...\n", pairedCount);
+
+    // Tell every currently paired node to clear its own gateway binding first so
+    // it does not interpret the upcoming gateway restart as a temporary reboot.
+    for (uint8_t i = 0; i < pairedCount; i++) {
+        sendUnpairCmd(paired[i].mac, paired[i].id, paired[i].type);
+        delay(120);
+    }
+
+    // Give the last ESP-NOW frame a small window to leave the radio queue.
+    delay(120);
+
+    // Now clear the in-memory registry and peers without extra LED pulses or
+    // per-node NVS writes because the full factory reset will wipe that state.
+    for (uint8_t i = 0; i < pairedCount; i++) {
+        disconnectNodeInternal(paired[i].id, false, false, false, false);
+    }
+
+    memset(discovered, 0, sizeof(discovered));
 }
 
 // *****************************************************************************
@@ -4962,7 +5021,7 @@ static void onWsEvent(AsyncWebSocket*, AsyncWebSocketClient* client,
                 if (nodeId == 0 || nodeId >= nextId) break;
                 if (nodes[nodeId].mac[0] == 0) break;
 
-                sendUnpairCmd(nodes[nodeId].mac, nodeId);
+                sendUnpairCmd(nodes[nodeId].mac, nodeId, nodes[nodeId].type);
                 delay(80);  // brief wait for send before removing peer
                 disconnectNode(nodeId);
             }

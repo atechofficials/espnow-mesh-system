@@ -41,7 +41,7 @@ All four variants include connection points for a future **BME280** gateway-side
 - Supports **gateway self-OTA** from the web interface with validation, hardware-config ID checking, progress reporting, and automatic reboot
 - Coordinates **Gateway OTA**, **coprocessor OTA**, and **Node OTA** so the ESP32-C3 helper cannot be reserved by conflicting update flows at the same time
 - Keeps **gateway OTA**, **coprocessor OTA**, and **Node OTA** available while the gateway is serving the dashboard through Offline Mode
-- Supports both dashboard-triggered and physical-button-triggered factory reset flows, including LED feedback during the hold sequence
+- Supports both dashboard-triggered and physical-button-triggered factory reset flows, including graceful node unpairing before reset, and LED feedback during the hold sequence
 - Supports **Hybrid nodes** with capability-aware state handling, actuator-schema sync, RFID config sync, and RFID scan-event forwarding to the web UI
 
 ---
@@ -83,6 +83,7 @@ The factory-reset LED sequence temporarily overrides the normal gateway LED owne
 | v2.2.0 | Polished gateway-side discovery timing so available nodes appear and expire more predictably, aligned the release docs with the new Gateway v1A-v1D PCB family, and documents the move toward `user_config.h` for user-facing firmware configuration |
 | v2.3.1 | Hardened OTA coordination so Node OTA, Gateway OTA, and coprocessor OTA cannot fight over the ESP32-C3 helper, surfaced the shared **Coprocessor Busy** feedback across both gateway MCU targets, fixed a Node OTA helper-target regression, and auto-clears stale OTA panel state after backend cleanup |
 | v2.4.0 | Added **Gateway Offline Mode** on the ESP32-S3 with manual setup-portal selection, automatic router-loss fallback, automatic router-return recovery, reconnect-safe dashboard notifications, runtime physical factory reset handling via the configurable `RESET_BTN_PIN`, and a dedicated factory-reset RGB LED sequence |
+| v2.4.1 | Updates gateway factory reset so all currently paired nodes are sent a graceful unpair/disconnect command before the gateway wipes its own state, preventing nodes from treating factory reset like a temporary gateway reboot |
 
 ---
 
@@ -112,7 +113,7 @@ gateway_v1/
 
 ## Current Release Notes
 
-- Gateway firmware version: **v2.4.0**
+- Gateway firmware version: **v2.4.1**
 - Gateway coprocessor firmware version: **v0.3.0**
 - Shared helper transport: `coproc_ota_protocol.h` **v1.1.0**
 - Shared mesh protocol: `mesh_protocol.h` **v3.3.2**
