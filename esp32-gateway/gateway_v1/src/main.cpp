@@ -1,19 +1,21 @@
 /**
     * @file [main.cpp]
     * @brief Main source file for the ESP32 Mesh Gateway firmware
-    * @version 2.5.0
+ * @version 2.6.4
     * @author Mrinal (@atechofficials)
  */
-#define FW_VERSION "2.5.0"
+#define FW_VERSION "2.6.4"
 
 #include <Arduino.h>
 #include <WiFi.h>
+#include <WiFiClient.h>
 #include <WiFiManager.h>
 #include <esp_now.h>
 #include <esp_wifi.h>
 #include <LittleFS.h>
 #include <ESPAsyncWebServer.h>
 #include <ArduinoJson.h>
+#include <PubSubClient.h>
 #include <Adafruit_NeoPixel.h>
 #include <math.h>
 #include <Update.h>
@@ -88,6 +90,12 @@
 #define GATEWAY_OFFLINE_RETRY_MS 15000UL
 #define GATEWAY_FACTORY_RESET_HOLD_MS 6000UL
 #define GATEWAY_FACTORY_RESET_LED_BLINK_MS 300UL
+#define MQTT_RECONNECT_MS 10000UL
+#define MQTT_BUFFER_SIZE 4096U
+#define MQTT_KEEPALIVE_SEC 30U
+#define MQTT_SOCKET_TIMEOUT_SEC 5U
+#define MQTT_DEFAULT_PORT 1883U
+#define MQTT_HA_DISCOVERY_PREFIX "homeassistant"
 
 // Runtime AP credentials - loaded from NVS on boot, fall back to compile-time defaults.
 // These are the SSID / password the WiFiManager captive portal AP will use.
@@ -248,6 +256,49 @@ static GatewayBuiltinSensorTempUnit gatewayBuiltinSensorTempUnit = GATEWAY_SENSO
 static GatewayBuiltinSensorAltitudeUnit gatewayBuiltinSensorAltitudeUnit = GATEWAY_SENSOR_ALT_M;
 static float gatewayBuiltinSensorAltitudeMeters = 0.0f;
 static bool gatewayBuiltinSensorAltitudeConfigured = false;
+
+// MQTT Bridge
+static WiFiClient mqttNetClient;
+static PubSubClient mqttClient(mqttNetClient);
+static bool mqttEnabled = false;
+static bool mqttConnected = false;
+static char mqttHost[65] = {0};
+static uint16_t mqttPort = MQTT_DEFAULT_PORT;
+static char mqttBaseTopic[97] = "esp32/mesh";
+static char mqttUsername[65] = {0};
+static char mqttPassword[65] = {0};
+static bool mqttHasPassword = false;
+static char mqttLastError[128] = {0};
+static unsigned long lastMqttReconnectAttemptAt = 0;
+static unsigned long lastMqttMetaPublishAt = 0;
+static bool mqttRepublishAllPending = false;
+static bool mqttMetaDirty = false;
+static bool mqttGatewayControlDiscoveryDirty = false;
+static bool mqttBuiltinDiscoveryDirty = false;
+static bool mqttBuiltinStateDirty = false;
+static uint32_t mqttNodeDiscoveryDirtyMask = 0;
+static uint32_t mqttNodeSummaryDirtyMask = 0;
+static uint32_t mqttNodeSensorStateDirtyMask = 0;
+static uint32_t mqttNodeActuatorStateDirtyMask = 0;
+static uint32_t mqttNodeSettingsStateDirtyMask = 0;
+static uint32_t mqttNodeHeldSensorStateMask[MESH_MAX_NODES + 1] = {0};
+static char mqttGatewayTopicId[13] = {0};
+static bool mqttLastShouldBeConnected = false;
+
+struct MqttRemovedNodeSnapshot {
+    bool active = false;
+    char macId[13] = {0};
+    bool hadSensors = false;
+    uint8_t sensorCount = 0;
+    uint8_t sensorIds[NODE_MAX_SENSORS] = {0};
+    bool hadActuators = false;
+    uint8_t actuatorCount = 0;
+    uint8_t actuatorIds[NODE_MAX_ACTUATORS] = {0};
+    uint8_t settingsCount = 0;
+    uint8_t settingIds[NODE_MAX_SETTINGS] = {0};
+    SettingType settingTypes[NODE_MAX_SETTINGS] = {};
+};
+static MqttRemovedNodeSnapshot mqttRemovedNodes[MESH_MAX_NODES];
 
 #if GATEWAY_BUILTIN_SENSOR_TYPE == GATEWAY_BUILTIN_SENSOR_BME280
 static Adafruit_BME280 gatewayBuiltinBme(BME_CS, BME_MOSI, BME_MISO, BME_SCK);
@@ -580,6 +631,10 @@ static void loadGwLedState() {
 // *****************************************************************************
 //  Gateway Built-in Sensor Helpers
 // *****************************************************************************
+static void mqttMarkBuiltinDiscoveryDirty();
+static void mqttMarkBuiltinStateDirty();
+static void mqttMarkMetaDirty();
+
 static bool gatewayBuiltinSensorFeatureEnabled() {
     return GATEWAY_BUILTIN_SENSOR_TYPE != GATEWAY_BUILTIN_SENSOR_NONE;
 }
@@ -702,6 +757,9 @@ static void saveGatewayBuiltinSensorSettings(GatewayBuiltinSensorTempUnit tempUn
     gatewayBuiltinSensorAltitudeUnit = altitudeUnit;
     gatewayBuiltinSensorAltitudeMeters = altitudeMeters;
     gatewayBuiltinSensorAltitudeConfigured = true;
+    mqttMarkBuiltinDiscoveryDirty();
+    mqttMarkBuiltinStateDirty();
+    mqttMarkMetaDirty();
 }
 
 static bool initGatewayBuiltinSensor() {
@@ -715,6 +773,9 @@ static bool initGatewayBuiltinSensor() {
 
     if (!gatewayBuiltinSensorFeatureEnabled()) {
         gatewayBuiltinSensorPresent = false;
+        mqttMarkBuiltinDiscoveryDirty();
+        mqttMarkBuiltinStateDirty();
+        mqttMarkMetaDirty();
         return false;
     }
 
@@ -723,6 +784,9 @@ static bool initGatewayBuiltinSensor() {
     } else {
         Serial.printf("[GW SENS] Built-in %s not detected.\n", gatewayBuiltinSensorModelString());
     }
+    mqttMarkBuiltinDiscoveryDirty();
+    mqttMarkBuiltinStateDirty();
+    mqttMarkMetaDirty();
     return gatewayBuiltinSensorPresent;
 }
 
@@ -752,6 +816,8 @@ static bool sampleGatewayBuiltinSensor() {
     gatewayBuiltinSensorTempC = tempC;
     gatewayBuiltinSensorPressureHpa = pressurePa / 100.0f;
     gatewayBuiltinSensorHumidity = isfinite(humidity) ? humidity : NAN;
+    mqttMarkBuiltinStateDirty();
+    mqttMarkMetaDirty();
     return true;
 }
 
@@ -771,6 +837,10 @@ static String macToStr(const uint8_t* mac) {
     snprintf(buf, sizeof(buf), "%02X:%02X:%02X:%02X:%02X:%02X",
              mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
     return String(buf);
+}
+
+static unsigned long elapsedSinceMs(unsigned long now, unsigned long then) {
+    return (now >= then) ? (now - then) : 0UL;
 }
 
 static bool parseMac(const char* str, uint8_t* mac) {
@@ -962,6 +1032,7 @@ static void performGatewayFactoryReset(const char* sourceLabel);
 static void clearStoredRouterCredentials();
 static void saveGatewayForceSetupFlag(bool enabled);
 static void disconnectAllNodesForFactoryReset();
+static void mqttCleanupForFactoryReset();
 
 static bool isWsAuthenticated(uint32_t clientId) {
     if (!credentialsSet()) return true;
@@ -1581,6 +1652,311 @@ static NodeType roleToNodeType(const char* role) {
     if (strcmp(role, "HYBRID") == 0) return NODE_HYBRID;
     return (NodeType)0;
 }
+
+static bool handleNodeActuatorCommand(uint8_t nodeId, uint8_t actuatorId, uint8_t state,
+                                      String* err = nullptr);
+static bool handleNodeSettingCommand(uint8_t nodeId, uint8_t settingId, int16_t value,
+                                     String* err = nullptr);
+static bool handleNodeRebootCommand(uint8_t nodeId, String* err = nullptr);
+static bool handleNodeUnpairCommand(uint8_t nodeId, String* err = nullptr);
+static String buildNodesJson();
+static String buildNodeSettingsJson(uint8_t nodeId);
+static void disconnectNode(uint8_t nodeId);
+
+static void mqttCopyString(char* dst, size_t dstSize, const String& value) {
+    if (!dst || dstSize == 0) return;
+    strncpy(dst, value.c_str(), dstSize - 1);
+    dst[dstSize - 1] = '\0';
+}
+
+static String mqttTrimTopic(const String& value) {
+    String out = value;
+    out.trim();
+    while (out.startsWith("/")) out.remove(0, 1);
+    while (out.endsWith("/")) out.remove(out.length() - 1);
+    return out;
+}
+
+static bool mqttIsPrintableAscii(const String& value, bool allowSpace = false) {
+    if (value.isEmpty()) return false;
+    for (size_t i = 0; i < value.length(); i++) {
+        const unsigned char ch = (unsigned char)value[i];
+        if (ch < 33 || ch > 126) {
+            if (!(allowSpace && ch == ' ')) return false;
+        }
+    }
+    return true;
+}
+
+static bool mqttHasConfiguredCredentials() {
+    return mqttHost[0] != '\0' &&
+           mqttBaseTopic[0] != '\0' &&
+           mqttUsername[0] != '\0' &&
+           mqttHasPassword &&
+           mqttPassword[0] != '\0' &&
+           mqttPort > 0;
+}
+
+static String mqttUnavailableReason() {
+    if (!mqttEnabled) return "MQTT bridge is disabled.";
+    if (!mqttHasConfiguredCredentials()) return "MQTT broker host, base topic, username, or password is missing.";
+    if (gatewayNetworkMode != GATEWAY_ONLINE_STA) return "Gateway is not in router-connected mode.";
+    if (WiFi.status() != WL_CONNECTED) return "Router Wi-Fi is disconnected.";
+    return "";
+}
+
+static void mqttLogConfigSummary(const char* prefix) {
+    Serial.printf("[MQTT] %s: enabled=%s host=\"%s\" port=%u base=\"%s\" user=\"%s\" password=%s\n",
+                  prefix ? prefix : "Config",
+                  mqttEnabled ? "yes" : "no",
+                  mqttHost[0] ? mqttHost : "-",
+                  mqttPort,
+                  mqttBaseTopic[0] ? mqttBaseTopic : "-",
+                  mqttUsername[0] ? mqttUsername : "-",
+                  mqttHasPassword ? "stored" : "missing");
+}
+
+static void mqttSetLastError(const String& msg) {
+    if (String(mqttLastError) == msg) return;
+    mqttCopyString(mqttLastError, sizeof(mqttLastError), msg);
+    if (mqttLastError[0] != '\0') {
+        Serial.printf("[MQTT] Error: %s\n", mqttLastError);
+    }
+    mqttMetaDirty = true;
+}
+
+static void mqttClearLastError() {
+    if (mqttLastError[0] == '\0') return;
+    Serial.printf("[MQTT] Error cleared (previous: %s)\n", mqttLastError);
+    mqttLastError[0] = '\0';
+    mqttMetaDirty = true;
+}
+
+static uint32_t mqttNodeBit(uint8_t nodeId) {
+    return (nodeId > 0 && nodeId < 32) ? (1UL << nodeId) : 0UL;
+}
+
+static uint32_t mqttSensorBit(uint8_t sensorId) {
+    return (sensorId < 32) ? (1UL << sensorId) : 0UL;
+}
+
+static bool mqttIsNodeSensorStateHeld(uint8_t nodeId, uint8_t sensorId) {
+    if (nodeId == 0 || nodeId > MESH_MAX_NODES) return false;
+    return (mqttNodeHeldSensorStateMask[nodeId] & mqttSensorBit(sensorId)) != 0;
+}
+
+static void mqttHoldNodeSensorState(uint8_t nodeId, uint8_t sensorId) {
+    if (nodeId == 0 || nodeId > MESH_MAX_NODES) return;
+    mqttNodeHeldSensorStateMask[nodeId] |= mqttSensorBit(sensorId);
+}
+
+static void mqttReleaseNodeSensorState(uint8_t nodeId, uint8_t sensorId) {
+    if (nodeId == 0 || nodeId > MESH_MAX_NODES) return;
+    mqttNodeHeldSensorStateMask[nodeId] &= ~mqttSensorBit(sensorId);
+}
+
+static void mqttReleaseAllNodeSensorStates(uint8_t nodeId) {
+    if (nodeId == 0 || nodeId > MESH_MAX_NODES) return;
+    mqttNodeHeldSensorStateMask[nodeId] = 0;
+}
+
+static void mqttMarkNodeDiscoveryDirty(uint8_t nodeId) {
+    mqttNodeDiscoveryDirtyMask |= mqttNodeBit(nodeId);
+}
+
+static void mqttMarkNodeSummaryDirty(uint8_t nodeId) {
+    mqttNodeSummaryDirtyMask |= mqttNodeBit(nodeId);
+}
+
+static void mqttMarkNodeSensorStateDirty(uint8_t nodeId) {
+    mqttNodeSensorStateDirtyMask |= mqttNodeBit(nodeId);
+}
+
+static void mqttMarkNodeActuatorStateDirty(uint8_t nodeId) {
+    mqttNodeActuatorStateDirtyMask |= mqttNodeBit(nodeId);
+}
+
+static void mqttMarkNodeSettingsStateDirty(uint8_t nodeId) {
+    mqttNodeSettingsStateDirtyMask |= mqttNodeBit(nodeId);
+}
+
+static void mqttMarkBuiltinDiscoveryDirty() {
+    mqttBuiltinDiscoveryDirty = true;
+}
+
+static void mqttMarkBuiltinStateDirty() {
+    mqttBuiltinStateDirty = true;
+}
+
+static void mqttMarkMetaDirty() {
+    mqttMetaDirty = true;
+}
+
+static void mqttMarkAllDirty() {
+    mqttRepublishAllPending = true;
+    mqttGatewayControlDiscoveryDirty = true;
+    mqttBuiltinDiscoveryDirty = true;
+    mqttBuiltinStateDirty = true;
+    mqttMetaDirty = true;
+    mqttNodeDiscoveryDirtyMask = 0xFFFFFFFFUL;
+    mqttNodeSummaryDirtyMask = 0xFFFFFFFFUL;
+    mqttNodeSensorStateDirtyMask = 0xFFFFFFFFUL;
+    mqttNodeActuatorStateDirtyMask = 0xFFFFFFFFUL;
+    mqttNodeSettingsStateDirtyMask = 0xFFFFFFFFUL;
+}
+
+static void mqttMacToTopicId(const uint8_t* mac, char* out, size_t outLen) {
+    if (!out || outLen < 13) return;
+    snprintf(out, outLen, "%02x%02x%02x%02x%02x%02x",
+             mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+}
+
+static void mqttStringToTopicId(const String& mac, char* out, size_t outLen) {
+    if (!out || outLen < 13) return;
+    size_t idx = 0;
+    for (size_t i = 0; i < mac.length() && idx < 12; i++) {
+        const char ch = mac[i];
+        if (isxdigit((unsigned char)ch)) {
+            out[idx++] = (char)tolower((unsigned char)ch);
+        }
+    }
+    out[idx] = '\0';
+}
+
+static void mqttRefreshGatewayTopicId() {
+    const String mac = WiFi.macAddress();
+    if (mac.length() > 0) {
+        mqttStringToTopicId(mac, mqttGatewayTopicId, sizeof(mqttGatewayTopicId));
+    }
+}
+
+static String mqttGatewayRootTopic() {
+    return String(mqttBaseTopic) + "/gateways/" + mqttGatewayTopicId;
+}
+
+static String mqttNodeBaseTopic(const char* nodeMacId) {
+    return mqttGatewayRootTopic() + "/nodes/" + nodeMacId;
+}
+
+static bool mqttShouldBeConnected() {
+    return mqttEnabled &&
+           mqttHasConfiguredCredentials() &&
+           gatewayNetworkMode == GATEWAY_ONLINE_STA &&
+           WiFi.status() == WL_CONNECTED;
+}
+
+static void loadMqttConfig() {
+    Preferences prefs;
+    prefs.begin("gwconfig", true);
+    const bool enabled = prefs.getBool("mqtt_en", false);
+    const String host = prefs.getString("mqtt_host", "");
+    const uint16_t port = prefs.getUShort("mqtt_port", MQTT_DEFAULT_PORT);
+    const String baseTopic = prefs.getString("mqtt_base", "esp32/mesh");
+    const String username = prefs.getString("mqtt_user", "");
+    const String password = prefs.getString("mqtt_pass", "");
+    prefs.end();
+
+    mqttEnabled = enabled;
+    mqttCopyString(mqttHost, sizeof(mqttHost), host);
+    mqttPort = port ? port : MQTT_DEFAULT_PORT;
+    mqttCopyString(mqttBaseTopic, sizeof(mqttBaseTopic), mqttTrimTopic(baseTopic));
+    mqttCopyString(mqttUsername, sizeof(mqttUsername), username);
+    mqttCopyString(mqttPassword, sizeof(mqttPassword), password);
+    mqttHasPassword = mqttPassword[0] != '\0';
+
+    if (mqttEnabled && !mqttHasConfiguredCredentials()) {
+        mqttEnabled = false;
+        mqttSetLastError("MQTT is disabled until broker host, base topic, username, and password are configured.");
+    } else {
+        mqttClearLastError();
+    }
+    mqttLogConfigSummary("Config loaded");
+}
+
+static void saveMqttConfig(bool enabled,
+                           const String& host,
+                           uint16_t port,
+                           const String& baseTopic,
+                           const String& username,
+                           const String& password,
+                           bool updatePassword) {
+    const String trimmedBase = mqttTrimTopic(baseTopic);
+    Preferences prefs;
+    prefs.begin("gwconfig", false);
+    prefs.putBool("mqtt_en", enabled);
+    prefs.putString("mqtt_host", host);
+    prefs.putUShort("mqtt_port", port);
+    prefs.putString("mqtt_base", trimmedBase);
+    prefs.putString("mqtt_user", username);
+    if (updatePassword) prefs.putString("mqtt_pass", password);
+    prefs.end();
+
+    mqttEnabled = enabled;
+    mqttCopyString(mqttHost, sizeof(mqttHost), host);
+    mqttPort = port;
+    mqttCopyString(mqttBaseTopic, sizeof(mqttBaseTopic), trimmedBase);
+    mqttCopyString(mqttUsername, sizeof(mqttUsername), username);
+    if (updatePassword) {
+        mqttCopyString(mqttPassword, sizeof(mqttPassword), password);
+        mqttHasPassword = mqttPassword[0] != '\0';
+    }
+    if (mqttEnabled && !mqttHasConfiguredCredentials()) {
+        mqttEnabled = false;
+        mqttSetLastError("MQTT is disabled until broker host, base topic, username, and password are configured.");
+    } else {
+        mqttClearLastError();
+    }
+    mqttMarkAllDirty();
+    mqttLogConfigSummary("Config saved");
+}
+
+static bool mqttQueueRemovedNodeSnapshot(const NodeRecord& node) {
+    for (uint8_t i = 0; i < MESH_MAX_NODES; i++) {
+        if (!mqttRemovedNodes[i].active) {
+            MqttRemovedNodeSnapshot& snapshot = mqttRemovedNodes[i];
+            memset(&snapshot, 0, sizeof(snapshot));
+            snapshot.active = true;
+            mqttMacToTopicId(node.mac, snapshot.macId, sizeof(snapshot.macId));
+            snapshot.hadSensors = nodeSupportsCapability(node, NODE_CAP_SENSOR_DATA);
+            snapshot.sensorCount = node.sensorCount;
+            for (uint8_t j = 0; j < node.sensorCount && j < NODE_MAX_SENSORS; j++) {
+                snapshot.sensorIds[j] = node.sensorSchema[j].id;
+            }
+            snapshot.hadActuators = nodeSupportsCapability(node, NODE_CAP_ACTUATORS);
+            snapshot.actuatorCount = defaultActuatorCountForNode(node);
+            for (uint8_t j = 0; j < snapshot.actuatorCount && j < NODE_MAX_ACTUATORS; j++) {
+                snapshot.actuatorIds[j] = (node.actuatorCount > j) ? node.actuatorSchema[j].id : j;
+            }
+            snapshot.settingsCount = node.settingsCount;
+            for (uint8_t j = 0; j < node.settingsCount && j < NODE_MAX_SETTINGS; j++) {
+                snapshot.settingIds[j] = node.settings[j].id;
+                snapshot.settingTypes[j] = node.settings[j].type;
+            }
+            return true;
+        }
+    }
+    return false;
+}
+
+static String mqttConnectStateString(int state) {
+    switch (state) {
+        case MQTT_CONNECTION_TIMEOUT: return "Connection timeout.";
+        case MQTT_CONNECTION_LOST: return "Connection lost.";
+        case MQTT_CONNECT_FAILED: return "Broker connect failed.";
+        case MQTT_DISCONNECTED: return "Disconnected.";
+        case MQTT_CONNECTED: return "Connected.";
+        case MQTT_CONNECT_BAD_PROTOCOL: return "Unsupported MQTT protocol.";
+        case MQTT_CONNECT_BAD_CLIENT_ID: return "Rejected: bad client ID.";
+        case MQTT_CONNECT_UNAVAILABLE: return "Broker unavailable.";
+        case MQTT_CONNECT_BAD_CREDENTIALS: return "Rejected: bad MQTT username or password.";
+        case MQTT_CONNECT_UNAUTHORIZED: return "Rejected: unauthorized.";
+        default: return String("MQTT error ") + String(state) + ".";
+    }
+}
+
+static void mqttPublishPending(unsigned long now);
+static void processMqtt(unsigned long now);
+static void mqttOnMessage(char* topic, uint8_t* payload, unsigned int length);
 
 static void setNodeOtaUploadError(NodeOtaUploadRequestState* state, const String& msg) {
     if (!state || state->error[0] != '\0') return;
@@ -2987,6 +3363,15 @@ static String buildGatewayNetworkNoticeJson(const char* event,
     return out;
 }
 
+static void performGatewayReboot(const char* sourceLabel) {
+    Serial.printf("[GW]  Reboot requested via %s.\n",
+                  sourceLabel ? sourceLabel : "unknown source");
+    ws.textAll("{\"type\":\"gw_rebooting\"}");
+    ws.cleanupClients();
+    delay(150);
+    ESP.restart();
+}
+
 static void performGatewayFactoryReset(const char* sourceLabel) {
     Serial.printf("[GW]  Factory reset requested via %s.\n",
                   sourceLabel ? sourceLabel : "unknown source");
@@ -2994,6 +3379,7 @@ static void performGatewayFactoryReset(const char* sourceLabel) {
     ws.cleanupClients();
     delay(200);
     disconnectAllNodesForFactoryReset();
+    mqttCleanupForFactoryReset();
     {
         WiFiManager wm;
         wm.resetSettings();
@@ -3615,6 +4001,7 @@ static void processGatewayNetworkState(unsigned long now) {
                 wifiChannel = currentChannel;
                 saveGatewayLastKnownChannel(currentChannel);
             }
+            mqttMarkMetaDirty();
             return;
         }
 
@@ -3629,6 +4016,7 @@ static void processGatewayNetworkState(unsigned long now) {
         delay(100);
         Serial.println("[WiFi] Router link lost. Switching to offline AP fallback...");
         startGatewayOfflineAp(false, true);
+        mqttMarkMetaDirty();
         return;
     }
 
@@ -3663,6 +4051,7 @@ static void processGatewayNetworkState(unsigned long now) {
             delay(500);
             ESP.restart();
         }
+        mqttMarkMetaDirty();
         broadcastMetaIfClientsConnected();
         return;
     }
@@ -3763,13 +4152,15 @@ static void saveNodesToNvs() {
     Preferences prefs;
     prefs.begin("gwnodes", false);
     prefs.putUChar("nextid", nextId);
+    uint8_t activeCount = 0;
     for (uint8_t i = 1; i < nextId; i++) {
         char key[5];
         snprintf(key, sizeof(key), "n%d", i);
         if (nodes[i].mac[0] == 0 && nodes[i].mac[1] == 0) {
-            prefs.remove(key);  // slot was freed - remove stale entry
+            if (prefs.isKey(key)) prefs.remove(key);  // slot was freed - remove stale entry
             continue;
         }
+        activeCount++;
         NodeNvsRecordV4 rec = {};
         memcpy(rec.mac,        nodes[i].mac,        6);
         rec.type = nodes[i].type;
@@ -3784,7 +4175,7 @@ static void saveNodesToNvs() {
     nodeRegistryDirty = false;
     nodeRegistryDirtyAtMs = 0;
     // For Debugging: print the saved nodes to the Serial console
-    Serial.printf("[MESH] Saved %d nodes to NVS. nextId=%d\n", nextId - 1, nextId);
+    Serial.printf("[MESH] Saved %u node(s) to NVS. nextId=%d\n", activeCount, nextId);
 }
 
 static void markNodeRegistryDirty() {
@@ -3809,6 +4200,7 @@ static void loadNodesFromNvs() {
     for (uint8_t i = 1; i < savedNextId && i < runtimeNextIdLimit; i++) {
         char key[5];
         snprintf(key, sizeof(key), "n%d", i);
+        if (!prefs.isKey(key)) continue;
         const size_t blobLen = prefs.getBytesLength(key);
         if (blobLen != sizeof(NodeNvsRecordV1) &&
             blobLen != sizeof(NodeNvsRecordV2) &&
@@ -4083,6 +4475,159 @@ static bool sendActuatorCmd(uint8_t nodeId, uint8_t actuatorId, uint8_t state)
     return true;
 }
 
+static bool findNodeSettingDef(uint8_t nodeId, uint8_t settingId, SettingDef* outSetting) {
+    if (nodeId == 0 || nodeId >= nextId || !outSetting) return false;
+    bool found = false;
+    if (xSemaphoreTake(nodesMutex, pdMS_TO_TICKS(50)) == pdTRUE) {
+        for (uint8_t i = 0; i < nodes[nodeId].settingsCount; i++) {
+            if (nodes[nodeId].settings[i].id == settingId) {
+                *outSetting = nodes[nodeId].settings[i];
+                found = true;
+                break;
+            }
+        }
+        xSemaphoreGive(nodesMutex);
+    }
+    return found;
+}
+
+static bool handleNodeActuatorCommand(uint8_t nodeId, uint8_t actuatorId, uint8_t state, String* err) {
+    if (nodeId == 0 || nodeId >= nextId || nodes[nodeId].mac[0] == 0) {
+        if (err) *err = "Invalid node.";
+        return false;
+    }
+    if (!nodes[nodeId].online) {
+        if (err) *err = "Node must be online.";
+        return false;
+    }
+    if (!(nodes[nodeId].capabilities & NODE_CAP_ACTUATORS)) {
+        if (err) *err = "Selected node does not support actuators.";
+        return false;
+    }
+    if (state > 1) {
+        if (err) *err = "Actuator state must be 0 or 1.";
+        return false;
+    }
+    const uint8_t relayCount = defaultActuatorCountForNode(nodes[nodeId]);
+    if (actuatorId >= relayCount) {
+        if (err) *err = "Actuator ID is out of range.";
+        return false;
+    }
+    if (!sendActuatorCmd(nodeId, actuatorId, state)) {
+        if (err) *err = "Failed to send actuator command to node.";
+        return false;
+    }
+    if (xSemaphoreTake(nodesMutex, pdMS_TO_TICKS(50)) == pdTRUE) {
+        const uint8_t prevMask = nodes[nodeId].actuatorMask;
+        if (state) nodes[nodeId].actuatorMask |= (1u << actuatorId);
+        else       nodes[nodeId].actuatorMask &= ~(1u << actuatorId);
+        if (nodes[nodeId].actuatorMask != prevMask) {
+            markNodeRegistryDirty();
+        }
+        xSemaphoreGive(nodesMutex);
+    }
+    wsBroadcast(buildNodesJson());
+    mqttMarkNodeSummaryDirty(nodeId);
+    mqttMarkNodeActuatorStateDirty(nodeId);
+    return true;
+}
+
+static bool handleNodeSettingCommand(uint8_t nodeId, uint8_t settingId, int16_t value, String* err) {
+    if (nodeId == 0 || nodeId >= nextId || nodes[nodeId].mac[0] == 0) {
+        if (err) *err = "Invalid node.";
+        return false;
+    }
+    if (!nodes[nodeId].online) {
+        if (err) *err = "Node must be online.";
+        return false;
+    }
+
+    SettingDef setting{};
+    if (!findNodeSettingDef(nodeId, settingId, &setting)) {
+        if (err) *err = "Setting schema is not available for this node.";
+        return false;
+    }
+
+    switch (setting.type) {
+        case SETTING_BOOL:
+            if (!(value == 0 || value == 1)) {
+                if (err) *err = "Boolean setting values must be 0 or 1.";
+                return false;
+            }
+            break;
+        case SETTING_ENUM:
+            if (value < 0 || value >= setting.opt_count) {
+                if (err) *err = "Selected option is out of range.";
+                return false;
+            }
+            break;
+        case SETTING_INT: {
+            if (value < setting.i_min || value > setting.i_max) {
+                if (err) *err = "Numeric setting value is out of range.";
+                return false;
+            }
+            const int16_t step = setting.i_step > 0 ? setting.i_step : 1;
+            if (((value - setting.i_min) % step) != 0) {
+                if (err) *err = "Numeric setting value does not match the required step.";
+                return false;
+            }
+            break;
+        }
+        case SETTING_STRING:
+        default:
+            if (err) *err = "This setting type is not supported by the gateway MQTT bridge.";
+            return false;
+    }
+
+    if (xSemaphoreTake(nodesMutex, pdMS_TO_TICKS(50)) == pdTRUE) {
+        for (uint8_t i = 0; i < nodes[nodeId].settingsCount; i++) {
+            if (nodes[nodeId].settings[i].id == settingId) {
+                nodes[nodeId].settings[i].current = value;
+                break;
+            }
+        }
+        xSemaphoreGive(nodesMutex);
+    }
+
+    sendSettingsSet(nodes[nodeId].mac, nodeId, nodes[nodeId].type, settingId, value);
+    Serial.printf("[CFG]  Node #%d setting %d -> %d\n", nodeId, settingId, value);
+    wsBroadcast(buildNodeSettingsJson(nodeId));
+    mqttMarkNodeSettingsStateDirty(nodeId);
+    return true;
+}
+
+static bool handleNodeRebootCommand(uint8_t nodeId, String* err) {
+    if (nodeId == 0 || nodeId >= nextId || nodes[nodeId].mac[0] == 0) {
+        if (err) *err = "Invalid node.";
+        return false;
+    }
+    if (!nodes[nodeId].online) {
+        if (err) *err = "Node must be online.";
+        return false;
+    }
+
+    sendRebootCmd(nodes[nodeId].mac, nodeId);
+    Serial.printf("[MESH] Reboot command sent to node #%d\n", nodeId);
+    if (gwLedEnabled) {
+        flashGwLed(gwLed.Color(255, 165, 0), 200);
+    } else {
+        setGwLed(0);
+    }
+    mqttMarkNodeSummaryDirty(nodeId);
+    return true;
+}
+
+static bool handleNodeUnpairCommand(uint8_t nodeId, String* err) {
+    if (nodeId == 0 || nodeId >= nextId || nodes[nodeId].mac[0] == 0) {
+        if (err) *err = "Invalid node.";
+        return false;
+    }
+    sendUnpairCmd(nodes[nodeId].mac, nodeId, nodes[nodeId].type);
+    delay(80);
+    disconnectNode(nodeId);
+    return true;
+}
+
 // *****************************************************************************
 //  ESP-NOW callbacks
 // *****************************************************************************
@@ -4117,7 +4662,7 @@ static bool updateDiscovered(const uint8_t* mac, const char* name,
     // New entry - find a free or expired slot
     for (uint8_t i = 0; i < MAX_DISCOVERED; i++) {
         if (!discovered[i].active ||
-            (now - discovered[i].lastSeen > DISCOVERED_TIMEOUT_MS)) {
+            (elapsedSinceMs(now, discovered[i].lastSeen) > DISCOVERED_TIMEOUT_MS)) {
             memcpy(discovered[i].mac, mac, 6);
             strncpy(discovered[i].name, name, sizeof(discovered[i].name) - 1);
             discovered[i].name[sizeof(discovered[i].name) - 1] = '\0';
@@ -4139,7 +4684,7 @@ static bool cleanupDiscovered() {
     bool changed = false;
     for (uint8_t i = 0; i < MAX_DISCOVERED; i++) {
         if (discovered[i].active &&
-            (now - discovered[i].lastSeen > DISCOVERED_TIMEOUT_MS)) {
+            (elapsedSinceMs(now, discovered[i].lastSeen) > DISCOVERED_TIMEOUT_MS)) {
             discovered[i].active = false;
             Serial.printf("[DISC]  Expired: %s\n", macToStr(discovered[i].mac).c_str());
             changed = true;
@@ -4161,6 +4706,7 @@ static void disconnectNodeInternal(uint8_t nodeId,
 
     uint8_t mac[6];
     if (xSemaphoreTake(nodesMutex, pdMS_TO_TICKS(100)) == pdTRUE) {
+        mqttQueueRemovedNodeSnapshot(nodes[nodeId]);
         memcpy(mac, nodes[nodeId].mac, 6);
         memset(&nodes[nodeId], 0, sizeof(NodeRecord));  // free the slot
         xSemaphoreGive(nodesMutex);
@@ -4169,6 +4715,7 @@ static void disconnectNodeInternal(uint8_t nodeId,
         return;
     }
 
+    mqttReleaseAllNodeSensorStates(nodeId);
     if (esp_now_is_peer_exist(mac)) esp_now_del_peer(mac);
     if (showLedFeedback && gwLedEnabled) {
         flashGwLed(gwLed.Color(255, 80, 0), 200);  // orange pulse
@@ -4245,8 +4792,7 @@ static String buildNodesJson() {
         unsigned long now = millis();
         for (uint8_t i = 1; i < nextId; i++) {
             if (nodes[i].mac[0] == 0 && nodes[i].mac[1] == 0) continue;
-            if (now - nodes[i].lastSeen > NODE_TIMEOUT_MS)
-                nodes[i].online = false;
+            const unsigned long ageMs = elapsedSinceMs(now, nodes[i].lastSeen);
 
             JsonObject n = arr.add<JsonObject>();
             n["id"]         = i;
@@ -4254,7 +4800,7 @@ static String buildNodesJson() {
             n["mac"]        = macToStr(nodes[i].mac);
             n["type"]       = (int)nodes[i].type;
             n["online"]     = nodes[i].online;
-            n["last_seen"]  = (int)((now - nodes[i].lastSeen) / 1000);
+            n["last_seen"]  = (int)(ageMs / 1000);
             n["uptime"]     = nodes[i].uptime;
             n["fw_version"] = nodes[i].fw_version;
             n["hw_config_id"] = nodes[i].hw_config_id;
@@ -4319,6 +4865,14 @@ static String buildMetaJson() {
     doc["network_mode"]    = gatewayNetworkModeToString(gatewayNetworkMode);
     doc["router_online"]   = gatewayRouterOnline;
     doc["router_ssid"]     = gatewayRouterCredsSaved ? savedRouterSsid : "";
+    doc["mqtt_enabled"]    = mqttEnabled;
+    doc["mqtt_connected"]  = mqttConnected;
+    doc["mqtt_host"]       = mqttHost;
+    doc["mqtt_port"]       = mqttPort;
+    doc["mqtt_base_topic"] = mqttBaseTopic;
+    doc["mqtt_username"]   = mqttUsername;
+    doc["mqtt_has_password"] = mqttHasPassword;
+    doc["mqtt_last_error"] = mqttLastError;
     doc["gw_builtin_sensor_enabled"] = gatewayBuiltinSensorFeatureEnabled();
     doc["gw_builtin_sensor_model"] = gatewayBuiltinSensorModelString();
     doc["gw_builtin_sensor_present"] = gatewayBuiltinSensorPresent;
@@ -4598,7 +5152,7 @@ static String buildDiscoveredJson() {
     unsigned long now = millis();
     for (uint8_t i = 0; i < MAX_DISCOVERED; i++) {
         if (!discovered[i].active) continue;
-        if (now - discovered[i].lastSeen > DISCOVERED_TIMEOUT_MS) {
+        if (elapsedSinceMs(now, discovered[i].lastSeen) > DISCOVERED_TIMEOUT_MS) {
             discovered[i].active = false;
             continue;
         }
@@ -4610,6 +5164,1028 @@ static String buildDiscoveredJson() {
     String out;
     serializeJson(doc, out);
     return out;
+}
+
+static bool refreshTimedOutNodes(unsigned long now) {
+    bool changed = false;
+    if (xSemaphoreTake(nodesMutex, pdMS_TO_TICKS(100)) != pdTRUE) return false;
+    for (uint8_t i = 1; i < nextId; i++) {
+        if (nodes[i].mac[0] == 0 && nodes[i].mac[1] == 0) continue;
+        if (!nodes[i].online) continue;
+        const unsigned long ageMs = elapsedSinceMs(now, nodes[i].lastSeen);
+        if (ageMs <= NODE_TIMEOUT_MS) continue;
+        nodes[i].online = false;
+        Serial.printf("[MESH] Node #%u marked offline after %lu ms without traffic.\n", i, ageMs);
+        mqttMarkNodeSummaryDirty(i);
+        mqttMarkNodeSensorStateDirty(i);
+        mqttMarkNodeActuatorStateDirty(i);
+        mqttMarkNodeSettingsStateDirty(i);
+        changed = true;
+    }
+    xSemaphoreGive(nodesMutex);
+    return changed;
+}
+
+static bool mqttPublishRetained(const String& topic, const String& payload) {
+    if (!mqttConnected) return false;
+    const bool ok = mqttClient.publish(topic.c_str(), payload.c_str(), true);
+    if (!ok) mqttSetLastError(String("Publish failed for topic ") + topic + ".");
+    return ok;
+}
+
+static bool mqttClearRetained(const String& topic) {
+    if (!mqttConnected) return false;
+    const bool ok = mqttClient.publish(topic.c_str(), "", true);
+    if (!ok) mqttSetLastError(String("Failed to clear retained topic ") + topic + ".");
+    return ok;
+}
+
+static bool mqttCopyNodeSnapshot(uint8_t nodeId, NodeRecord* outNode) {
+    if (!outNode || nodeId == 0 || nodeId >= nextId) return false;
+    bool ok = false;
+    if (xSemaphoreTake(nodesMutex, pdMS_TO_TICKS(100)) == pdTRUE) {
+        if (!(nodes[nodeId].mac[0] == 0 && nodes[nodeId].mac[1] == 0)) {
+            *outNode = nodes[nodeId];
+            ok = true;
+        }
+        xSemaphoreGive(nodesMutex);
+    }
+    return ok;
+}
+
+static bool mqttSensorDefsEquivalent(const SensorDef& a, const SensorDef& b) {
+    return a.id == b.id &&
+           a.precision == b.precision &&
+           strncmp(a.label, b.label, sizeof(a.label)) == 0 &&
+           strncmp(a.unit, b.unit, sizeof(a.unit)) == 0;
+}
+
+static String mqttDiscoveryTopic(const char* component, const String& objectId) {
+    return String(MQTT_HA_DISCOVERY_PREFIX) + "/" + component + "/" + objectId + "/config";
+}
+
+static String mqttGatewayAvailabilityTopic() {
+    return mqttGatewayRootTopic() + "/availability";
+}
+
+static String mqttGatewayMetaStateTopic() {
+    return mqttGatewayRootTopic() + "/meta/state";
+}
+
+static String mqttGatewayCommandTopic(const char* command) {
+    return mqttGatewayRootTopic() + "/cmd/" + command;
+}
+
+static String mqttBuiltinBaseTopic() {
+    return mqttGatewayRootTopic() + "/builtin";
+}
+
+static String mqttBuiltinAvailabilityTopic() {
+    return mqttBuiltinBaseTopic() + "/availability";
+}
+
+static String mqttBuiltinSummaryTopic() {
+    return mqttBuiltinBaseTopic() + "/state";
+}
+
+static String mqttNodeAvailabilityTopic(const char* nodeMacId) {
+    return mqttNodeBaseTopic(nodeMacId) + "/availability";
+}
+
+static String mqttNodeSummaryTopic(const char* nodeMacId) {
+    return mqttNodeBaseTopic(nodeMacId) + "/state";
+}
+
+static String mqttNodeSensorStateTopic(const char* nodeMacId, uint8_t sensorId) {
+    return mqttNodeBaseTopic(nodeMacId) + "/sensors/" + String(sensorId) + "/state";
+}
+
+static String mqttNodeActuatorStateTopic(const char* nodeMacId, uint8_t actuatorId) {
+    return mqttNodeBaseTopic(nodeMacId) + "/actuators/" + String(actuatorId) + "/state";
+}
+
+static String mqttNodeActuatorCommandTopic(const char* nodeMacId, uint8_t actuatorId) {
+    return mqttNodeBaseTopic(nodeMacId) + "/actuators/" + String(actuatorId) + "/set";
+}
+
+static String mqttNodeSettingStateTopic(const char* nodeMacId, uint8_t settingId) {
+    return mqttNodeBaseTopic(nodeMacId) + "/settings/" + String(settingId) + "/state";
+}
+
+static String mqttNodeSettingCommandTopic(const char* nodeMacId, uint8_t settingId) {
+    return mqttNodeBaseTopic(nodeMacId) + "/settings/" + String(settingId) + "/set";
+}
+
+static String mqttNodeCommandTopic(const char* nodeMacId, const char* command) {
+    return mqttNodeBaseTopic(nodeMacId) + "/cmd/" + command;
+}
+
+static void mqttClearHeldNodeSensorStates(uint8_t nodeId) {
+    if (nodeId == 0 || nodeId > MESH_MAX_NODES) return;
+    if (mqttNodeHeldSensorStateMask[nodeId] == 0) return;
+
+    NodeRecord node{};
+    if (!mqttCopyNodeSnapshot(nodeId, &node)) return;
+
+    char nodeMacId[13] = {0};
+    mqttMacToTopicId(node.mac, nodeMacId, sizeof(nodeMacId));
+
+    for (uint8_t i = 0; i < node.sensorCount; i++) {
+        const uint8_t sensorId = node.sensorSchema[i].id;
+        if (!mqttIsNodeSensorStateHeld(nodeId, sensorId)) continue;
+        mqttClearRetained(mqttNodeSensorStateTopic(nodeMacId, sensorId));
+    }
+}
+
+static String mqttActuatorLabelForNode(const NodeRecord& node, uint8_t index) {
+    if (index < NODE_MAX_ACTUATORS && node.relayLabels[index][0] != '\0') {
+        return String(node.relayLabels[index]);
+    }
+    if (index < node.actuatorCount && node.actuatorSchema[index].label[0] != '\0') {
+        return String(node.actuatorSchema[index].label);
+    }
+    return String("Relay ") + String(index + 1);
+}
+
+static String mqttNodeUniqueDeviceId(const char* nodeMacId) {
+    return String("esp32mesh_node_") + nodeMacId;
+}
+
+static String mqttGatewayUniqueDeviceId() {
+    return String("esp32mesh_gateway_") + mqttGatewayTopicId;
+}
+
+static const char* mqttGuessSensorDeviceClass(const String& label, const String& unit);
+
+static String mqttNormalizeUnitText(const char* unit) {
+    String normalized = unit ? String(unit) : String();
+    normalized.replace("\xC2\xB0", "");
+    normalized.replace("Â", "");
+    normalized.trim();
+    normalized.toUpperCase();
+    return normalized;
+}
+
+static const char* mqttTemperatureUnitCelsius() {
+    return "\xC2\xB0""C";
+}
+
+static bool mqttIsTemperatureSensorDef(const SensorDef& sensor) {
+    const char* deviceClass = mqttGuessSensorDeviceClass(String(sensor.label), String(sensor.unit));
+    return deviceClass && strcmp(deviceClass, "temperature") == 0;
+}
+
+static bool mqttSensorUsesFahrenheit(const SensorDef& sensor) {
+    return mqttIsTemperatureSensorDef(sensor) && mqttNormalizeUnitText(sensor.unit) == "F";
+}
+
+static float mqttNormalizedNodeSensorValue(const SensorDef& sensor, float value) {
+    if (!mqttSensorUsesFahrenheit(sensor)) return value;
+    return (value - 32.0f) * 5.0f / 9.0f;
+}
+
+static bool mqttIsTemperatureUnitSetting(const SettingDef& setting) {
+    if (setting.type != SETTING_ENUM || setting.opt_count != 2) return false;
+    return mqttNormalizeUnitText(setting.opts[0]) == "C" &&
+           mqttNormalizeUnitText(setting.opts[1]) == "F";
+}
+
+static bool mqttShouldExposeSettingOverMqtt(const SettingDef& setting) {
+    return !mqttIsTemperatureUnitSetting(setting);
+}
+
+static void mqttFillGatewayDevice(JsonObject device) {
+    JsonArray identifiers = device["identifiers"].to<JsonArray>();
+    identifiers.add(mqttGatewayUniqueDeviceId());
+    device["name"] = "ESP32 Mesh Gateway";
+    device["manufacturer"] = "A-Tech Officials";
+    device["model"] = "ESP32 Mesh Gateway";
+    device["sw_version"] = FW_VERSION;
+    device["hw_version"] = HW_CONFIG_ID;
+}
+
+static void mqttFillNodeDevice(JsonObject device, const NodeRecord& node, const char* nodeMacId) {
+    JsonArray identifiers = device["identifiers"].to<JsonArray>();
+    identifiers.add(mqttNodeUniqueDeviceId(nodeMacId));
+    device["name"] = node.name[0] ? node.name : "ESP32 Mesh Node";
+    device["manufacturer"] = "A-Tech Officials";
+    device["model"] = String("ESP32 Mesh ") + nodeTypeToRole(node.type) + " Node";
+    if (node.fw_version[0] != '\0') device["sw_version"] = node.fw_version;
+    if (node.hw_config_id[0] != '\0') device["hw_version"] = node.hw_config_id;
+    device["via_device"] = mqttGatewayUniqueDeviceId();
+}
+
+static const char* mqttGuessSensorDeviceClass(const String& label, const String& unit) {
+    String lowerLabel = label;
+    String lowerUnit = unit;
+    lowerLabel.toLowerCase();
+    lowerUnit.toLowerCase();
+    if (lowerLabel.indexOf("temp") >= 0) return "temperature";
+    if (lowerLabel.indexOf("humid") >= 0) return "humidity";
+    if (lowerLabel.indexOf("press") >= 0 || lowerUnit.indexOf("hpa") >= 0) return "atmospheric_pressure";
+    return nullptr;
+}
+
+static String mqttNodeSettingStatePayload(const SettingDef& setting) {
+    switch (setting.type) {
+        case SETTING_BOOL:
+            return setting.current ? "ON" : "OFF";
+        case SETTING_ENUM:
+            if (setting.current >= 0 && setting.current < setting.opt_count) {
+                return String(setting.opts[setting.current]);
+            }
+            return String(setting.current);
+        case SETTING_INT:
+            return String(setting.current);
+        default:
+            return "";
+    }
+}
+
+static void mqttPublishGatewayAvailability(bool online) {
+    mqttPublishRetained(mqttGatewayAvailabilityTopic(), online ? "online" : "offline");
+}
+
+static void mqttPublishGatewayMetaState() {
+    JsonDocument doc;
+    doc["gateway_mac"] = WiFi.macAddress();
+    doc["access_ip"] = gatewayAccessIpString();
+    doc["network_mode"] = gatewayNetworkModeToString(gatewayNetworkMode);
+    doc["router_online"] = gatewayRouterOnline;
+    doc["router_ssid"] = gatewayRouterCredsSaved ? savedRouterSsid : "";
+    doc["fw_version"] = FW_VERSION;
+    doc["hw_config_id"] = HW_CONFIG_ID;
+    doc["mqtt_connected"] = mqttConnected;
+    doc["builtin_sensor_model"] = gatewayBuiltinSensorModelString();
+    if (gatewayBuiltinSensorFeatureEnabled()) {
+        doc["builtin_sensor_present"] = gatewayBuiltinSensorPresent;
+        doc["builtin_temp_unit"] = "C";
+    }
+    String payload;
+    serializeJson(doc, payload);
+    mqttPublishRetained(mqttGatewayMetaStateTopic(), payload);
+    mqttMetaDirty = false;
+    lastMqttMetaPublishAt = millis();
+}
+
+static void mqttPublishGatewayControlDiscovery() {
+    auto publishGatewayButton = [&](const char* command,
+                                    const char* name,
+                                    const char* icon = nullptr) {
+        const String objectId = String(mqttGatewayTopicId) + "_gateway_" + command;
+        JsonDocument doc;
+        doc["name"] = name;
+        doc["unique_id"] = String("esp32mesh_") + objectId;
+        doc["command_topic"] = mqttGatewayCommandTopic(command);
+        doc["availability_topic"] = mqttGatewayAvailabilityTopic();
+        doc["payload_available"] = "online";
+        doc["payload_not_available"] = "offline";
+        doc["payload_press"] = "PRESS";
+        doc["entity_category"] = "config";
+        if (icon && icon[0] != '\0') doc["icon"] = icon;
+        JsonObject device = doc["device"].to<JsonObject>();
+        mqttFillGatewayDevice(device);
+        String payload;
+        serializeJson(doc, payload);
+        mqttPublishRetained(mqttDiscoveryTopic("button", objectId), payload);
+    };
+
+    publishGatewayButton("reboot", "Reboot Gateway", "mdi:restart");
+    publishGatewayButton("factory_reset", "Factory Reset Gateway", "mdi:restore-alert");
+    mqttGatewayControlDiscoveryDirty = false;
+    Serial.println("[MQTT] Gateway control discovery refreshed.");
+}
+
+static void mqttPublishBuiltinDiscovery() {
+    const String baseObjectId = String(mqttGatewayTopicId) + "_builtin";
+    if (!gatewayBuiltinSensorFeatureEnabled()) {
+        mqttClearRetained(mqttDiscoveryTopic("sensor", baseObjectId + "_temperature"));
+        mqttClearRetained(mqttDiscoveryTopic("sensor", baseObjectId + "_pressure"));
+        mqttClearRetained(mqttDiscoveryTopic("sensor", baseObjectId + "_humidity"));
+        mqttClearRetained(mqttBuiltinAvailabilityTopic());
+        mqttClearRetained(mqttBuiltinSummaryTopic());
+        mqttClearRetained(mqttBuiltinBaseTopic() + "/temperature/state");
+        mqttClearRetained(mqttBuiltinBaseTopic() + "/pressure/state");
+        mqttClearRetained(mqttBuiltinBaseTopic() + "/humidity/state");
+        mqttBuiltinDiscoveryDirty = false;
+        Serial.println("[MQTT] Built-in sensor discovery cleared (feature disabled).");
+        return;
+    }
+
+    auto publishBuiltinSensorConfig = [&](const String& objectId,
+                                          const String& name,
+                                          const String& stateTopic,
+                                          const char* deviceClass,
+                                          const char* unit,
+                                          bool enabled) {
+        if (!enabled) {
+            mqttClearRetained(mqttDiscoveryTopic("sensor", objectId));
+            mqttClearRetained(stateTopic);
+            return;
+        }
+        JsonDocument doc;
+        doc["name"] = name;
+        doc["unique_id"] = String("esp32mesh_") + objectId;
+        doc["state_topic"] = stateTopic;
+        doc["availability_topic"] = mqttBuiltinAvailabilityTopic();
+        doc["payload_available"] = "online";
+        doc["payload_not_available"] = "offline";
+        doc["state_class"] = "measurement";
+        if (deviceClass && deviceClass[0] != '\0') doc["device_class"] = deviceClass;
+        if (unit && unit[0] != '\0') doc["unit_of_measurement"] = unit;
+        JsonObject device = doc["device"].to<JsonObject>();
+        mqttFillGatewayDevice(device);
+        String payload;
+        serializeJson(doc, payload);
+        mqttPublishRetained(mqttDiscoveryTopic("sensor", objectId), payload);
+    };
+
+    publishBuiltinSensorConfig(
+        baseObjectId + "_temperature",
+        "Gateway Temperature",
+        mqttBuiltinBaseTopic() + "/temperature/state",
+        "temperature",
+        mqttTemperatureUnitCelsius(),
+        true);
+    publishBuiltinSensorConfig(
+        baseObjectId + "_pressure",
+        "Gateway Pressure",
+        mqttBuiltinBaseTopic() + "/pressure/state",
+        "atmospheric_pressure",
+        "hPa",
+        true);
+    publishBuiltinSensorConfig(
+        baseObjectId + "_humidity",
+        "Gateway Humidity",
+        mqttBuiltinBaseTopic() + "/humidity/state",
+        "humidity",
+        "%",
+        strcmp(gatewayBuiltinSensorModelString(), "bme280") == 0);
+    mqttBuiltinDiscoveryDirty = false;
+    Serial.printf("[MQTT] Built-in sensor discovery refreshed: model=%s present=%s\n",
+                  gatewayBuiltinSensorModelString(),
+                  gatewayBuiltinSensorPresent ? "yes" : "no");
+}
+
+static void mqttPublishBuiltinState() {
+    if (!gatewayBuiltinSensorFeatureEnabled()) {
+        mqttBuiltinStateDirty = false;
+        return;
+    }
+
+    const bool available = gatewayBuiltinSensorPresent;
+    mqttPublishRetained(mqttBuiltinAvailabilityTopic(), available ? "online" : "offline");
+
+    JsonDocument doc;
+    doc["model"] = gatewayBuiltinSensorModelString();
+    doc["present"] = gatewayBuiltinSensorPresent;
+    doc["temperature_unit"] = "C";
+    doc["altitude_configured"] = gatewayBuiltinSensorAltitudeConfigured;
+    doc["altitude_value"] = gatewayBuiltinAltitudeDisplayValue();
+    doc["altitude_unit"] = gatewayBuiltinSensorAltitudeUnitString();
+    if (available) {
+        const float displayTemp = gatewayBuiltinSensorTempC;
+        const float pressure = gatewayBuiltinSeaLevelPressureHpa();
+        if (isfinite(displayTemp)) doc["temperature"] = displayTemp;
+        if (isfinite(pressure)) doc["pressure_hpa"] = pressure;
+#if GATEWAY_BUILTIN_SENSOR_TYPE == GATEWAY_BUILTIN_SENSOR_BME280
+        if (isfinite(gatewayBuiltinSensorHumidity)) doc["humidity"] = gatewayBuiltinSensorHumidity;
+#endif
+    }
+    String payload;
+    serializeJson(doc, payload);
+    mqttPublishRetained(mqttBuiltinSummaryTopic(), payload);
+
+    if (!available) {
+        mqttClearRetained(mqttBuiltinBaseTopic() + "/temperature/state");
+        mqttClearRetained(mqttBuiltinBaseTopic() + "/pressure/state");
+        mqttClearRetained(mqttBuiltinBaseTopic() + "/humidity/state");
+    } else {
+        const float displayTemp = gatewayBuiltinSensorTempC;
+        const float pressure = gatewayBuiltinSeaLevelPressureHpa();
+        if (isfinite(displayTemp)) {
+            mqttPublishRetained(mqttBuiltinBaseTopic() + "/temperature/state", String(displayTemp, 1));
+        }
+        if (isfinite(pressure)) {
+            mqttPublishRetained(mqttBuiltinBaseTopic() + "/pressure/state", String(pressure, 1));
+        }
+#if GATEWAY_BUILTIN_SENSOR_TYPE == GATEWAY_BUILTIN_SENSOR_BME280
+        if (isfinite(gatewayBuiltinSensorHumidity)) {
+            mqttPublishRetained(mqttBuiltinBaseTopic() + "/humidity/state", String(gatewayBuiltinSensorHumidity, 1));
+        } else {
+            mqttClearRetained(mqttBuiltinBaseTopic() + "/humidity/state");
+        }
+#else
+        mqttClearRetained(mqttBuiltinBaseTopic() + "/humidity/state");
+#endif
+    }
+
+    mqttBuiltinStateDirty = false;
+}
+
+static void mqttPublishNodeSummary(uint8_t nodeId) {
+    NodeRecord node{};
+    if (!mqttCopyNodeSnapshot(nodeId, &node)) return;
+
+    char nodeMacId[13] = {0};
+    mqttMacToTopicId(node.mac, nodeMacId, sizeof(nodeMacId));
+    mqttPublishRetained(mqttNodeAvailabilityTopic(nodeMacId), node.online ? "online" : "offline");
+
+    JsonDocument doc;
+    doc["node_id"] = nodeId;
+    doc["name"] = node.name;
+    doc["mac"] = macToStr(node.mac);
+    doc["type"] = nodeTypeToRole(node.type);
+    doc["online"] = node.online;
+    doc["uptime"] = node.uptime;
+    doc["fw_version"] = node.fw_version;
+    doc["hw_config_id"] = node.hw_config_id;
+    doc["capabilities"] = node.capabilities;
+    doc["actuator_mask"] = node.actuatorMask;
+    JsonArray labels = doc["relay_labels"].to<JsonArray>();
+    const uint8_t relayCount = defaultActuatorCountForNode(node);
+    for (uint8_t i = 0; i < relayCount; i++) {
+        labels.add(mqttActuatorLabelForNode(node, i));
+    }
+    String payload;
+    serializeJson(doc, payload);
+    mqttPublishRetained(mqttNodeSummaryTopic(nodeMacId), payload);
+}
+
+static void mqttPublishNodeSensorStates(uint8_t nodeId) {
+    NodeRecord node{};
+    if (!mqttCopyNodeSnapshot(nodeId, &node)) return;
+    char nodeMacId[13] = {0};
+    mqttMacToTopicId(node.mac, nodeMacId, sizeof(nodeMacId));
+    for (uint8_t i = 0; i < node.sensorCount; i++) {
+        if (mqttIsNodeSensorStateHeld(nodeId, node.sensorSchema[i].id)) continue;
+        const float publishedValue = mqttNormalizedNodeSensorValue(node.sensorSchema[i], node.sensorValues[i]);
+        mqttPublishRetained(
+            mqttNodeSensorStateTopic(nodeMacId, node.sensorSchema[i].id),
+            String(publishedValue, (unsigned int)node.sensorSchema[i].precision));
+    }
+}
+
+static void mqttPublishNodeActuatorStates(uint8_t nodeId) {
+    NodeRecord node{};
+    if (!mqttCopyNodeSnapshot(nodeId, &node)) return;
+    char nodeMacId[13] = {0};
+    mqttMacToTopicId(node.mac, nodeMacId, sizeof(nodeMacId));
+    const uint8_t relayCount = defaultActuatorCountForNode(node);
+    for (uint8_t i = 0; i < relayCount; i++) {
+        const uint8_t actuatorId = (node.actuatorCount > i) ? node.actuatorSchema[i].id : i;
+        const bool on = (node.actuatorMask & (1u << actuatorId)) != 0;
+        mqttPublishRetained(mqttNodeActuatorStateTopic(nodeMacId, actuatorId), on ? "ON" : "OFF");
+    }
+}
+
+static void mqttPublishNodeSettingsStates(uint8_t nodeId) {
+    NodeRecord node{};
+    if (!mqttCopyNodeSnapshot(nodeId, &node)) return;
+    char nodeMacId[13] = {0};
+    mqttMacToTopicId(node.mac, nodeMacId, sizeof(nodeMacId));
+    for (uint8_t i = 0; i < node.settingsCount; i++) {
+        if (!mqttShouldExposeSettingOverMqtt(node.settings[i])) {
+            mqttClearRetained(mqttNodeSettingStateTopic(nodeMacId, node.settings[i].id));
+            continue;
+        }
+        mqttPublishRetained(
+            mqttNodeSettingStateTopic(nodeMacId, node.settings[i].id),
+            mqttNodeSettingStatePayload(node.settings[i]));
+    }
+}
+
+static void mqttPublishNodeDiscovery(uint8_t nodeId) {
+    NodeRecord node{};
+    if (!mqttCopyNodeSnapshot(nodeId, &node)) return;
+
+    char nodeMacId[13] = {0};
+    mqttMacToTopicId(node.mac, nodeMacId, sizeof(nodeMacId));
+    const String availabilityTopic = mqttNodeAvailabilityTopic(nodeMacId);
+    const uint8_t relayCount = nodeSupportsCapability(node, NODE_CAP_ACTUATORS)
+        ? defaultActuatorCountForNode(node)
+        : 0;
+
+    for (uint8_t i = 0; i < node.sensorCount; i++) {
+        const SensorDef& sensor = node.sensorSchema[i];
+        const String objectId = String(mqttGatewayTopicId) + "_" + nodeMacId + "_sensor_" + String(sensor.id);
+        JsonDocument doc;
+        doc["name"] = sensor.label;
+        doc["unique_id"] = String("esp32mesh_") + objectId;
+        doc["state_topic"] = mqttNodeSensorStateTopic(nodeMacId, sensor.id);
+        doc["availability_topic"] = availabilityTopic;
+        doc["payload_available"] = "online";
+        doc["payload_not_available"] = "offline";
+        doc["state_class"] = "measurement";
+        if (mqttIsTemperatureSensorDef(sensor)) {
+            doc["unit_of_measurement"] = mqttTemperatureUnitCelsius();
+        } else if (sensor.unit[0] != '\0') {
+            doc["unit_of_measurement"] = sensor.unit;
+        }
+        const char* deviceClass = mqttGuessSensorDeviceClass(String(sensor.label), String(sensor.unit));
+        if (deviceClass) doc["device_class"] = deviceClass;
+        JsonObject device = doc["device"].to<JsonObject>();
+        mqttFillNodeDevice(device, node, nodeMacId);
+        String payload;
+        serializeJson(doc, payload);
+        mqttPublishRetained(mqttDiscoveryTopic("sensor", objectId), payload);
+    }
+
+    if (nodeSupportsCapability(node, NODE_CAP_ACTUATORS)) {
+        for (uint8_t i = 0; i < relayCount; i++) {
+            const uint8_t actuatorId = (node.actuatorCount > i) ? node.actuatorSchema[i].id : i;
+            const String objectId = String(mqttGatewayTopicId) + "_" + nodeMacId + "_relay_" + String(actuatorId);
+            JsonDocument doc;
+            doc["name"] = mqttActuatorLabelForNode(node, i);
+            doc["unique_id"] = String("esp32mesh_") + objectId;
+            doc["state_topic"] = mqttNodeActuatorStateTopic(nodeMacId, actuatorId);
+            doc["command_topic"] = mqttNodeActuatorCommandTopic(nodeMacId, actuatorId);
+            doc["availability_topic"] = availabilityTopic;
+            doc["payload_available"] = "online";
+            doc["payload_not_available"] = "offline";
+            doc["payload_on"] = "ON";
+            doc["payload_off"] = "OFF";
+            JsonObject device = doc["device"].to<JsonObject>();
+            mqttFillNodeDevice(device, node, nodeMacId);
+            String payload;
+            serializeJson(doc, payload);
+            mqttPublishRetained(mqttDiscoveryTopic("switch", objectId), payload);
+        }
+    }
+
+    for (const char* command : {"reboot", "unpair"}) {
+        const String objectId = String(mqttGatewayTopicId) + "_" + nodeMacId + "_" + command;
+        JsonDocument doc;
+        doc["name"] = strcmp(command, "reboot") == 0 ? "Reboot" : "Unpair";
+        doc["unique_id"] = String("esp32mesh_") + objectId;
+        doc["command_topic"] = mqttNodeCommandTopic(nodeMacId, command);
+        doc["availability_topic"] = availabilityTopic;
+        doc["payload_available"] = "online";
+        doc["payload_not_available"] = "offline";
+        doc["payload_press"] = "PRESS";
+        doc["entity_category"] = "config";
+        JsonObject device = doc["device"].to<JsonObject>();
+        mqttFillNodeDevice(device, node, nodeMacId);
+        String payload;
+        serializeJson(doc, payload);
+        mqttPublishRetained(mqttDiscoveryTopic("button", objectId), payload);
+    }
+
+    for (uint8_t i = 0; i < node.settingsCount; i++) {
+        const SettingDef& setting = node.settings[i];
+        if (!mqttShouldExposeSettingOverMqtt(setting)) {
+            mqttClearRetained(mqttDiscoveryTopic(
+                "select",
+                String(mqttGatewayTopicId) + "_" + nodeMacId + "_setting_" + String(setting.id)));
+            mqttClearRetained(mqttNodeSettingStateTopic(nodeMacId, setting.id));
+            continue;
+        }
+        String component;
+        switch (setting.type) {
+            case SETTING_BOOL: component = "switch"; break;
+            case SETTING_ENUM: component = "select"; break;
+            case SETTING_INT: component = "number"; break;
+            default: continue;
+        }
+        const String objectId = String(mqttGatewayTopicId) + "_" + nodeMacId + "_setting_" + String(setting.id);
+        JsonDocument doc;
+        doc["name"] = setting.label;
+        doc["unique_id"] = String("esp32mesh_") + objectId;
+        doc["state_topic"] = mqttNodeSettingStateTopic(nodeMacId, setting.id);
+        doc["command_topic"] = mqttNodeSettingCommandTopic(nodeMacId, setting.id);
+        doc["availability_topic"] = availabilityTopic;
+        doc["payload_available"] = "online";
+        doc["payload_not_available"] = "offline";
+        doc["entity_category"] = "config";
+        if (setting.type == SETTING_BOOL) {
+            doc["payload_on"] = "ON";
+            doc["payload_off"] = "OFF";
+        } else if (setting.type == SETTING_ENUM) {
+            JsonArray options = doc["options"].to<JsonArray>();
+            for (uint8_t opt = 0; opt < setting.opt_count && opt < SETTING_OPT_MAXCOUNT; opt++) {
+                options.add(setting.opts[opt]);
+            }
+        } else if (setting.type == SETTING_INT) {
+            doc["mode"] = "box";
+            doc["min"] = setting.i_min;
+            doc["max"] = setting.i_max;
+            doc["step"] = setting.i_step > 0 ? setting.i_step : 1;
+        }
+        JsonObject device = doc["device"].to<JsonObject>();
+        mqttFillNodeDevice(device, node, nodeMacId);
+        String payload;
+        serializeJson(doc, payload);
+        mqttPublishRetained(mqttDiscoveryTopic(component.c_str(), objectId), payload);
+    }
+
+    Serial.printf("[MQTT] Node #%u discovery refreshed: sensors=%u actuators=%u settings=%u\n",
+                  nodeId, node.sensorCount, relayCount, node.settingsCount);
+}
+
+static void mqttClearNodeDiscoveryAndState(const MqttRemovedNodeSnapshot& snapshot) {
+    mqttClearRetained(mqttNodeAvailabilityTopic(snapshot.macId));
+    mqttClearRetained(mqttNodeSummaryTopic(snapshot.macId));
+    for (uint8_t i = 0; i < snapshot.sensorCount; i++) {
+        mqttClearRetained(mqttDiscoveryTopic("sensor",
+            String(mqttGatewayTopicId) + "_" + snapshot.macId + "_sensor_" + String(snapshot.sensorIds[i])));
+        mqttClearRetained(mqttNodeSensorStateTopic(snapshot.macId, snapshot.sensorIds[i]));
+    }
+    if (snapshot.hadActuators) {
+        for (uint8_t i = 0; i < snapshot.actuatorCount; i++) {
+            mqttClearRetained(mqttDiscoveryTopic("switch",
+                String(mqttGatewayTopicId) + "_" + snapshot.macId + "_relay_" + String(snapshot.actuatorIds[i])));
+            mqttClearRetained(mqttNodeActuatorStateTopic(snapshot.macId, snapshot.actuatorIds[i]));
+        }
+    }
+    mqttClearRetained(mqttDiscoveryTopic("button", String(mqttGatewayTopicId) + "_" + snapshot.macId + "_reboot"));
+    mqttClearRetained(mqttDiscoveryTopic("button", String(mqttGatewayTopicId) + "_" + snapshot.macId + "_unpair"));
+    for (uint8_t i = 0; i < snapshot.settingsCount; i++) {
+        const char* component = "number";
+        switch (snapshot.settingTypes[i]) {
+            case SETTING_BOOL: component = "switch"; break;
+            case SETTING_ENUM: component = "select"; break;
+            case SETTING_INT: component = "number"; break;
+            default: continue;
+        }
+        mqttClearRetained(mqttDiscoveryTopic(component,
+            String(mqttGatewayTopicId) + "_" + snapshot.macId + "_setting_" + String(snapshot.settingIds[i])));
+        mqttClearRetained(mqttNodeSettingStateTopic(snapshot.macId, snapshot.settingIds[i]));
+    }
+}
+
+static void mqttClearGatewayDiscoveryAndState() {
+    const String builtinObjectBase = String(mqttGatewayTopicId) + "_builtin";
+    mqttClearRetained(mqttDiscoveryTopic("button", String(mqttGatewayTopicId) + "_gateway_reboot"));
+    mqttClearRetained(mqttDiscoveryTopic("button", String(mqttGatewayTopicId) + "_gateway_factory_reset"));
+    mqttClearRetained(mqttDiscoveryTopic("sensor", builtinObjectBase + "_temperature"));
+    mqttClearRetained(mqttDiscoveryTopic("sensor", builtinObjectBase + "_pressure"));
+    mqttClearRetained(mqttDiscoveryTopic("sensor", builtinObjectBase + "_humidity"));
+    mqttClearRetained(mqttGatewayMetaStateTopic());
+    mqttClearRetained(mqttGatewayAvailabilityTopic());
+    mqttClearRetained(mqttBuiltinAvailabilityTopic());
+    mqttClearRetained(mqttBuiltinSummaryTopic());
+    mqttClearRetained(mqttBuiltinBaseTopic() + "/temperature/state");
+    mqttClearRetained(mqttBuiltinBaseTopic() + "/pressure/state");
+    mqttClearRetained(mqttBuiltinBaseTopic() + "/humidity/state");
+}
+
+static void mqttCleanupForFactoryReset() {
+    if (!mqttConnected) {
+        Serial.println("[MQTT] Factory reset cleanup skipped: broker not connected.");
+        return;
+    }
+
+    Serial.println("[MQTT] Clearing retained discovery/state before factory reset.");
+    mqttPublishGatewayAvailability(false);
+
+    for (uint8_t i = 0; i < MESH_MAX_NODES; i++) {
+        if (!mqttRemovedNodes[i].active) continue;
+        mqttClearNodeDiscoveryAndState(mqttRemovedNodes[i]);
+        mqttRemovedNodes[i].active = false;
+    }
+
+    mqttClearGatewayDiscoveryAndState();
+    delay(150);
+    mqttClient.disconnect();
+    mqttConnected = false;
+    mqttLastShouldBeConnected = false;
+    mqttRepublishAllPending = false;
+    mqttGatewayControlDiscoveryDirty = false;
+    mqttBuiltinDiscoveryDirty = false;
+    mqttBuiltinStateDirty = false;
+    mqttMetaDirty = false;
+    mqttNodeDiscoveryDirtyMask = 0;
+    mqttNodeSummaryDirtyMask = 0;
+    mqttNodeSensorStateDirtyMask = 0;
+    mqttNodeActuatorStateDirtyMask = 0;
+    mqttNodeSettingsStateDirtyMask = 0;
+    Serial.println("[MQTT] Broker disconnected after factory reset cleanup.");
+}
+
+static bool mqttFindNodeIdByTopicMac(const char* nodeMacId, uint8_t* outNodeId) {
+    if (!nodeMacId || !outNodeId) return false;
+    bool found = false;
+    if (xSemaphoreTake(nodesMutex, pdMS_TO_TICKS(100)) == pdTRUE) {
+        char currentMacId[13] = {0};
+        for (uint8_t i = 1; i < nextId; i++) {
+            if (nodes[i].mac[0] == 0 && nodes[i].mac[1] == 0) continue;
+            mqttMacToTopicId(nodes[i].mac, currentMacId, sizeof(currentMacId));
+            if (strcmp(currentMacId, nodeMacId) == 0) {
+                *outNodeId = i;
+                found = true;
+                break;
+            }
+        }
+        xSemaphoreGive(nodesMutex);
+    }
+    return found;
+}
+
+static void mqttPublishAllDiscoveryAndState() {
+    Serial.println("[MQTT] Republishing discovery and retained state.");
+    mqttPublishGatewayAvailability(true);
+    mqttPublishGatewayMetaState();
+    mqttPublishGatewayControlDiscovery();
+    mqttPublishBuiltinDiscovery();
+    mqttPublishBuiltinState();
+
+    for (uint8_t i = 1; i < nextId; i++) {
+        mqttPublishNodeDiscovery(i);
+        mqttPublishNodeSummary(i);
+        mqttClearHeldNodeSensorStates(i);
+        mqttPublishNodeSensorStates(i);
+        mqttPublishNodeActuatorStates(i);
+        mqttPublishNodeSettingsStates(i);
+    }
+
+    for (uint8_t i = 0; i < MESH_MAX_NODES; i++) {
+        if (!mqttRemovedNodes[i].active) continue;
+        mqttClearNodeDiscoveryAndState(mqttRemovedNodes[i]);
+        mqttRemovedNodes[i].active = false;
+    }
+
+    mqttRepublishAllPending = false;
+    mqttNodeDiscoveryDirtyMask = 0;
+    mqttNodeSummaryDirtyMask = 0;
+    mqttNodeSensorStateDirtyMask = 0;
+    mqttNodeActuatorStateDirtyMask = 0;
+    mqttNodeSettingsStateDirtyMask = 0;
+}
+
+static void mqttSubscribeTopics() {
+    const String root = mqttGatewayRootTopic();
+    mqttClient.subscribe((root + "/cmd/+").c_str());
+    mqttClient.subscribe((root + "/nodes/+/actuators/+/set").c_str());
+    mqttClient.subscribe((root + "/nodes/+/settings/+/set").c_str());
+    mqttClient.subscribe((root + "/nodes/+/cmd/+").c_str());
+    Serial.printf("[MQTT] Subscribed under root \"%s\"\n", root.c_str());
+}
+
+static void mqttOnMessage(char* topic, uint8_t* payload, unsigned int length) {
+    if (!topic) return;
+
+    char payloadBuf[96] = {0};
+    const size_t copyLen = std::min((size_t)length, sizeof(payloadBuf) - 1);
+    if (payload && copyLen > 0) memcpy(payloadBuf, payload, copyLen);
+    payloadBuf[copyLen] = '\0';
+    String payloadText = String(payloadBuf);
+    payloadText.trim();
+    Serial.printf("[MQTT] RX topic=\"%s\" payload=\"%s\"\n", topic, payloadText.c_str());
+
+    const String topicText = topic;
+    if (topicText == mqttGatewayCommandTopic("reboot")) {
+        if (!payloadText.equalsIgnoreCase("PRESS")) {
+            mqttSetLastError("Gateway reboot commands must use PRESS.");
+            return;
+        }
+        Serial.println("[MQTT] Routed gateway reboot command.");
+        performGatewayReboot("mqtt");
+        return;
+    }
+
+    if (topicText == mqttGatewayCommandTopic("factory_reset")) {
+        if (!payloadText.equalsIgnoreCase("PRESS")) {
+            mqttSetLastError("Gateway factory reset commands must use PRESS.");
+            return;
+        }
+        Serial.println("[MQTT] Routed gateway factory reset command.");
+        performGatewayFactoryReset("mqtt");
+        return;
+    }
+
+    const String root = mqttGatewayRootTopic() + "/nodes/";
+    if (!topicText.startsWith(root)) return;
+    const String tail = topicText.substring(root.length());
+    const int firstSlash = tail.indexOf('/');
+    if (firstSlash <= 0) return;
+
+    const String nodeMacId = tail.substring(0, firstSlash);
+    const String commandPath = tail.substring(firstSlash + 1);
+    uint8_t nodeId = 0;
+    if (!mqttFindNodeIdByTopicMac(nodeMacId.c_str(), &nodeId)) {
+        mqttSetLastError(String("MQTT command targeted unknown node ") + nodeMacId + ".");
+        return;
+    }
+
+    String err;
+    if (commandPath.startsWith("actuators/")) {
+        const int secondSlash = commandPath.indexOf('/', 10);
+        if (secondSlash < 0) return;
+        const uint8_t actuatorId = (uint8_t)commandPath.substring(10, secondSlash).toInt();
+        if (commandPath.substring(secondSlash + 1) != "set") return;
+        if (!payloadText.equalsIgnoreCase("ON") && !payloadText.equalsIgnoreCase("OFF")) {
+            mqttSetLastError("Actuator commands must use ON or OFF.");
+            return;
+        }
+        const uint8_t state = payloadText.equalsIgnoreCase("ON") ? 1 : 0;
+        if (!handleNodeActuatorCommand(nodeId, actuatorId, state, &err)) {
+            mqttSetLastError(err);
+        } else {
+            Serial.printf("[MQTT] Routed actuator command -> node #%u actuator %u = %s\n",
+                          nodeId, actuatorId, state ? "ON" : "OFF");
+        }
+        return;
+    }
+
+    if (commandPath.startsWith("settings/")) {
+        const int secondSlash = commandPath.indexOf('/', 9);
+        if (secondSlash < 0) return;
+        const uint8_t settingId = (uint8_t)commandPath.substring(9, secondSlash).toInt();
+        if (commandPath.substring(secondSlash + 1) != "set") return;
+
+        SettingDef setting{};
+        if (!findNodeSettingDef(nodeId, settingId, &setting)) {
+            mqttSetLastError("Setting schema is not available for this node.");
+            return;
+        }
+        if (!mqttShouldExposeSettingOverMqtt(setting)) {
+            mqttSetLastError("This setting is available only from the gateway web interface.");
+            return;
+        }
+
+        int16_t nextValue = 0;
+        if (setting.type == SETTING_BOOL) {
+            if (payloadText.equalsIgnoreCase("ON")) nextValue = 1;
+            else if (payloadText.equalsIgnoreCase("OFF")) nextValue = 0;
+            else {
+                mqttSetLastError("Boolean setting commands must use ON or OFF.");
+                return;
+            }
+        } else if (setting.type == SETTING_ENUM) {
+            bool matched = false;
+            for (uint8_t i = 0; i < setting.opt_count && i < SETTING_OPT_MAXCOUNT; i++) {
+                if (payloadText.equalsIgnoreCase(setting.opts[i])) {
+                    nextValue = i;
+                    matched = true;
+                    break;
+                }
+            }
+            if (!matched) {
+                mqttSetLastError("Enum setting command did not match any option label.");
+                return;
+            }
+        } else if (setting.type == SETTING_INT) {
+            char* endPtr = nullptr;
+            const long parsed = strtol(payloadText.c_str(), &endPtr, 10);
+            if (!endPtr || endPtr == payloadText.c_str() || *endPtr != '\0' ||
+                parsed < -32768L || parsed > 32767L) {
+                mqttSetLastError("Integer setting commands must use a valid whole number.");
+                return;
+            }
+            nextValue = (int16_t)parsed;
+        } else {
+            mqttSetLastError("This setting type is not supported over MQTT.");
+            return;
+        }
+
+        if (!handleNodeSettingCommand(nodeId, settingId, nextValue, &err)) {
+            mqttSetLastError(err);
+        } else {
+            Serial.printf("[MQTT] Routed setting command -> node #%u setting %u = %d\n",
+                          nodeId, settingId, nextValue);
+        }
+        return;
+    }
+
+    if (commandPath == "cmd/reboot") {
+        if (!payloadText.equalsIgnoreCase("PRESS")) {
+            mqttSetLastError("Reboot commands must use PRESS.");
+            return;
+        }
+        if (!handleNodeRebootCommand(nodeId, &err)) {
+            mqttSetLastError(err);
+        } else {
+            Serial.printf("[MQTT] Routed reboot command -> node #%u\n", nodeId);
+        }
+        return;
+    }
+
+    if (commandPath == "cmd/unpair") {
+        if (!payloadText.equalsIgnoreCase("PRESS")) {
+            mqttSetLastError("Unpair commands must use PRESS.");
+            return;
+        }
+        if (!handleNodeUnpairCommand(nodeId, &err)) {
+            mqttSetLastError(err);
+        } else {
+            Serial.printf("[MQTT] Routed unpair command -> node #%u\n", nodeId);
+        }
+        return;
+    }
+}
+
+static void processMqtt(unsigned long now) {
+    const bool shouldBeConnected = mqttShouldBeConnected();
+    if (!shouldBeConnected) {
+        if (mqttLastShouldBeConnected || mqttConnected) {
+            Serial.printf("[MQTT] Disconnecting/idle: %s\n", mqttUnavailableReason().c_str());
+        }
+        if (mqttConnected) {
+            mqttPublishGatewayAvailability(false);
+            mqttClient.disconnect();
+            mqttConnected = false;
+            mqttMetaDirty = true;
+        }
+        mqttLastShouldBeConnected = false;
+        return;
+    }
+    if (!mqttLastShouldBeConnected) {
+        Serial.printf("[MQTT] Router mode is active. Broker=%s:%u base=\"%s\"\n",
+                      mqttHost, mqttPort, mqttBaseTopic);
+    }
+    mqttLastShouldBeConnected = true;
+
+    mqttClient.loop();
+    mqttConnected = mqttClient.connected();
+
+    if (!mqttConnected) {
+        if ((now - lastMqttReconnectAttemptAt) < MQTT_RECONNECT_MS) return;
+        lastMqttReconnectAttemptAt = now;
+
+        mqttClient.setServer(mqttHost, mqttPort);
+        mqttClient.setCallback(mqttOnMessage);
+        mqttClient.setBufferSize(MQTT_BUFFER_SIZE);
+        mqttClient.setKeepAlive(MQTT_KEEPALIVE_SEC);
+        mqttClient.setSocketTimeout(MQTT_SOCKET_TIMEOUT_SEC);
+
+        const String clientId = String("esp32mesh-gw-") + mqttGatewayTopicId;
+        Serial.printf("[MQTT] Connecting to %s:%u as %s...\n",
+                      mqttHost, mqttPort, clientId.c_str());
+        const bool ok = mqttClient.connect(
+            clientId.c_str(),
+            mqttUsername,
+            mqttPassword,
+            mqttGatewayAvailabilityTopic().c_str(),
+            0,
+            true,
+            "offline");
+
+        if (!ok) {
+            mqttConnected = false;
+            mqttSetLastError(mqttConnectStateString(mqttClient.state()));
+            Serial.printf("[MQTT] Connect failed (%d): %s\n",
+                          mqttClient.state(),
+                          mqttConnectStateString(mqttClient.state()).c_str());
+            return;
+        }
+
+        mqttConnected = true;
+        mqttClearLastError();
+        mqttSubscribeTopics();
+        mqttMarkAllDirty();
+        mqttPublishGatewayAvailability(true);
+        Serial.printf("[MQTT] Connected to broker. Root=\"%s\"\n", mqttGatewayRootTopic().c_str());
+    }
+
+    mqttPublishPending(now);
+}
+
+static void mqttPublishPending(unsigned long now) {
+    if (!mqttConnected) return;
+
+    if (mqttRepublishAllPending) {
+        mqttPublishAllDiscoveryAndState();
+        return;
+    }
+
+    if (mqttMetaDirty || lastMqttMetaPublishAt == 0 || (now - lastMqttMetaPublishAt) >= WS_META_MS) {
+        mqttPublishGatewayMetaState();
+    }
+
+    if (mqttGatewayControlDiscoveryDirty) mqttPublishGatewayControlDiscovery();
+    if (mqttBuiltinDiscoveryDirty) mqttPublishBuiltinDiscovery();
+    if (mqttBuiltinStateDirty) mqttPublishBuiltinState();
+
+    for (uint8_t i = 1; i < nextId; i++) {
+        const uint32_t bit = mqttNodeBit(i);
+        if ((mqttNodeDiscoveryDirtyMask & bit) != 0) {
+            mqttPublishNodeDiscovery(i);
+            mqttNodeDiscoveryDirtyMask &= ~bit;
+        }
+        if ((mqttNodeSummaryDirtyMask & bit) != 0) {
+            mqttPublishNodeSummary(i);
+            mqttNodeSummaryDirtyMask &= ~bit;
+        }
+        if ((mqttNodeSensorStateDirtyMask & bit) != 0) {
+            mqttClearHeldNodeSensorStates(i);
+            mqttPublishNodeSensorStates(i);
+            mqttNodeSensorStateDirtyMask &= ~bit;
+        }
+        if ((mqttNodeActuatorStateDirtyMask & bit) != 0) {
+            mqttPublishNodeActuatorStates(i);
+            mqttNodeActuatorStateDirtyMask &= ~bit;
+        }
+        if ((mqttNodeSettingsStateDirtyMask & bit) != 0) {
+            mqttPublishNodeSettingsStates(i);
+            mqttNodeSettingsStateDirtyMask &= ~bit;
+        }
+    }
+
+    for (uint8_t i = 0; i < MESH_MAX_NODES; i++) {
+        if (!mqttRemovedNodes[i].active) continue;
+        mqttClearNodeDiscoveryAndState(mqttRemovedNodes[i]);
+        mqttRemovedNodes[i].active = false;
+    }
 }
 
 // *****************************************************************************
@@ -4668,7 +6244,7 @@ static void processRxQueue() {
                     }
                 }
 
-                if (xSemaphoreTake(nodesMutex, pdMS_TO_TICKS(50)) == pdTRUE) {
+                if (xSemaphoreTake(nodesMutex, pdMS_TO_TICKS(100)) == pdTRUE) {
                     memcpy(nodes[assignId].mac, pkt.mac, 6);
                     nodes[assignId].type     = hdr->node_type;
                     nodes[assignId].capabilities = defaultCapabilitiesForType(hdr->node_type);
@@ -4740,6 +6316,11 @@ static void processRxQueue() {
                 // Persist every registration so firmware/version/hardware metadata
                 // survives gateway restarts and older saved records get upgraded.
                 saveNodesToNvs();
+                mqttMarkNodeDiscoveryDirty(assignId);
+                mqttMarkNodeSummaryDirty(assignId);
+                mqttMarkNodeSensorStateDirty(assignId);
+                mqttMarkNodeActuatorStateDirty(assignId);
+                mqttMarkNodeSettingsStateDirty(assignId);
 
                 if (nodeOtaJob.active &&
                     nodeOtaJob.nodeId == assignId) {
@@ -4794,7 +6375,7 @@ static void processRxQueue() {
                     break;
                 }
 
-                if (xSemaphoreTake(nodesMutex, pdMS_TO_TICKS(50)) == pdTRUE) {
+                if (xSemaphoreTake(nodesMutex, pdMS_TO_TICKS(100)) == pdTRUE) {
                     nodes[id].uptime   = sd->uptime_sec;
                     nodes[id].lastSeen = millis();
                     nodes[id].online   = true;
@@ -4809,11 +6390,14 @@ static void processRxQueue() {
                                 break;
                             }
                         }
+                        mqttReleaseNodeSensorState(id, sd->readings[k].id);
                     }
                     xSemaphoreGive(nodesMutex);
                 }
                 Serial.printf("[SENS] Node #%d  uptime=%us  readings=%u\n",
                               id, sd->uptime_sec, cnt);
+                mqttMarkNodeSummaryDirty(id);
+                mqttMarkNodeSensorStateDirty(id);
                 break;
             }
 
@@ -4847,7 +6431,7 @@ static void processRxQueue() {
                     }
                 }
 
-                if (xSemaphoreTake(nodesMutex, pdMS_TO_TICKS(50)) == pdTRUE) {
+                if (xSemaphoreTake(nodesMutex, pdMS_TO_TICKS(100)) == pdTRUE) {
                     if (nodes[id].actuatorMask != mask) {
                         nodes[id].actuatorMask = mask;
                         markNodeRegistryDirty();
@@ -4858,6 +6442,8 @@ static void processRxQueue() {
                 }
 
                 wsBroadcast(buildNodesJson());
+                mqttMarkNodeSummaryDirty(id);
+                mqttMarkNodeActuatorStateDirty(id);
 
                 Serial.printf("[MESH] Node #%d actuator mask: 0x%02X\n", id, mask);
 
@@ -4876,7 +6462,7 @@ static void processRxQueue() {
                 const size_t expectedLen = sizeof(MeshHeader) + 1 + count * sizeof(ActuatorDef);
                 if ((size_t)pkt.len < expectedLen) break;
 
-                if (xSemaphoreTake(nodesMutex, pdMS_TO_TICKS(50)) == pdTRUE) {
+                if (xSemaphoreTake(nodesMutex, pdMS_TO_TICKS(100)) == pdTRUE) {
                     nodes[id].actuatorCount = count;
                     for (uint8_t i = 0; i < count; i++) {
                         nodes[id].actuatorSchema[i] = as->actuators[i];
@@ -4889,6 +6475,9 @@ static void processRxQueue() {
                 Serial.printf("[ACT]  Node #%d: %u actuator(s) registered\n", id, count);
                 wsBroadcast(buildNodeActuatorSchemaJson(id));
                 wsBroadcast(buildNodesJson());
+                mqttMarkNodeDiscoveryDirty(id);
+                mqttMarkNodeSummaryDirty(id);
+                mqttMarkNodeActuatorStateDirty(id);
                 break;
             }
 
@@ -4904,7 +6493,7 @@ static void processRxQueue() {
                 const size_t expectedLen = sizeof(MeshHeader) + 1 + count * sizeof(RfidSlotDef);
                 if ((size_t)pkt.len < expectedLen) break;
 
-                if (xSemaphoreTake(nodesMutex, pdMS_TO_TICKS(50)) == pdTRUE) {
+                if (xSemaphoreTake(nodesMutex, pdMS_TO_TICKS(100)) == pdTRUE) {
                     memset(nodes[id].rfidSlots, 0, sizeof(nodes[id].rfidSlots));
                     for (uint8_t i = 0; i < count; i++) {
                         const RfidSlotDef& slot = rd->slots[i];
@@ -4924,6 +6513,7 @@ static void processRxQueue() {
                 Serial.printf("[RFID]  Node #%d: RFID config updated (%u slot payload entries)\n", id, count);
                 wsBroadcast(buildNodeRfidConfigJson(id));
                 wsBroadcast(buildNodesJson());
+                mqttMarkNodeSummaryDirty(id);
                 break;
             }
 
@@ -4935,7 +6525,7 @@ static void processRxQueue() {
                 auto* ev = (MsgRfidScanEvent*)pkt.data;
                 const uint8_t uidLen = (ev->uid_len <= RFID_UID_MAX_LEN) ? ev->uid_len : 0;
 
-                if (xSemaphoreTake(nodesMutex, pdMS_TO_TICKS(50)) == pdTRUE) {
+                if (xSemaphoreTake(nodesMutex, pdMS_TO_TICKS(100)) == pdTRUE) {
                     nodes[id].lastRfidUidLen = uidLen;
                     memset(nodes[id].lastRfidUid, 0, sizeof(nodes[id].lastRfidUid));
                     if (uidLen > 0) memcpy(nodes[id].lastRfidUid, ev->uid, uidLen);
@@ -4959,6 +6549,8 @@ static void processRxQueue() {
                               ev->applied_relay_mask);
                 wsBroadcast(buildRfidScanEventJson(id));
                 wsBroadcast(buildNodesJson());
+                mqttMarkNodeSummaryDirty(id);
+                mqttMarkNodeActuatorStateDirty(id);
                 break;
             }
 
@@ -4988,12 +6580,13 @@ static void processRxQueue() {
                 uint8_t id = hdr->node_id;
                 if (id == 0 || id >= nextId) break;
 
-                if (xSemaphoreTake(nodesMutex, pdMS_TO_TICKS(50)) == pdTRUE) {
+                if (xSemaphoreTake(nodesMutex, pdMS_TO_TICKS(100)) == pdTRUE) {
                     nodes[id].lastSeen = millis();
                     nodes[id].online   = true;
                     nodes[id].uptime   = hb->uptime_sec;
                     xSemaphoreGive(nodesMutex);
                 }
+                mqttMarkNodeSummaryDirty(id);
                 break;
             }
 
@@ -5026,10 +6619,12 @@ static void processRxQueue() {
                     break;
                 }
 
-                if (xSemaphoreTake(nodesMutex, pdMS_TO_TICKS(50)) == pdTRUE) {
+                if (xSemaphoreTake(nodesMutex, pdMS_TO_TICKS(100)) == pdTRUE) {
                     nodes[id].settingsCount = cnt;
                     for (uint8_t i = 0; i < cnt; i++)
                         nodes[id].settings[i] = sd->settings[i];
+                    nodes[id].lastSeen = millis();
+                    nodes[id].online = true;
                     xSemaphoreGive(nodesMutex);
                 }
 
@@ -5044,6 +6639,9 @@ static void processRxQueue() {
                 wsBroadcast(buildNodeSettingsJson(id));
                 // Also push nodes update so settings_ready flag refreshes in the table
                 wsBroadcast(buildNodesJson());
+                mqttMarkNodeDiscoveryDirty(id);
+                mqttMarkNodeSummaryDirty(id);
+                mqttMarkNodeSettingsStateDirty(id);
                 break;
             }
 
@@ -5058,6 +6656,8 @@ static void processRxQueue() {
                 auto* ss    = (MsgSensorSchema*)pkt.data;
                 uint8_t cnt = ss->count;
                 if (cnt > NODE_MAX_SENSORS) cnt = NODE_MAX_SENSORS;
+                SensorDef oldSensors[NODE_MAX_SENSORS] = {};
+                uint8_t oldCount = 0;
 
                 // Validate packet is large enough for the declared schema entries
                 size_t expectedLen = sizeof(MeshHeader) + 1 + cnt * sizeof(SensorDef);
@@ -5067,10 +6667,14 @@ static void processRxQueue() {
                     break;
                 }
 
-                if (xSemaphoreTake(nodesMutex, pdMS_TO_TICKS(50)) == pdTRUE) {
+                if (xSemaphoreTake(nodesMutex, pdMS_TO_TICKS(100)) == pdTRUE) {
+                    oldCount = nodes[id].sensorCount;
+                    memcpy(oldSensors, nodes[id].sensorSchema, sizeof(oldSensors));
                     nodes[id].sensorCount = cnt;
                     for (uint8_t i = 0; i < cnt; i++)
                         nodes[id].sensorSchema[i] = ss->sensors[i];
+                    nodes[id].lastSeen = millis();
+                    nodes[id].online = true;
                     xSemaphoreGive(nodesMutex);
                 }
 
@@ -5090,6 +6694,41 @@ static void processRxQueue() {
                 wsBroadcast(buildNodeSensorSchemaJson(id));
                 // Also push nodes update so sensor_schema_ready flag refreshes
                 wsBroadcast(buildNodesJson());
+
+                NodeRecord nodeSnapshot{};
+                if (mqttCopyNodeSnapshot(id, &nodeSnapshot)) {
+                    char nodeMacId[13] = {0};
+                    mqttMacToTopicId(nodeSnapshot.mac, nodeMacId, sizeof(nodeMacId));
+
+                    for (uint8_t oldIdx = 0; oldIdx < oldCount; oldIdx++) {
+                        const SensorDef& oldSensor = oldSensors[oldIdx];
+                        bool foundInNewSchema = false;
+                        for (uint8_t newIdx = 0; newIdx < cnt; newIdx++) {
+                            const SensorDef& newSensor = ss->sensors[newIdx];
+                            if (newSensor.id != oldSensor.id) continue;
+                            foundInNewSchema = true;
+                            if (!mqttSensorDefsEquivalent(oldSensor, newSensor)) {
+                                mqttHoldNodeSensorState(id, newSensor.id);
+                                if (mqttConnected) {
+                                    mqttClearRetained(mqttNodeSensorStateTopic(nodeMacId, newSensor.id));
+                                }
+                                Serial.printf("[MQTT] Node #%u sensor %u schema changed. Holding retained state until the next fresh reading.\n",
+                                              id, newSensor.id);
+                            }
+                            break;
+                        }
+
+                        if (!foundInNewSchema && mqttConnected) {
+                            mqttClearRetained(mqttDiscoveryTopic(
+                                "sensor",
+                                String(mqttGatewayTopicId) + "_" + nodeMacId + "_sensor_" + String(oldSensor.id)));
+                            mqttClearRetained(mqttNodeSensorStateTopic(nodeMacId, oldSensor.id));
+                        }
+                    }
+                }
+
+                mqttMarkNodeDiscoveryDirty(id);
+                mqttMarkNodeSummaryDirty(id);
                 break;
             }
 
@@ -5181,19 +6820,8 @@ static void onWsEvent(AsyncWebSocket*, AsyncWebSocketClient* client,
                 uint8_t nodeId     = doc["node_id"]     | 0;
                 uint8_t actuatorId = doc["actuator_id"] | 0;
                 uint8_t state      = doc["state"]       | 0;
-                bool ok = sendActuatorCmd(nodeId, actuatorId, state);
-                if (ok) {
-                    if (xSemaphoreTake(nodesMutex, pdMS_TO_TICKS(50)) == pdTRUE) {
-                        const uint8_t prevMask = nodes[nodeId].actuatorMask;
-                        if (state) nodes[nodeId].actuatorMask |= (1u << actuatorId);
-                        else        nodes[nodeId].actuatorMask &= ~(1u << actuatorId);
-                        if (nodes[nodeId].actuatorMask != prevMask) {
-                            markNodeRegistryDirty();
-                        }
-                        xSemaphoreGive(nodesMutex);
-                    }
-                    wsBroadcast(buildNodesJson());
-                }
+                String err;
+                handleNodeActuatorCommand(nodeId, actuatorId, state, &err);
 
             // Pair command (user clicked "Connect")
             } else if (strcmp(msgType, "pair_cmd") == 0) {
@@ -5245,6 +6873,8 @@ static void onWsEvent(AsyncWebSocket*, AsyncWebSocketClient* client,
                     }
                     Serial.printf("[MESH] Node #%d renamed to \"%s\"\n", nodeId, newName);
                     wsBroadcast(buildNodesJson());
+                    mqttMarkNodeDiscoveryDirty(nodeId);
+                    mqttMarkNodeSummaryDirty(nodeId);
                 }
 
             }
@@ -5264,36 +6894,18 @@ static void onWsEvent(AsyncWebSocket*, AsyncWebSocketClient* client,
             // Unpair command (user clicked "Disconnect")
             else if (strcmp(msgType, "unpair_cmd") == 0) {
                 uint8_t nodeId = doc["node_id"] | 0;
-                if (nodeId == 0 || nodeId >= nextId) break;
-                if (nodes[nodeId].mac[0] == 0) break;
-
-                sendUnpairCmd(nodes[nodeId].mac, nodeId, nodes[nodeId].type);
-                delay(80);  // brief wait for send before removing peer
-                disconnectNode(nodeId);
+                String err;
+                handleNodeUnpairCommand(nodeId, &err);
             }
             // Reboot a specific node (from dashboard command)
             else if (strcmp(msgType, "reboot_node") == 0) {
                 uint8_t nodeId = doc["node_id"] | 0;
-                if (nodeId == 0 || nodeId >= nextId) break;
-                if (nodes[nodeId].mac[0] == 0) break;
-                if (!nodes[nodeId].online) break;  // pointless to send if offline
-
-                sendRebootCmd(nodes[nodeId].mac, nodeId);
-                Serial.printf("[MESH] Reboot command sent to node #%d\n", nodeId);
-                if (gwLedEnabled) {
-                    flashGwLed(gwLed.Color(255, 165, 0), 200);  // orange pulse
-                }
-                else {
-                    setGwLed(0); // turn off immediately
-                }
+                String err;
+                handleNodeRebootCommand(nodeId, &err);
 
             // Reboot the gateway itself
             } else if (strcmp(msgType, "reboot_gw") == 0) {
-                Serial.println("[GW]  Reboot requested via dashboard.");
-                ws.textAll("{\"type\":\"gw_rebooting\"}");  // notify all clients
-                ws.cleanupClients();
-                delay(150);  // allow WS frame to flush before restart
-                ESP.restart();
+                performGatewayReboot("dashboard");
 
             // Update AP SSID / password
             } else if (strcmp(msgType, "set_ap_config") == 0) {
@@ -5389,6 +7001,81 @@ static void onWsEvent(AsyncWebSocket*, AsyncWebSocketClient* client,
                             broadcastMetaIfClientsConnected();
                         }
                     }
+                }
+
+                String out;
+                serializeJson(ack, out);
+                client->text(out);
+
+            } else if (strcmp(msgType, "mqtt_config_set") == 0) {
+                JsonDocument ack;
+                ack["type"] = "mqtt_config_ack";
+
+                const bool enableRequested = doc["enabled"] | false;
+                const String host = String((const char*)(doc["host"] | ""));
+                const long portValue = doc["port"] | (long)MQTT_DEFAULT_PORT;
+                const String baseTopicRaw = String((const char*)(doc["base_topic"] | ""));
+                const String username = String((const char*)(doc["username"] | ""));
+                const String password = String((const char*)(doc["password"] | ""));
+                const bool passwordProvided = password.length() > 0;
+                const String trimmedBase = mqttTrimTopic(baseTopicRaw);
+
+                if (host.length() >= sizeof(mqttHost)) {
+                    ack["ok"] = false;
+                    ack["err"] = "Broker host must be 1-64 characters.";
+                } else if (!host.isEmpty() && !mqttIsPrintableAscii(host)) {
+                    ack["ok"] = false;
+                    ack["err"] = "Broker host must use printable ASCII characters only.";
+                } else if ((size_t)trimmedBase.length() >= sizeof(mqttBaseTopic)) {
+                    ack["ok"] = false;
+                    ack["err"] = "Base topic must be 1-96 characters.";
+                } else if (!trimmedBase.isEmpty() && !mqttIsPrintableAscii(trimmedBase)) {
+                    ack["ok"] = false;
+                    ack["err"] = "Base topic must use printable ASCII characters only.";
+                } else if (username.length() >= sizeof(mqttUsername)) {
+                    ack["ok"] = false;
+                    ack["err"] = "Username must be 1-64 characters.";
+                } else if (!username.isEmpty() && !mqttIsPrintableAscii(username, true)) {
+                    ack["ok"] = false;
+                    ack["err"] = "Username must use printable ASCII characters only.";
+                } else if (password.length() >= sizeof(mqttPassword)) {
+                    ack["ok"] = false;
+                    ack["err"] = "Password must be 1-64 characters.";
+                } else if (passwordProvided && !mqttIsPrintableAscii(password, true)) {
+                    ack["ok"] = false;
+                    ack["err"] = "Password must use printable ASCII characters only.";
+                } else if (portValue <= 0 || portValue > 65535) {
+                    ack["ok"] = false;
+                    ack["err"] = "Port must be between 1 and 65535.";
+                } else if (enableRequested && host.isEmpty()) {
+                    ack["ok"] = false;
+                    ack["err"] = "Broker host is required to enable MQTT.";
+                } else if (enableRequested && trimmedBase.isEmpty()) {
+                    ack["ok"] = false;
+                    ack["err"] = "Base topic is required to enable MQTT.";
+                } else if (enableRequested && username.isEmpty()) {
+                    ack["ok"] = false;
+                    ack["err"] = "Username is required to enable MQTT.";
+                } else if (enableRequested && !passwordProvided && !mqttHasPassword) {
+                    ack["ok"] = false;
+                    ack["err"] = "Password is required to enable MQTT.";
+                } else {
+                    saveMqttConfig(enableRequested,
+                                   host,
+                                   (uint16_t)portValue,
+                                   trimmedBase,
+                                   username,
+                                   password,
+                                   passwordProvided);
+                    if (mqttConnected) {
+                        mqttPublishGatewayAvailability(false);
+                        mqttClient.disconnect();
+                        mqttConnected = false;
+                    }
+                    lastMqttReconnectAttemptAt = 0;
+                    mqttMarkMetaDirty();
+                    ack["ok"] = true;
+                    broadcastMetaIfClientsConnected();
                 }
 
                 String out;
@@ -5501,25 +7188,8 @@ static void onWsEvent(AsyncWebSocket*, AsyncWebSocketClient* client,
                 uint8_t nodeId    = doc["node_id"]    | 0;
                 uint8_t settingId = doc["setting_id"] | 0;
                 int16_t value     = (int16_t)(doc["value"]   | 0);
-
-                if (nodeId == 0 || nodeId >= nextId) break;
-                if (nodes[nodeId].mac[0] == 0) break;
-                if (!nodes[nodeId].online) break;
-
-                // Optimistically update our cached value so the UI snaps immediately
-                if (xSemaphoreTake(nodesMutex, pdMS_TO_TICKS(50)) == pdTRUE) {
-                    for (uint8_t i = 0; i < nodes[nodeId].settingsCount; i++) {
-                        if (nodes[nodeId].settings[i].id == settingId) {
-                            nodes[nodeId].settings[i].current = value;
-                            break;
-                        }
-                    }
-                    xSemaphoreGive(nodesMutex);
-                }
-                sendSettingsSet(nodes[nodeId].mac, nodeId, nodes[nodeId].type,
-                                settingId, value);
-                Serial.printf("[CFG]  Node #%d setting %d -> %d\n", nodeId, settingId, value);
-                wsBroadcast(buildNodeSettingsJson(nodeId));
+                String err;
+                handleNodeSettingCommand(nodeId, settingId, value, &err);
 
             } else if (strcmp(msgType, "node_rfid_config_set") == 0) {
                 uint8_t nodeId = doc["node_id"] | 0;
@@ -5605,6 +7275,8 @@ static void onWsEvent(AsyncWebSocket*, AsyncWebSocketClient* client,
 
                 saveRelayLabelsForNode(nodeId);
                 wsBroadcast(buildNodesJson());
+                mqttMarkNodeDiscoveryDirty(nodeId);
+                mqttMarkNodeSummaryDirty(nodeId);
                 client->text(buildRelayLabelsAckJson(nodeId, true));
 
             // Factory reset: wipe ALL config and paired nodes, then reboot
@@ -6096,6 +7768,8 @@ void setup() {
     // Restore paired nodes from NVS - must happen after ESP-NOW init so
     // addPeer() calls inside loadNodesFromNvs() succeed.
     loadNodesFromNvs();
+    mqttRefreshGatewayTopicId();
+    loadMqttConfig();
 
     initGatewayBuiltinSensor();
     sampleGatewayBuiltinSensor();
@@ -6132,12 +7806,15 @@ void loop() {
 
     processGatewayFactoryResetButton(now);
     processRxQueue();
+    now = millis();
     processCoprocSerial();
     processCoprocHeartbeat(now);
     processNodeOtaJob(now);
     processCoprocOtaJob(now);
     processGatewayNetworkState(now);
+    refreshTimedOutNodes(now);
     sampleGatewayBuiltinSensorIfDue(now);
+    processMqtt(now);
     updateGwLed();
 
     if (otaRebootPending && now >= otaRebootAtMs) {

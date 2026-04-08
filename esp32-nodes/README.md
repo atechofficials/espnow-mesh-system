@@ -26,7 +26,7 @@ Currently implemented:
 
 | Node | Actuator | Firmware |
 |------|---------|----------|
-| ESP32 Relay Node v1 | 4 relays + 4 touch inputs | v1.3.0 |
+| ESP32 Relay Node v1 | 4 relays + 4 touch inputs | v1.3.1 |
 
 ### Hybrid Nodes (`hybrid_nodes/`)
 
@@ -36,7 +36,7 @@ Currently implemented:
 
 | Node | Capabilities | Firmware |
 |------|--------------|----------|
-| ESP32 Hybrid Relay Node v1 | 4 relays + 4 touch inputs + RC522 RFID card actions | v0.2.0 |
+| ESP32 Hybrid Relay Node v1 | 4 relays + 4 touch inputs + RC522 RFID card actions | v0.3.2 |
 
 ---
 
@@ -90,6 +90,18 @@ The newer release line also:
 - moves user-tunable firmware definitions into `user_config.h` for cleaner scaling across gateway and node projects
 - applies a board-gated `WiFi.setTxPower(WIFI_POWER_8_5dBm)` limit only on ESP32-C3 Super Mini node builds, and only after Wi-Fi startup has completed
 - includes a dedicated ESP32-C3 Super Mini WiFi characterization report at `../docs/esp32_c3_supermini_wifi_tests/README.md`
+- keeps actuator and hybrid-node heartbeat/liveness handling more stable so online status, settings updates, and control round-trips feel snappier with the gateway
+
+## MQTT and Home Assistant Through the Gateway
+
+Nodes do not talk to MQTT directly. The **gateway** is the MQTT bridge.
+
+When MQTT is enabled on the gateway:
+
+- supported sensor, actuator, and hybrid nodes are published into Home Assistant through MQTT auto-discovery
+- node state stays synchronized between Home Assistant and the gateway dashboard
+- actuator and hybrid relay label settings are intentionally not exposed in Home Assistant, because Home Assistant already lets users rename switches/buttons locally
+- sensor temperature values are published in **degrees Celsius** by the gateway, and Home Assistant handles Celsius/Fahrenheit conversion itself
 
 ---
 

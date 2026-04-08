@@ -1,4 +1,4 @@
-<!-- ESP32 Mesh Gateway Web Interface v4.1.0 -->
+<!-- ESP32 Mesh Gateway Web Interface v4.2.0 -->
 <!DOCTYPE html>
 <html lang="en" data-theme="dark">
 <head>
@@ -576,38 +576,77 @@
               </div>
             </div>
 
-            <div class="settings-card">
-              <div class="settings-card-hdr">
-                MQTT Integration
-                <span class="soon-badge">COMING SOON</span>
+            <div class="settings-card" id="mqtt-settings-card">
+              <div class="settings-card-hdr">MQTT Integration</div>
+
+              <p class="settings-subsec-desc">
+                Bridge the gateway, paired nodes, and the optional gateway built-in sensor to a
+                Mosquitto-compatible MQTT broker. Home Assistant MQTT discovery is published automatically.
+              </p>
+
+              <div class="ota-meta-grid" style="margin-bottom:1rem">
+                <div class="ota-meta-item">
+                  <span class="ota-meta-label">Connection Status</span>
+                  <span class="ota-meta-value" id="mqtt-status">Disabled</span>
+                </div>
+                <div class="ota-meta-item">
+                  <span class="ota-meta-label">Password</span>
+                  <span class="ota-meta-value" id="mqtt-password-status">Not stored</span>
+                </div>
+                <div class="ota-meta-item">
+                  <span class="ota-meta-label">Last Error</span>
+                  <span class="ota-meta-value" id="mqtt-last-error">—</span>
+                </div>
               </div>
-              <div class="setting-field">
-                <label>Broker Address</label>
-                <input type="text" class="setting-input" placeholder="192.168.1.100" disabled>
-              </div>
-              <div class="setting-row-2">
+
+              <div class="setting-row">
                 <div class="setting-field">
+                  <label>MQTT Bridge</label>
+                  <label class="ns-toggle">
+                    <input type="checkbox" id="mqtt-enabled-toggle">
+                    <span class="ns-toggle-track"></span>
+                    <span class="ns-toggle-thumb"></span>
+                  </label>
+                </div>
+              </div>
+
+              <div class="setting-field" style="margin-top:.9rem">
+                <label>Broker Address</label>
+                <input type="text" class="setting-input" id="mqtt-host-input" placeholder="192.168.1.100">
+              </div>
+
+              <div class="setting-row-2" style="margin-top:.9rem">
+                <div class="setting-field" style="max-width:180px">
                   <label>Port</label>
-                  <input type="number" class="setting-input" placeholder="1883" disabled>
+                  <input type="number" class="setting-input" id="mqtt-port-input" placeholder="1883" min="1" max="65535" step="1" inputmode="numeric">
                 </div>
                 <div class="setting-field">
                   <label>Base Topic</label>
-                  <input type="text" class="setting-input" placeholder="esp32/mesh" disabled>
+                  <input type="text" class="setting-input" id="mqtt-base-topic-input" placeholder="esp32/mesh">
                 </div>
               </div>
-              <div class="setting-row-2">
+
+              <div class="setting-row-2" style="margin-top:.5rem">
                 <div class="setting-field">
                   <label>Username</label>
-                  <input type="text" class="setting-input" placeholder="optional" disabled>
+                  <input type="text" class="setting-input" id="mqtt-user-input" placeholder="homeassistant">
                 </div>
                 <div class="setting-field">
                   <label>Password</label>
-                  <input type="password" class="setting-input" placeholder="optional" disabled>
+                  <input type="password" class="setting-input" id="mqtt-pass-input" placeholder="Leave blank to keep saved password">
                 </div>
               </div>
-              <div class="setting-warn-box">
+
+              <div class="setting-warn-box" style="margin-top:.9rem">
                 <span class="icon setting-warn-box-icon"></span>
-                <span>MQTT support will be added in a future firmware update.</span>
+                <span>MQTT is active only while the gateway is connected to a router. Setup Portal and Offline Mode keep MQTT disconnected.</span>
+              </div>
+
+              <div class="setting-save-row" style="margin-top:.8rem">
+                <button class="settings-save-btn" id="save-mqtt-btn" type="button">
+                  Save MQTT Settings
+                </button>
+                <span class="setting-save-note" id="mqtt-save-note"></span>
               </div>
             </div>
 

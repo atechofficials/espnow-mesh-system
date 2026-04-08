@@ -1,19 +1,19 @@
 /**
- * ESP32 Mesh Gateway Web Interface Client v4.7.0
+ * ESP32 Mesh Gateway Web Interface Client v4.8.0
  *
  * WS Inbound:  { type:"meta"|"update"|"discovered"|"pair_timeout"|"pair_capacity_full"|"ap_config_ack"|
  *                     "offline_ap_config_ack"|
  *                     "gw_portal_starting"|"gw_factory_reset"|"gw_rebooting"|
  *                     "gw_network_notice"|
  *                     "auth_required"|"auth_ok"|"auth_fail"|"session_expired"|
- *                     "coproc_ota_state"|
+ *                     "coproc_ota_state"|"mqtt_config_ack"|
  *                     "web_creds_ack"|"gw_builtin_sensor_settings_ack"|"node_settings"|"node_sensor_schema"|
  *                     "node_actuator_schema"|"node_rfid_config"|
  *                     "node_rfid_config_ack"|"rfid_scan_event"|
  *                     "relay_labels_ack" }
  * WS Outbound: { type:"auth"|"actuator_cmd"|"pair_cmd"|"unpair_cmd"|"rename_node"|
  *                     "reboot_gw"|"reboot_node"|"set_ap_config"|"set_offline_ap_config"|"set_web_credentials"|
- *                     "start_wifi_portal"|"factory_reset"|"gw_builtin_sensor_settings_set"|"node_settings_get"|
+ *                     "start_wifi_portal"|"factory_reset"|"gw_builtin_sensor_settings_set"|"mqtt_config_set"|"node_settings_get"|
  *                     "node_settings_set"|"node_sensor_schema_get"|
  *                     "node_actuator_schema_get"|"node_rfid_config_get"|
  *                     "node_rfid_config_set"|"relay_labels_set"|"ping" }
@@ -97,6 +97,18 @@ const $gwBuiltinAltitudeValue = $("gw-builtin-altitude-value");
 const $gwBuiltinAltitudeUnit = $("gw-builtin-altitude-unit");
 const $gwBuiltinSensorSaveBtn = $("gw-builtin-sensor-save-btn");
 const $gwBuiltinSensorSaveNote = $("gw-builtin-sensor-save-note");
+const $mqttSettingsCard = $("mqtt-settings-card");
+const $mqttStatus = $("mqtt-status");
+const $mqttPasswordStatus = $("mqtt-password-status");
+const $mqttLastError = $("mqtt-last-error");
+const $mqttEnabledToggle = $("mqtt-enabled-toggle");
+const $mqttHostInput = $("mqtt-host-input");
+const $mqttPortInput = $("mqtt-port-input");
+const $mqttBaseTopicInput = $("mqtt-base-topic-input");
+const $mqttUserInput = $("mqtt-user-input");
+const $mqttPassInput = $("mqtt-pass-input");
+const $mqttSaveBtn = $("save-mqtt-btn");
+const $mqttSaveNote = $("mqtt-save-note");
 const $gwOtaTarget = $("gw-ota-target");
 const $gwOtaFileInput = $("gw-ota-file");
 const $gwOtaBtn = $("gw-ota-btn");
@@ -159,6 +171,26 @@ let gatewayBuiltinSensorDraft = {
   tempUnit: "C",
   altitudeValueText: "",
   altitudeUnit: "m"
+};
+let gatewayMqtt = {
+  enabled: false,
+  connected: false,
+  host: "",
+  port: 1883,
+  baseTopic: "",
+  username: "",
+  hasPassword: false,
+  lastError: ""
+};
+let gatewayMqttDraft = {
+  dirty: false,
+  saving: false,
+  enabled: false,
+  host: "",
+  portText: "1883",
+  baseTopic: "",
+  username: "",
+  password: ""
 };
 const COPROC_BUSY_MSG = "Coprocessor Busy. Please try after some time.";
 let coprocOnline = false;
@@ -617,6 +649,26 @@ function connect() {
         }
         if ($gwBuiltinSensorSaveBtn) $gwBuiltinSensorSaveBtn.disabled = false;
         break;
+      case "mqtt_config_ack":
+        if (msg.ok) {
+          gatewayMqtt.enabled = gatewayMqttDraft.enabled;
+          gatewayMqtt.host = gatewayMqttDraft.host;
+          gatewayMqtt.port = Number(gatewayMqttDraft.portText || gatewayMqtt.port || 1883);
+          gatewayMqtt.baseTopic = gatewayMqttDraft.baseTopic;
+          gatewayMqtt.username = gatewayMqttDraft.username;
+          if (gatewayMqttDraft.password) gatewayMqtt.hasPassword = true;
+          gatewayMqttDraft.password = "";
+          syncGatewayMqttDraftFromMeta(true);
+          setMqttSaveNote("Saved. MQTT settings updated.", "ok");
+          showToast("MQTT settings saved.", "success");
+          renderMqttSettings();
+        } else {
+          gatewayMqttDraft.saving = false;
+          if ($mqttSaveBtn) $mqttSaveBtn.disabled = false;
+          setMqttSaveNote(msg.err || "Could not save MQTT settings.", "err");
+          showToast(msg.err || "Could not save MQTT settings.", "error");
+        }
+        break;
 
       case "node_settings":
         nodeSettings.set(msg.node_id, msg.settings || []);
@@ -759,6 +811,14 @@ function connect() {
             nsCurrentNodeId = reboundId;
           }
           else closeNodeSettings();
+        }
+
+        if (nsCurrentNodeId && $nsOverlay.style.display !== "none") {
+          const nextModalNode = nodes.get(nsCurrentNodeId);
+          if (prevModalNode?.online && nextModalNode && !nextModalNode.online) {
+            closeNodeSettings(false);
+            showToast(`${nextModalNode.name || `Node #${nsCurrentNodeId}`} went offline. Settings panel closed.`, "warn");
+          }
         }
 
         nextNodes.forEach(n => {
@@ -1095,6 +1155,123 @@ function saveGatewayBuiltinSensorSettings() {
   });
 }
 
+function getMqttStatusLabel() {
+  if (!gatewayMqtt.enabled) return "Disabled";
+  return gatewayMqtt.connected ? "Connected" : "Disconnected";
+}
+
+function setMqttSaveNote(msg, type = "") {
+  if (!$mqttSaveNote) return;
+  $mqttSaveNote.textContent = msg;
+  $mqttSaveNote.className = "setting-save-note" + (type ? " " + type : "");
+  if (msg) {
+    setTimeout(() => {
+      if ($mqttSaveNote.textContent === msg) $mqttSaveNote.textContent = "";
+    }, 5000);
+  }
+}
+
+function syncGatewayMqttDraftFromMeta(force = false) {
+  if (!force && gatewayMqttDraft.dirty) return;
+  gatewayMqttDraft.enabled = !!gatewayMqtt.enabled;
+  gatewayMqttDraft.host = gatewayMqtt.host || "";
+  gatewayMqttDraft.portText = String(Number(gatewayMqtt.port || 1883));
+  gatewayMqttDraft.baseTopic = gatewayMqtt.baseTopic || "";
+  gatewayMqttDraft.username = gatewayMqtt.username || "";
+  gatewayMqttDraft.password = "";
+  gatewayMqttDraft.dirty = false;
+  gatewayMqttDraft.saving = false;
+}
+
+function markGatewayMqttDraftDirty() {
+  gatewayMqttDraft.dirty = true;
+}
+
+function renderMqttSettings() {
+  if (!$mqttSettingsCard) return;
+
+  const formEnabled = gatewayMqttDraft.dirty ? gatewayMqttDraft.enabled : gatewayMqtt.enabled;
+  const formHost = gatewayMqttDraft.dirty ? gatewayMqttDraft.host : gatewayMqtt.host;
+  const formPort = gatewayMqttDraft.dirty ? gatewayMqttDraft.portText : String(Number(gatewayMqtt.port || 1883));
+  const formBaseTopic = gatewayMqttDraft.dirty ? gatewayMqttDraft.baseTopic : gatewayMqtt.baseTopic;
+  const formUsername = gatewayMqttDraft.dirty ? gatewayMqttDraft.username : gatewayMqtt.username;
+
+  if ($mqttStatus) $mqttStatus.textContent = getMqttStatusLabel();
+  if ($mqttPasswordStatus) {
+    $mqttPasswordStatus.textContent = gatewayMqtt.hasPassword
+      ? "Stored on gateway"
+      : "Not stored";
+  }
+  if ($mqttLastError) {
+    $mqttLastError.textContent = gatewayMqtt.lastError || "\u2014";
+  }
+  if ($mqttEnabledToggle) $mqttEnabledToggle.checked = !!formEnabled;
+  if ($mqttHostInput) $mqttHostInput.value = formHost || "";
+  if ($mqttPortInput) $mqttPortInput.value = formPort || "1883";
+  if ($mqttBaseTopicInput) $mqttBaseTopicInput.value = formBaseTopic || "";
+  if ($mqttUserInput) $mqttUserInput.value = formUsername || "";
+  if ($mqttPassInput && document.activeElement !== $mqttPassInput) {
+    $mqttPassInput.value = gatewayMqttDraft.password || "";
+  }
+  if ($mqttSaveBtn) $mqttSaveBtn.disabled = !!gatewayMqttDraft.saving;
+}
+
+function saveMqttConfig() {
+  const enabled = !!$mqttEnabledToggle?.checked;
+  const host = ($mqttHostInput?.value || "").trim();
+  const portText = ($mqttPortInput?.value || "").trim();
+  const baseTopic = ($mqttBaseTopicInput?.value || "").trim().replace(/^\/+|\/+$/g, "");
+  const username = ($mqttUserInput?.value || "").trim();
+  const password = $mqttPassInput?.value || "";
+  const port = Number(portText || "1883");
+
+  if (!Number.isInteger(port) || port < 1 || port > 65535) {
+    setMqttSaveNote("\u2715 Port must be between 1 and 65535.", "err");
+    $mqttPortInput?.focus();
+    return;
+  }
+  if (enabled && !host) {
+    setMqttSaveNote("\u2715 Broker host is required to enable MQTT.", "err");
+    $mqttHostInput?.focus();
+    return;
+  }
+  if (enabled && !baseTopic) {
+    setMqttSaveNote("\u2715 Base topic is required to enable MQTT.", "err");
+    $mqttBaseTopicInput?.focus();
+    return;
+  }
+  if (enabled && !username) {
+    setMqttSaveNote("\u2715 Username is required to enable MQTT.", "err");
+    $mqttUserInput?.focus();
+    return;
+  }
+  if (enabled && !password && !gatewayMqtt.hasPassword) {
+    setMqttSaveNote("\u2715 Password is required to enable MQTT.", "err");
+    $mqttPassInput?.focus();
+    return;
+  }
+
+  gatewayMqttDraft.enabled = enabled;
+  gatewayMqttDraft.host = host;
+  gatewayMqttDraft.portText = String(port);
+  gatewayMqttDraft.baseTopic = baseTopic;
+  gatewayMqttDraft.username = username;
+  gatewayMqttDraft.password = password;
+  gatewayMqttDraft.dirty = true;
+  gatewayMqttDraft.saving = true;
+  if ($mqttSaveBtn) $mqttSaveBtn.disabled = true;
+  setMqttSaveNote("Saving...");
+  send({
+    type: "mqtt_config_set",
+    enabled,
+    host,
+    port,
+    base_topic: baseTopic,
+    username,
+    password
+  });
+}
+
 function applyMeta(m) {
   const previousSnapshot = loadGatewayNetworkSnapshot();
   gatewayAccessIp = m.access_ip || m.ip || "-";
@@ -1115,7 +1292,18 @@ function applyMeta(m) {
     pressureHpa: m.gw_builtin_sensor_pressure_hpa !== undefined ? Number(m.gw_builtin_sensor_pressure_hpa) : null,
     humidity: m.gw_builtin_sensor_humidity !== undefined ? Number(m.gw_builtin_sensor_humidity) : null
   };
+  gatewayMqtt = {
+    enabled: !!m.mqtt_enabled,
+    connected: !!m.mqtt_connected,
+    host: m.mqtt_host || "",
+    port: Number(m.mqtt_port || 1883),
+    baseTopic: m.mqtt_base_topic || "",
+    username: m.mqtt_username || "",
+    hasPassword: !!m.mqtt_has_password,
+    lastError: m.mqtt_last_error || ""
+  };
   syncGatewayBuiltinSensorDraftFromMeta(false);
+  syncGatewayMqttDraftFromMeta(false);
   $mIp.textContent  = m.ip      ?? "—";
   $mMac.textContent = m.mac     ?? "—";
   $mCh.textContent  = m.channel ?? "—";
@@ -1171,6 +1359,7 @@ function applyMeta(m) {
   refreshNodeOtaUi();
   renderGatewayBuiltinSensorCard();
   renderGatewayBuiltinSensorSettings();
+  renderMqttSettings();
   const currentSnapshot = {
     network_mode: gatewayNetworkMode,
     access_ip: gatewayAccessIp,
@@ -2757,8 +2946,8 @@ function openRelayAwareNodeSettings(nodeId) {
   }
 }
 
-function closeNodeSettings() {
-  if (nsCurrentNodeId) clearRelayLabelDraft(nsCurrentNodeId);
+function closeNodeSettings(clearDraft = true) {
+  if (clearDraft && nsCurrentNodeId) clearRelayLabelDraft(nsCurrentNodeId);
   $nsOverlay.style.display = "none";
   nsCurrentNodeId = 0;
 }
@@ -3356,6 +3545,52 @@ if ($gwBuiltinAltitudeUnit) {
     markGatewayBuiltinSensorDraftDirty();
     setGatewayBuiltinSensorSaveNote("");
   });
+}
+
+if ($mqttEnabledToggle) {
+  $mqttEnabledToggle.addEventListener("change", () => {
+    gatewayMqttDraft.enabled = !!$mqttEnabledToggle.checked;
+    markGatewayMqttDraftDirty();
+    setMqttSaveNote("");
+  });
+}
+if ($mqttHostInput) {
+  $mqttHostInput.addEventListener("input", () => {
+    gatewayMqttDraft.host = $mqttHostInput.value;
+    markGatewayMqttDraftDirty();
+    setMqttSaveNote("");
+  });
+}
+if ($mqttPortInput) {
+  $mqttPortInput.addEventListener("input", () => {
+    gatewayMqttDraft.portText = $mqttPortInput.value;
+    markGatewayMqttDraftDirty();
+    setMqttSaveNote("");
+  });
+}
+if ($mqttBaseTopicInput) {
+  $mqttBaseTopicInput.addEventListener("input", () => {
+    gatewayMqttDraft.baseTopic = $mqttBaseTopicInput.value;
+    markGatewayMqttDraftDirty();
+    setMqttSaveNote("");
+  });
+}
+if ($mqttUserInput) {
+  $mqttUserInput.addEventListener("input", () => {
+    gatewayMqttDraft.username = $mqttUserInput.value;
+    markGatewayMqttDraftDirty();
+    setMqttSaveNote("");
+  });
+}
+if ($mqttPassInput) {
+  $mqttPassInput.addEventListener("input", () => {
+    gatewayMqttDraft.password = $mqttPassInput.value;
+    markGatewayMqttDraftDirty();
+    setMqttSaveNote("");
+  });
+}
+if ($mqttSaveBtn) {
+  $mqttSaveBtn.addEventListener("click", saveMqttConfig);
 }
 
 // ── Timers ────────────────────────────────────────────────────────────────────

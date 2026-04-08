@@ -3,7 +3,7 @@
 /**
     * @file [user_config.h]
     * @brief Shared definitions for the ESP32 Sensor Node Firmware
-    * @version 1.0.0
+    * @version 1.0.1
     * @author Mrinal (@atechofficials)
  */
 
@@ -11,12 +11,22 @@
 #define NODE_NAME       "BMP280-Node"   // change per node (max 24 chars)
 
 // Dev Board Selection
-// #define FIREBEETLE_2_ESP32E
-#define ESP32C3_SUPER_MINI
+#if !defined(FIREBEETLE_2_ESP32E) && !defined(ESP32C3_SUPER_MINI)
+    #define FIREBEETLE_2_ESP32E
+#endif
+
+#if defined(FIREBEETLE_2_ESP32E) && defined(ESP32C3_SUPER_MINI)
+    #error "Select only one Sensor Node dev board."
+#endif
 
 // BMP280 Wiring Configuration
-// #define BMP280_I2C_CONFIG
-#define BMP280_SPI_CONFIG
+#if !defined(BMP280_I2C_CONFIG) && !defined(BMP280_SPI_CONFIG)
+    #define BMP280_SPI_CONFIG
+#endif
+
+#if defined(BMP280_I2C_CONFIG) && defined(BMP280_SPI_CONFIG)
+    #error "Select only one BMP280 wiring configuration."
+#endif
 
 #ifdef FIREBEETLE_2_ESP32E
     #define DHT_PIN         16    // DHT22 data pin

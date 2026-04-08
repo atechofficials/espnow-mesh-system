@@ -37,3 +37,4 @@ Current release-line notes:
 - user-facing node configuration now belongs in `user_config.h` instead of living entirely in `main.cpp`
 - ESP32-C3 Super Mini sensor-node builds can apply a board-specific `WiFi.setTxPower(WIFI_POWER_8_5dBm)` limit after Wi-Fi startup when RF stability needs it
 - the ESP32-C3 Super Mini antenna/LDO characterization data used to motivate that change is documented in [`../../docs/esp32_c3_supermini_wifi_tests/README.md`](../../docs/esp32_c3_supermini_wifi_tests/README.md)
+- when MQTT is enabled on the gateway, sensor-node temperatures are published to Home Assistant in **degrees Celsius only** and the gateway does not expose temperature-unit settings through MQTT discovery, because Home Assistant already performs its own C/F conversion

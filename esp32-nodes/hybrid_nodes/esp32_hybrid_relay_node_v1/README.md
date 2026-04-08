@@ -1,11 +1,11 @@
 # ESP32 Hybrid Relay Node v1
 
-Firmware version: **0.2.0**
+Firmware version: **0.3.2**
 Target board: `esp32dev`
 
 This is the first **Hybrid node** in the ESPNow Mesh System. It starts from the existing 4-relay actuator architecture, keeps the same touch-input and relay-control behavior, and adds an **RC522 RFID reader** so saved RFID cards can apply predefined relay scenes directly on the node.
 
-The firmware registers itself as `NODE_HYBRID`, reports Hybrid capabilities to the gateway, exposes actuator schema/state like a normal relay node, and also exchanges RFID-card configuration with the dashboard. Supported builds can be updated through the same **gateway-managed Node OTA** flow used by the other node families.
+The firmware registers itself as `NODE_HYBRID`, reports Hybrid capabilities to the gateway, exposes actuator schema/state like a normal relay node, and also exchanges RFID-card configuration with the dashboard. Supported builds can be updated through the same **gateway-managed Node OTA** flow used by the other node families. The current release line uses the working **Arduino_MFRC522v2** library, keeps the MQTT/Home Assistant bridge compatible through the gateway, and tightens heartbeat/liveness behavior for a more stable and responsive control flow.
 
 ## Firmware Changelog
 | Version | Notes |
@@ -15,6 +15,7 @@ The firmware registers itself as `NODE_HYBRID`, reports Hybrid capabilities to t
 | v0.1.2 | Restores the node status RGB LED to enabled when the node is unpaired from the gateway and saves that LED state back to NVS so pairing/status indication is visible again when the node is later re-paired |
 | v0.1.3 | Updated to the `mesh_protocol.h v3.3.1` line with support for 24-character node names and automatic first-boot default naming that appends the last 4 MAC characters for easier node identification without aggressive truncation |
 | v0.2.0 | Introduced `user_config.h` for Hybrid-node board and feature configuration, and documents the current release-line guidance for any future ESP32-C3 Super Mini based Hybrid variants |
+| v0.3.2 | Switched to the working `Arduino_MFRC522v2` RFID library, fixed heartbeat/liveness timing for more stable gateway connectivity and a snappier UI feel, and keeps MQTT/Home Assistant control flows synchronized through the gateway |
 
 ---
 
@@ -26,7 +27,7 @@ The firmware registers itself as `NODE_HYBRID`, reports Hybrid capabilities to t
 | Relay Module | 4-Way 5V 10A active-LOW relay module |
 | Touch Sensor | TTP224 4-Way Capacitive Touch Sensor Module |
 | RFID Reader | RC522 / MFRC522 SPI RFID module |
-| Status LED | WS2812B on GPIO 5 |
+| Status LED | WS2812B on GPIO 22 |
 | Pairing button | GPIO 16 (active-LOW, internal pull-up) |
 
 ### Wiring
@@ -62,7 +63,7 @@ The firmware registers itself as `NODE_HYBRID`, reports Hybrid capabilities to t
 |-------------|-------------------|
 | VCC | 5V |
 | GND | GND |
-| DATA-IN | GPIO 5 |
+| DATA-IN | GPIO 22 |
 
 **RC522 / MFRC522 -> ESP32-DevKitC**
 
@@ -88,13 +89,13 @@ Managed automatically by PlatformIO via `platformio.ini`:
 |---------|---------|
 | Adafruit NeoPixel | ^1.12.3 |
 | ArduinoJson | ^7.4.2 |
-| MFRC522 | ^1.4.12 |
+| Arduino_MFRC522v2 | 2.0.6 |
 
 Framework libraries used directly: `Preferences`, `WiFi`, `SPI`.
 
 ---
 
-## Configuration (`user_config.h`)
+## Configuration (`include/user_config.h`)
 
 The current release line moves user-facing pin maps, board choices, and naming defaults into `user_config.h`. If your checkout predates that refactor, the same symbols may still live near the top of `src/main.cpp`.
 
@@ -102,7 +103,7 @@ Key values to review before flashing:
 
 | Constant | Default | Description |
 |----------|---------|-------------|
-| `NODE_NAME` | `"RFID-Hybrid-Node-1"` | Base display name shown in the dashboard (up to 24 visible chars; fresh unrenamed nodes append the last 4 MAC characters automatically) |
+| `NODE_NAME` | `"RFID-Hybrid-Node"` | Base display name shown in the dashboard (up to 24 visible chars; fresh unrenamed nodes append the last 4 MAC characters automatically) |
 | `RELAY1_PIN` | `26` | Relay-1 control GPIO |
 | `RELAY2_PIN` | `27` | Relay-2 control GPIO |
 | `RELAY3_PIN` | `32` | Relay-3 control GPIO |
@@ -201,6 +202,10 @@ Validated behaviors include:
 - rejection of sensor firmware uploaded to a Hybrid target
 - rejection of actuator firmware uploaded to a Hybrid target
 - successful reconnect after Hybrid-node OTA
+
+When MQTT is enabled on the gateway, this node is also exposed through Home Assistant MQTT discovery. Supported relay controls, supported settings, reboot, and unpair stay synchronized with the gateway dashboard.
+
+Relay label settings are intentionally not exposed to Home Assistant, because Home Assistant already lets users rename switches and buttons locally.
 
 ---
 

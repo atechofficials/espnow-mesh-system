@@ -34,17 +34,20 @@ Current file versions:
 
 | Component | Current Version |
 |----------|-----------------|
-| ESP32-S3 Gateway firmware `main.cpp` | `v2.5.0` |
+| ESP32-S3 Gateway firmware `main.cpp` | `v2.6.4` |
 | ESP32-C3 Gateway Coprocessor firmware `main.cpp` | `v0.3.1` |
-| ESP32 Sensor Node firmware `main.cpp` | `v2.2.0` |
-| ESP32 Actuator Relay Node firmware `main.cpp` | `v1.3.0` |
-| ESP32 Hybrid Relay Node firmware `main.cpp` | `v0.2.0` |
-| `user_config.h` | `v1.1.2` |
-| `mesh_protocol.h` | `v3.3.2` |
+| Gateway `user_config.h` | `v1.1.2` |
 | `coproc_ota_protocol.h` | `v1.1.0` |
-| `index.html` | `v4.1.0` |
-| `app.js` | `v4.7.0` |
+| `index.html` | `v4.2.0` |
+| `app.js` | `v4.8.0` |
 | `style.css` | `v3.7.0` |
+| ESP32 Sensor Node firmware `main.cpp` | `v2.2.0` |
+| ESP32 Sensor Node `user_config.h` | `v1.0.1` |
+| ESP32 Actuator Relay Node firmware `main.cpp` | `v1.3.1` |
+| ESP32 Actuator Relay Node `user_config.h` | `v1.0.1` |
+| ESP32 Hybrid Relay Node firmware `main.cpp` | `v0.3.2` |
+| ESP32 Hybrid Relay Node `user_config.h` | `v1.0.1` |
+| `mesh_protocol.h` | `v3.3.2` |
 
 Current supported node categories:
 - Sensor nodes
@@ -75,6 +78,11 @@ The current Node OTA system has been validated with:
 - graceful node unpair/disconnect before gateway factory reset wipes the local node registry
 - gateway built-in sensor dashboard/settings behavior for disabled, enabled-not-detected, and detected runtime states
 - Node OTA helper AP stability on ESP32-C3 Super Mini coprocessor builds with the board-specific Wi-Fi TX power cap enabled
+- MQTT bridge enable/disable from the gateway dashboard
+- Home Assistant MQTT auto-discovery for the gateway, built-in gateway sensor, sensor nodes, actuator nodes, and hybrid nodes
+- Home Assistant control flow for supported relay, setting, reboot, unpair, and gateway-control entities
+- Celsius-only MQTT temperature publishing for gateway and sensor-node temperature entities with Home Assistant-side unit conversion
+- retained MQTT discovery/state cleanup during gateway factory reset so the gateway and connected nodes disappear cleanly from Home Assistant
 
 ---
 
@@ -87,10 +95,12 @@ espnow-mesh-system/
 |-- esp32-gateway/
 |   |-- README.md
 |   `-- gateway_v1/
-|       |-- user_config.h
-|       |-- src/main.cpp
-|       |-- include/mesh_protocol.h
-|       |-- include/coproc_ota_protocol.h
+|       |-- include/
+|       |   |-- user_config.h
+|       |   |-- mesh_protocol.h
+|       |   `-- coproc_ota_protocol.h
+|       |-- src/
+|       |   `-- main.cpp
 |       |-- hardware/
 |       |   |-- ESP32_Mesh_Gateway_v1A/
 |       |   |-- ESP32_Mesh_Gateway_v1B/
@@ -98,9 +108,9 @@ espnow-mesh-system/
 |       |   |-- ESP32_Mesh_Gateway_v1D/
 |       |   `-- Development_Resources/
 |       |-- coprocessor_esp32c3/
-|       |   |-- user_config.h
-|       |   |-- src/main.cpp
-|       |   |-- include/coproc_ota_protocol.h
+|       |   |-- include/
+|       |   |-- src/
+|       |   |   `-- main.cpp
 |       |   `-- platformio.ini
 |       |-- data/
 |       |   |-- index.html
@@ -115,25 +125,31 @@ espnow-mesh-system/
     |-- sensor_nodes/
     |   |-- README.md
     |   `-- envo_mini_v1/
-    |       |-- user_config.h
-    |       |-- src/main.cpp
-    |       |-- include/mesh_protocol.h
+    |       |-- include/
+    |       |   |-- user_config.h
+    |       |   `-- mesh_protocol.h
+    |       |-- src/
+    |       |   `-- main.cpp
     |       |-- platformio.ini
     |       `-- README.md
     |-- actuator_nodes/
     |   |-- README.md
     |   `-- esp32_relay_node_v1/
-    |       |-- user_config.h
-    |       |-- src/main.cpp
-    |       |-- include/mesh_protocol.h
+    |       |-- include/
+    |       |   |-- user_config.h
+    |       |   `-- mesh_protocol.h
+    |       |-- src/
+    |       |   `-- main.cpp
     |       |-- platformio.ini
     |       `-- README.md
     `-- hybrid_nodes/
         |-- README.md
         `-- esp32_hybrid_relay_node_v1/
-            |-- user_config.h
-            |-- src/main.cpp
-            |-- include/mesh_protocol.h
+            |-- include/
+            |   |-- user_config.h
+            |   `-- mesh_protocol.h
+            |-- src/
+            |   `-- main.cpp
             |-- platformio.ini
             `-- README.md
 |-- docs/
@@ -325,7 +341,7 @@ Useful contribution areas include:
 
 Main file:
 - `esp32-gateway/gateway_v1/src/main.cpp`
-- `esp32-gateway/gateway_v1/user_config.h`
+- `esp32-gateway/gateway_v1/include/user_config.h`
 
 Shared protocols:
 - `esp32-gateway/gateway_v1/include/mesh_protocol.h`
@@ -340,12 +356,15 @@ Things typically handled in the gateway:
 - sensor data handling
 - optional gateway built-in sensor sampling, unit conversion, and settings persistence
 - actuator state caching
+- MQTT broker connection management and Home Assistant MQTT discovery publishing
+- MQTT command routing back into gateway and node control flows
 - WebSocket communication
 - HTTP API endpoints
 - persistence of gateway-side state
 - Node OTA job scheduling, validation, progress reporting, reconnect detection, and persistence of node hardware-config metadata
 - gateway self-OTA and coprocessor self-OTA target selection, validation, UART transfer, and helper reboot/reconnect reporting
 - physical factory reset input handling and LED feedback sequencing
+- retained MQTT cleanup during gateway factory reset
 
 Before changing gateway logic:
 - confirm whether the change belongs in the gateway, helper, or the node
@@ -359,6 +378,11 @@ Before changing gateway logic:
 - retest OTA flows from both normal router mode and Offline Mode whenever network-state logic changes
 - retest the physical factory reset button, hold timing, cancellation behavior, and reset LED sequence whenever input or LED ownership logic changes
 - retest gateway factory reset with at least one paired node and confirm the node returns to unpaired / pairing-ready state instead of acting like the gateway only rebooted temporarily
+- retest MQTT discovery/state cleanup during gateway factory reset and confirm the gateway plus connected nodes disappear from Home Assistant instead of leaving stale retained devices behind
+- keep MQTT/Home Assistant behavior aligned with the current design choices:
+  - gateway and sensor-node temperatures are published in Celsius
+  - temperature-unit settings are not exposed over MQTT discovery
+  - relay label settings are not exposed over MQTT discovery
 - preserve `GWHWCFG:` and `NODEHWCFG:` validation behavior when changing OTA upload parsing or firmware-marker scanning
 - keep UART pin definitions aligned with the actual gateway hardware variant being documented or built; the current gateway release line spans four valid PCB variants (`v1A` to `v1D`) and all helper routing / power assumptions should match the intended board pair
 
@@ -368,7 +392,7 @@ Before changing gateway logic:
 
 Main file:
 - `esp32-gateway/gateway_v1/coprocessor_esp32c3/src/main.cpp`
-- `esp32-gateway/gateway_v1/coprocessor_esp32c3/user_config.h`
+- `esp32-gateway/gateway_v1/coprocessor_esp32c3/include/user_config.h`
 
 Shared protocol:
 - `esp32-gateway/gateway_v1/coprocessor_esp32c3/include/coproc_ota_protocol.h`

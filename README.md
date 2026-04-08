@@ -3,12 +3,14 @@
 A local-first ESP32 smart-home system for **wireless sensing and control**.
 
 This project lets you build a small home mesh using **ESP32-based nodes** and a central **ESP32-S3 gateway**.  
-The gateway connects to your Wi-Fi, hosts a browser-based dashboard, can optionally expose its own built-in **BMP280/BME280 room sensor**, communicates with nearby nodes over **ESP-NOW**, can fall back to its own **Offline Mode AP** when your router is unavailable, and uses a companion **ESP32-C3 coprocessor** to handle **gateway-managed Node OTA updates** and future helper tasks.
+The gateway connects to your Wi-Fi, hosts a browser-based dashboard, can optionally expose its own built-in **BMP280/BME280 room sensor**, communicates with nearby nodes over **ESP-NOW**, can fall back to its own **Offline Mode AP** when your router is unavailable, optionally bridges the system to a local **MQTT broker**, publishes **Home Assistant MQTT auto-discovery**, and uses a companion **ESP32-C3 coprocessor** to handle **gateway-managed Node OTA updates** and future helper tasks.
 
 That means you can:
 
-- monitor room conditions like temperature, humidity, pressure, and light- use the gateway by itself with an optional built-in room sensor before you add wireless nodes
+- monitor room conditions like temperature, humidity, pressure, and light
+- use the gateway by itself with an optional built-in room sensor before you add wireless nodes
 - control actuator devices like relays from a web dashboard
+- mirror supported devices and controls into Home Assistant through MQTT auto-discovery
 - pair nodes without entering Wi-Fi credentials on each node
 - keep everything running on your own local network
 
@@ -38,6 +40,11 @@ Upload compatible sensor-node, actuator-node, or hybrid-node firmware from the g
 
 ### Offline gateway access
 If your router is unavailable, the gateway can now switch to an **ESP32-S3-hosted Offline Mode AP** so the dashboard stays reachable without internet or home-network access. You can also choose manual offline mode during setup and edit the offline AP credentials later from the dashboard.
+
+### MQTT and Home Assistant
+If you enable MQTT in the gateway settings, the gateway publishes **Home Assistant MQTT discovery** for itself, its optional built-in sensor, and supported paired nodes. Relay controls, supported node settings, reboot/unpair actions, and gateway reboot/factory-reset actions can then be used from Home Assistant while staying synchronized with the gateway dashboard.
+
+For temperature reporting, the gateway publishes MQTT temperatures in **degrees Celsius only** for both the built-in sensor and paired sensor nodes. Temperature-unit controls are intentionally **not** exposed to Home Assistant because Home Assistant already handles user-side Celsius/Fahrenheit conversion.
 
 ### Automatic recovery
 If the gateway or node reboots, the system reconnects automatically and restores state where supported.
@@ -78,6 +85,17 @@ The project already supports **sensor nodes**, **actuator nodes**, and **hybrid 
 - RC522 RFID card reader support
 - RFID card actions that apply saved relay scenes
 - Relay control, state sync, and RFID management from the dashboard
+
+### Current MQTT capabilities
+
+- Local MQTT bridge from the gateway to a Mosquitto-compatible broker
+- Home Assistant MQTT auto-discovery for:
+  - the gateway device
+  - optional gateway built-in sensor entities
+  - supported sensor, actuator, and hybrid node entities
+- Relay and supported setting control from Home Assistant with state sync back to the gateway dashboard
+- Gateway reboot and gateway factory reset buttons exposed in Home Assistant
+- Graceful retained-topic cleanup during gateway factory reset so the gateway and its connected nodes disappear from Home Assistant cleanly
 
 ### Current OTA capabilities
 
@@ -122,6 +140,7 @@ ESP32-S3 Gateway
 
 The gateway acts as the bridge between:
 - your browser over Wi-Fi
+- your MQTT broker / Home Assistant over Wi-Fi
 - your ESP32 nodes over ESP-NOW
 
 For **Node OTA**, the gateway temporarily hands firmware delivery to the on-board **ESP32-C3 coprocessor**, which stages the selected node firmware, starts a temporary helper access point, and serves the firmware image to the target node while the main gateway continues managing the mesh and dashboard. Incompatible uploads are blocked up front if the firmware markers do not match the selected node role or hardware configuration. While that helper session is active, the dashboard now blocks conflicting Gateway OTA or coprocessor OTA actions and shows a clear **Coprocessor Busy** state until the helper is free again.
@@ -181,6 +200,8 @@ Shared board-level notes for all four variants:
 
 ## Quick Start
 
+Board and wiring selection for the current release line are handled through the documented **PlatformIO environments** for each firmware target, with guarded defaults and invalid-define correction in each project's `include/user_config.h`.
+
 ### 1. Flash the gateway
 Start with the gateway firmware:
 
@@ -217,6 +238,9 @@ Visit the gateway IP in your browser and start using the system. If the gateway 
 http://192.168.8.1/
 ```
 
+### 6. Optional: enable MQTT
+If you want Home Assistant integration, open the gateway dashboard, go to the MQTT settings section, enter your broker details, and enable the MQTT bridge. The gateway will publish Home Assistant discovery automatically once it connects to the broker.
+
 ---
 
 ## Web Dashboard Features
@@ -224,7 +248,8 @@ http://192.168.8.1/
 The current dashboard supports:
 
 - viewing all paired nodes
-- seeing live sensor readings- viewing the optional gateway built-in sensor separately from paired-node cards
+- seeing live sensor readings
+- viewing the optional gateway built-in sensor separately from paired-node cards
 - controlling relay outputs
 - managing Hybrid-node RFID card actions
 - opening node settings
@@ -233,10 +258,16 @@ The current dashboard supports:
 - updating supported nodes with Node OTA
 - updating the gateway main MCU or the ESP32-C3 coprocessor from the **Gateway Firmware Update** section
 - disconnecting nodes
-- changing gateway settings- editing built-in gateway sensor temperature-unit / altitude settings when that feature is enabled
+- changing gateway settings
+- editing built-in gateway sensor temperature-unit / altitude settings when that feature is enabled
+- configuring the MQTT bridge and Home Assistant discovery publishing
 - editing Offline Mode AP settings and viewing current network mode / access IP
 - launching Wi-Fi setup mode
 - factory reset options, including a physical long-press reset button on the gateway and graceful node unpairing before the gateway wipes its own state
+
+Home Assistant intentionally does **not** expose:
+- relay label settings for actuator or hybrid nodes, because Home Assistant already lets users rename switches and buttons locally
+- node or gateway temperature-unit settings, because MQTT temperatures are published in Celsius and Home Assistant handles conversion itself
 
 The dashboard is served directly by the gateway itself.
 
@@ -355,3 +386,5 @@ Planned future growth may include:
 MIT License
 
 See [`LICENSE`](LICENSE)
+
+---

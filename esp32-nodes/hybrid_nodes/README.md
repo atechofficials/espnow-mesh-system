@@ -10,7 +10,7 @@ Like the other node families, Hybrid nodes use ESP-NOW for normal mesh traffic a
 
 | Node | Capabilities | Description |
 |------|--------------|-------------|
-| `esp32_hybrid_relay_node_v1/` | 4 relays + 4 touch inputs + RC522 RFID | Hybrid relay controller with RFID card actions and dashboard-managed relay scenes (`v0.2.0`) |
+| `esp32_hybrid_relay_node_v1/` | 4 relays + 4 touch inputs + RC522 RFID | Hybrid relay controller with RFID card actions and dashboard-managed relay scenes (`v0.3.2`) |
 
 ---
 
@@ -40,6 +40,12 @@ This keeps the first Hybrid implementation simple while leaving room for future 
 For custom ESP32 hardware, Hybrid-node peripheral wiring should also avoid unnecessary use of ESP32 boot-strapping pins when safer GPIOs are available. The current RC522-based Hybrid reference now uses a non-strapping GPIO for the reader reset line so USB flashing remains reliable with the RFID module connected.
 
 The newer release line also moves user-facing board definitions into `user_config.h`. If a future Hybrid-node board uses the ESP32-C3 Super Mini, keep any WiFi transmit power cap board-gated and apply it only after Wi-Fi startup.
+
+The current Hybrid Relay Node release line also:
+
+- uses the working `Arduino_MFRC522v2` RFID stack
+- tightens heartbeat/liveness handling for more stable gateway connectivity and a snappier control/settings experience
+- exposes supported relay controls, settings, and commands through the gateway's MQTT/Home Assistant bridge while keeping relay label settings dashboard-only
 
 ---
 

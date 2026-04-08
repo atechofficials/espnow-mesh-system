@@ -1,6 +1,6 @@
 # ESP32 Gateway
 
-The gateway is the heart of the ESPNow Mesh System. It runs on an **ESP32-S3** and bridges your Wi-Fi network with the ESP-NOW mesh while serving a live web dashboard, managing paired nodes, optionally exposing a built-in **BMP280/BME280 room sensor**, supporting **web-based gateway OTA firmware updates**, coordinating **gateway-managed Node OTA updates** for sensor, actuator, and hybrid nodes with a companion **ESP32-C3 coprocessor**, and providing an **Offline Mode AP** so the dashboard stays reachable even when your home router is unavailable.
+The gateway is the heart of the ESPNow Mesh System. It runs on an **ESP32-S3** and bridges your Wi-Fi network with the ESP-NOW mesh while serving a live web dashboard, managing paired nodes, optionally exposing a built-in **BMP280/BME280 room sensor**, supporting a local **MQTT bridge** with **Home Assistant MQTT auto-discovery**, supporting **web-based gateway OTA firmware updates**, coordinating **gateway-managed Node OTA updates** for sensor, actuator, and hybrid nodes with a companion **ESP32-C3 coprocessor**, and providing an **Offline Mode AP** so the dashboard stays reachable even when your home router is unavailable.
 
 ---
 
@@ -37,6 +37,9 @@ All four variants include solder pads for an optional built-in **BMP280** or **B
 - Receives sensor data, heartbeats, and actuator states from paired nodes
 - Optionally reads a gateway-side BMP280/BME280 room sensor and exposes it as a dedicated dashboard card instead of a paired node
 - Persists built-in sensor display settings such as temperature unit and altitude reference for sea-level pressure calculation
+- Publishes optional MQTT discovery/state topics for the gateway, built-in sensor, and supported paired nodes
+- Routes supported Home Assistant / MQTT commands back into the same gateway and node control flow used by the dashboard
+- Publishes MQTT temperature data in degrees Celsius for Home Assistant and leaves unit conversion to Home Assistant itself
 - Forwards dashboard commands to the correct node (pair, unpair, reboot, actuator toggle, settings change)
 - Serves the web dashboard from LittleFS over HTTP/WebSocket
 - Stores gateway configuration, web credentials, paired node records, node hardware-config IDs, and relay label assignments in NVS
@@ -87,6 +90,7 @@ The factory-reset LED sequence temporarily overrides the normal gateway LED owne
 | v2.4.0 | Added **Gateway Offline Mode** on the ESP32-S3 with manual setup-portal selection, automatic router-loss fallback, automatic router-return recovery, reconnect-safe dashboard notifications, runtime physical factory reset handling via the configurable `RESET_BTN_PIN`, and a dedicated factory-reset RGB LED sequence |
 | v2.4.1 | Updates gateway factory reset so all currently paired nodes are sent a graceful unpair/disconnect command before the gateway wipes its own state, preventing nodes from treating factory reset like a temporary gateway reboot |
 | v2.5.0 | Added optional gateway built-in BMP280/BME280 sensor support with dedicated dashboard/settings handling, aligned sensor-type selection with build-time hardware configuration, and hardened ESP32-C3 Super Mini helper Wi-Fi behavior for more stable Node OTA AP sessions |
+| v2.6.4 | Added MQTT bridging and Home Assistant MQTT auto-discovery, exposed gateway reboot/factory-reset controls in Home Assistant, kept supported sensor/actuator/hybrid node controls synchronized through MQTT, and clears retained MQTT discovery/state during gateway factory reset so the gateway and child devices disappear cleanly from Home Assistant |
 
 ---
 
@@ -116,16 +120,24 @@ gateway_v1/
 
 ## Current Release Notes
 
-- Gateway firmware version: **v2.5.0**
+- Gateway firmware version: **v2.6.4**
 - Gateway coprocessor firmware version: **v0.3.1**
 - Shared helper transport: `coproc_ota_protocol.h` **v1.1.0**
 - Shared mesh protocol: `mesh_protocol.h` **v3.3.2**
 - User configuration header: `user_config.h` **v1.1.2**
 - Web UI assets:
-  - `app.js` **v4.7.0**
-  - `index.html` **v4.1.0**
+  - `app.js` **v4.8.0**
+  - `index.html` **v4.2.0**
   - `style.css` **v3.7.0**
 - Active partition layout: **`partitions_8mb_ota.csv`**
+
+### MQTT and Home Assistant notes
+
+- MQTT is optional and is only active while the gateway is connected to a router
+- Home Assistant MQTT discovery is published automatically once the gateway connects to the configured broker
+- Gateway reboot and factory reset are exposed as Home Assistant MQTT button entities
+- Relay label settings are intentionally not exposed through Home Assistant, because Home Assistant already supports local renaming of switches and buttons
+- Gateway built-in sensor and paired sensor-node temperatures are published in Celsius only; Home Assistant handles Fahrenheit conversion if the user prefers that display unit
 
 ---
 

@@ -1,6 +1,6 @@
 # ESP32 Relay Node v1
 
-Firmware version: **1.3.0**
+Firmware version: **1.3.1**
 Target board: `esp32dev`
 
 ## Firmware Changelog
@@ -15,6 +15,7 @@ Target board: `esp32dev`
 | v1.2.1 | Restores the node status RGB LED to enabled when the node is unpaired from the gateway and saves that LED state back to NVS so pairing/status indication is visible again when the node is later re-paired |
 | v1.2.2 | Updated to the `mesh_protocol.h v3.3.1` line with support for 24-character node names and automatic first-boot default naming that appends the last 4 MAC characters for easier node identification without aggressive truncation |
 | v1.3.0 | Introduced `user_config.h` for user-tunable actuator-node definitions and keeps any future ESP32-C3 Super Mini WiFi transmit power cap board-gated and applied only after Wi-Fi startup |
+| v1.3.1 | Fixes heartbeat/liveness timing for a more stable gateway link, faster perceived responsiveness, and better behavior with the gateway MQTT/Home Assistant bridge |
 
 ---
 
@@ -24,7 +25,7 @@ Target board: `esp32dev`
 |------|--------|
 | Board | ESP32-DevKitC (ESP-WROOM-32E) |
 | Relay Module | 4-Way 5V 10A Active-Low Relay Module |
-| Status LED | WS2812B on GPIO 5 |
+| Status LED | WS2812B on GPIO 22 |
 | Pairing button | GPIO 16 (active-LOW, external pull-up) |
 | Touch Sensor | TTP224 4-Way Capacitive Touch Sensor Module |
 
@@ -50,7 +51,7 @@ Target board: `esp32dev`
 |-------------|-------------------|
 | VCC | 5V |
 | GND | GND |
-| DATA-IN | GPIO 5 |
+| DATA-IN | GPIO 22 |
 | DATA-OUT | Not connected |
 
 **Capacitive Touch Sensor Module -> ESP32-DevKitC**
@@ -76,7 +77,7 @@ Managed automatically by PlatformIO via `platformio.ini`:
 
 Framework libraries used directly: `Preferences`, `WiFi`, `Wire`.
 
-## Configuration (`user_config.h`)
+## Configuration (`include/user_config.h`)
 
 The current release line moves user-facing pin maps, board choices, and naming defaults into `user_config.h`. If your checkout predates that refactor, the same symbols may still live near the top of `src/main.cpp`.
 
@@ -84,13 +85,13 @@ Key values to review before flashing:
 
 | Constant | Default | Description |
 |----------|---------|-------------|
-| `NODE_NAME` | `"Relay-Node-1"` | Base display name shown in the dashboard (up to 24 visible chars; fresh unrenamed nodes append the last 4 MAC characters automatically) |
+| `NODE_NAME` | `"Relay-Node"` | Base display name shown in the dashboard (up to 24 visible chars; fresh unrenamed nodes append the last 4 MAC characters automatically) |
 | `RELAY1_PIN` | `26` | Relay-1 control GPIO |
 | `RELAY2_PIN` | `27` | Relay-2 control GPIO |
 | `RELAY3_PIN` | `32` | Relay-3 control GPIO |
 | `RELAY4_PIN` | `33` | Relay-4 control GPIO |
 | `PAIR_BTN_PIN` | `16` | Pairing button GPIO (active-LOW) |
-| `LED_PIN` | `5` | WS2812B data GPIO |
+| `LED_PIN` | `22` | WS2812B data GPIO |
 | `TOUCH1_PIN` | `25` | TTP224 capacitive touch sensor 1 |
 | `TOUCH2_PIN` | `4` | TTP224 capacitive touch sensor 2 |
 | `TOUCH3_PIN` | `13` | TTP224 capacitive touch sensor 3 |
@@ -149,6 +150,10 @@ When the gateway starts a Node OTA update for this device:
 Relay-node OTA has now been validated successfully with the current gateway-managed Node OTA workflow.
 
 The gateway now validates both the `ACTUATOR` role marker and the matching `HW_CONFIG_ID` before the helper delivery flow is started.
+
+When MQTT is enabled on the gateway, this node is also exposed through Home Assistant MQTT discovery. Relay states and supported settings stay synchronized between Home Assistant and the gateway dashboard.
+
+Relay label settings are intentionally not exposed to Home Assistant, because Home Assistant already lets users rename switches and buttons locally.
 
 ---
 

@@ -1,11 +1,19 @@
 # Gateway v1 - Build, Flash, and OTA Guide
 
-Firmware version: **2.5.0**  
+Firmware version: **2.6.4**  
 Target board: `esp32-s3-devkitc1-n8r8`
 
 Gateway helper coprocessor: **ESP32-C3 firmware v0.3.1**
 
 ---
+
+## Highlights in v2.6.4
+- Adds an optional **MQTT bridge** from the gateway to a local broker using `PubSubClient`
+- Adds **Home Assistant MQTT auto-discovery** for the gateway, optional gateway built-in sensor, and supported paired sensor/actuator/hybrid nodes
+- Keeps supported controls synchronized between Home Assistant and the gateway dashboard
+- Exposes **Gateway Reboot** and **Gateway Factory Reset** as Home Assistant MQTT buttons
+- Clears retained MQTT discovery/state topics during gateway factory reset so the gateway and its connected nodes disappear cleanly from Home Assistant
+- Keeps MQTT temperature publishing in **degrees Celsius only** and intentionally leaves temperature-unit conversion to Home Assistant
 
 ## Highlights in v2.5.0
 - Adds optional gateway built-in **BMP280/BME280** sensor support on the dedicated gateway PCB header/pads
@@ -54,7 +62,7 @@ Gateway helper coprocessor: **ESP32-C3 firmware v0.3.1**
 - Polishes discovery timing on both the gateway and node side so pairing candidates appear faster and stale entries clear sooner
 - Introduces the `user_config.h` configuration split for cleaner user-tunable firmware definitions
 - Documents the current gateway hardware release line around four valid THT-friendly PCB variants (`v1A` to `v1D`)
-- Keeps the ESP32-C3 helper workflow aligned with the newer `v0.2.0` coprocessor firmware line
+- Keeps the ESP32-C3 helper workflow aligned with the newer `v0.3.1` coprocessor firmware line
 
 ## Highlights in v2.1.4
 - Increased the shared node-name field from 16 bytes to 25 bytes (24 visible characters + NUL) for beacon and registration messages, enabling clearer default node names, MAC-suffixed first-boot node names, and longer user-defined names while remaining well within ESP-NOW payload limits
@@ -137,6 +145,8 @@ The gateway release line now exposes explicit build environments in `platformio.
 When building or uploading from USB, select the environment that matches the actual gateway hardware pair you are using.
 
 The same build-configuration flow can also select the optional gateway built-in sensor type per environment through `GATEWAY_BUILTIN_SENSOR_TYPE` (`NONE`, `BMP280`, or `BME280`).
+
+The newer release line also keeps board and helper selection in PlatformIO build environments while `include/user_config.h` provides guarded defaults and invalid-define correction when no explicit board combination is selected.
 ## Dependencies
 
 Managed automatically by PlatformIO via `platformio.ini`:
@@ -151,6 +161,7 @@ Managed automatically by PlatformIO via `platformio.ini`:
 | Adafruit Unified Sensor | 1.1.15 |
 | Adafruit BMP280 Library | 2.6.8 |
 | Adafruit BME280 Library | 2.3.0 |
+| PubSubClient | 2.8 |
 
 Framework libraries used directly (no extra install needed): `LittleFS`, `Preferences`, `WiFi`, `esp_now`, `Update`.
 
@@ -311,6 +322,29 @@ The current gateway release line can optionally expose a gateway-side **BMP280**
 - humidity is shown only for BME280 builds
 - the Settings page exposes temperature-unit and altitude-reference controls for the built-in sensor
 - if the feature is enabled in firmware but the module is missing or faulty, the dashboard and Settings page remain visible and report **Sensor not detected**
+- the MQTT / Home Assistant bridge publishes gateway built-in temperature in **degrees Celsius only** and does not expose the built-in sensor temperature-unit setting, because Home Assistant already handles unit conversion on its own side
+
+---
+
+## MQTT and Home Assistant Integration
+
+The current gateway release line can optionally bridge the local ESP-NOW system into a Mosquitto-compatible MQTT broker.
+
+When MQTT is enabled from the dashboard:
+
+- the gateway publishes Home Assistant MQTT discovery automatically
+- the gateway itself appears as a Home Assistant device
+- supported paired nodes appear under the same gateway-managed device hierarchy
+- relay controls, supported node settings, reboot actions, and unpair actions can be triggered from Home Assistant
+- gateway reboot and factory reset can also be triggered from Home Assistant
+
+Intentional Home Assistant behavior:
+
+- relay label settings are **not** exposed, because Home Assistant already lets users rename switches/buttons locally
+- temperature-unit settings are **not** exposed for the gateway built-in sensor or paired sensor nodes
+- MQTT temperatures are published in **degrees Celsius** only, and Home Assistant handles conversion to Fahrenheit if the user selects that display unit
+
+During gateway factory reset, the firmware now clears retained MQTT discovery/state topics before rebooting so the gateway and its connected nodes disappear from Home Assistant cleanly instead of leaving stale devices behind.
 
 ---
 
@@ -471,9 +505,9 @@ The gateway then reboots and returns to setup mode.
 
 ---
 
-## Key Configuration (`user_config.h`)
+## Key Configuration (`include/user_config.h`)
 
-The current release line moves board selection, pin definitions, and user-facing firmware defaults into `user_config.h` so `main.cpp` can stay focused on runtime logic. Older checkouts may still keep some of the same constants in `src/main.cpp`.
+The current release line keeps board selection, pin definitions, and user-facing firmware defaults in `include/user_config.h` so `main.cpp` can stay focused on runtime logic. Older checkouts may still keep some of the same constants in `src/main.cpp`.
 
 The newer `v2.4.1` line also keeps the setup-portal defaults, Offline Mode defaults, board-specific reset-button wiring through `RESET_BTN_PIN`, and gateway LED ownership behavior aligned through `user_config.h`.
 

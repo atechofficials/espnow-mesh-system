@@ -5,7 +5,7 @@ Target board: `nologo_esp32c3_super_mini`
 
 Reads temperature and barometric pressure from a **Bosch BMP280**, humidity from a **DHT22**, and ambient light level from a **TEMT6000** phototransistor. Transmits all readings to the gateway over ESP-NOW using the schema-driven sensor protocol, so the node self-describes its sensors to the gateway at pair time and no gateway changes are needed when sensors are added or removed.
 
-This node also supports the **gateway-managed Node OTA** workflow introduced with the ESP32-S3 gateway release line and the ESP32-C3 helper coprocessor. Current releases also report this node's hardware configuration ID so the gateway can reject incompatible sensor firmware before the OTA session starts, remain fully compatible with the Hybrid-capable gateway/dashboard line built on `mesh_protocol.h v3.3.2`, and advertise clearer default names by appending the last 4 MAC characters on fresh, unrenamed nodes.
+This node also supports the **gateway-managed Node OTA** workflow introduced with the ESP32-S3 gateway release line and the ESP32-C3 helper coprocessor. Current releases also report this node's hardware configuration ID so the gateway can reject incompatible sensor firmware before the OTA session starts, remain fully compatible with the Hybrid-capable and MQTT-capable gateway/dashboard line built on `mesh_protocol.h v3.3.2`, and advertise clearer default names by appending the last 4 MAC characters on fresh, unrenamed nodes.
 
 The newer `v2.2.0` release line also moves user-tunable definitions into `user_config.h`, polishes discovery timing for faster pairing feedback, and applies a board-gated `WiFi.setTxPower(WIFI_POWER_8_5dBm)` limit only when this firmware is built for the ESP32-C3 Super Mini path.
 
@@ -86,7 +86,7 @@ Framework libraries used directly: `Preferences`, `WiFi`, `SPI`.
 
 ---
 
-## Configuration (`user_config.h`)
+## Configuration (`include/user_config.h`)
 
 The current release line moves user-tunable board definitions into `user_config.h`. If your checkout predates that refactor, the same symbols may still live near the top of `src/main.cpp`.
 
@@ -169,7 +169,7 @@ The node reports the following sensors. Only sensors that initialise successfull
 
 | ID | Label | Unit | Source |
 |----|-------|------|--------|
-| 0 | Temperature | degC or degF | BMP280 |
+| 0 | Temperature | degC or degF in the dashboard, degC in MQTT/Home Assistant | BMP280 |
 | 1 | Atmospheric Pressure | hPa | BMP280 |
 | 2 | Humidity | % | DHT22 |
 | 3 | Ambient Light | % | TEMT6000 |
@@ -191,10 +191,16 @@ These settings are configurable from the dashboard (Gateway -> Connected Nodes -
 
 Settings are persisted in NVS under the namespace `"nodeconf"` - separate from pairing data, so a factory reset of the gateway does **not** wipe node settings.
 
-- Changing **Temp Unit** affects the value transmitted; conversion happens on the node before transmission. The sensor schema unit label updates automatically.
+- Changing **Temp Unit** affects the value shown through the gateway dashboard flow; for MQTT/Home Assistant the gateway still publishes this node's temperature in Celsius and leaves unit conversion to Home Assistant.
 - Changing **Send Intvl** takes effect immediately - no reboot required.
 - Disabling **Status LED** turns off the WS2812B except during pairing and boot sequences.
 - **Light Sens** shifts the entire brightness curve up or down. Lower values make the sensor less responsive (useful in very bright environments); higher values increase sensitivity in dim conditions.
+
+For the MQTT / Home Assistant bridge:
+
+- the gateway intentionally publishes this node's temperature in **degrees Celsius only**
+- the **Temp Unit** setting is not exposed to Home Assistant
+- Home Assistant handles C/F conversion itself if the user prefers Fahrenheit in the UI
 
 ---
 

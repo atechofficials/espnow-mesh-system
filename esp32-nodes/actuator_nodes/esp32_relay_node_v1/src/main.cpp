@@ -1,6 +1,6 @@
 /**
     * @file [main.cpp]
-    * @brief Main source file for the ESP32 Mesh Actuator Node firmware
+    * @brief Main source file for the ESP32 Mesh Actuator Relay Node firmware
     * @details ESP-NOW based mesh relay node for controlling 4 relays and reporting button state, with WS2812B LED status indicator.
     *        Designed for use with a central gateway node that manages pairing and communication.
     * 
@@ -14,10 +14,10 @@
     *          - Implements a simple touch input handling for toggling relays, with debounce logic.
     * 
     *        Note: This code is intended as a starting point and may require adjustments based on specific hardware configurations and requirements.
-    * @version 1.3.0
+    * @version 1.3.1
     * @author Mrinal (@atechofficials)
  */
-#define FW_VERSION "1.3.0"
+#define FW_VERSION "1.3.1"
 
 #include <Arduino.h>
 #include <WiFi.h>
@@ -122,6 +122,7 @@ static bool sSettingLedEn = true;
 
 // Gateway-loss detection 
 #define GW_LOST_THRESHOLD   3
+#define RELAY_HEARTBEAT_INTERVAL_MS 15000UL
 static volatile uint8_t txFailCount = 0;
 
 struct PendingNodeOta {
@@ -921,6 +922,7 @@ static void processRxQueue() {
                 savePreferences();
                 txFailCount = 0;
                 nodeState = STATE_PAIRED;
+                lastHeartbeat = millis();
                 for (uint8_t i = 0; i < RELAY_COUNT; i++) lastRelayState[i] = 255;
                 sendActuatorState();
                 Serial.printf("[PAIR]  Paired!  id=%d  ch=%d  master=%02X:%02X:%02X:%02X:%02X:%02X\n",
@@ -1167,6 +1169,7 @@ void loop() {
     handleButton();
     handleTouchInputs();
     processRxQueue();
+    now = millis();
 
     if (nodeState == STATE_PAIRED && txFailCount >= GW_LOST_THRESHOLD) {
         nodeState   = STATE_GW_LOST;
@@ -1194,7 +1197,7 @@ void loop() {
     }
 
     if (nodeState == STATE_PAIRED || nodeState == STATE_DISC_PEND) {
-        if (now - lastHeartbeat >= HEARTBEAT_INTERVAL) {
+        if (now - lastHeartbeat >= RELAY_HEARTBEAT_INTERVAL_MS) {
             lastHeartbeat = now;
             sendHeartbeat();
         }

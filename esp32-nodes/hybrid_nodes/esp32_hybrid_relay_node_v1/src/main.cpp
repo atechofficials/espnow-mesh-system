@@ -1,10 +1,10 @@
 /**
     * @file [main.cpp]
     * @brief Main source file for the ESP32 Mesh Hybrid Node firmware
-    * @version 0.2.0
+    * @version 0.3.2
     * @author Mrinal (@atechofficials)
  */
-#define FW_VERSION "0.2.0"
+#define FW_VERSION "0.3.2"
 
 #include <Arduino.h>
 #include <WiFi.h>
@@ -17,10 +17,13 @@
 #include <Update.h>
 #include <SPI.h>
 #define MFRC522_SPICLOCK 1000000u
-#include <MFRC522.h>
+#include <MFRC522DriverPinSimple.h>
+#include <MFRC522DriverSPI.h>
+#include <MFRC522v2.h>
 #include <ArduinoJson.h>
 #include <driver/gpio.h>
 #include <driver/rtc_io.h>
+#include <soc/soc_caps.h>
 #include "mesh_protocol.h"
 #include "user_config.h"
 
@@ -43,7 +46,9 @@ static const uint8_t touchPins[RELAY_COUNT] = {TOUCH1_PIN, TOUCH2_PIN, TOUCH3_PI
 
 static Adafruit_NeoPixel led(LED_COUNT, LED_PIN, NEO_GRB + NEO_KHZ800);
 static Preferences       prefs;
-static MFRC522           rfidReader(RFID_CS_PIN, RFID_RST_PIN);
+static MFRC522DriverPinSimple rfidCsPin(RFID_CS_PIN);
+static MFRC522DriverSPI       rfidDriver{rfidCsPin};
+static MFRC522                rfidReader{rfidDriver};
 
 // LED state
 static uint32_t     ledCurrent    = 0xDEADBEEF;
@@ -132,6 +137,7 @@ static uint8_t rfidReadFailCount = 0;
 
 // Gateway-loss detection 
 #define GW_LOST_THRESHOLD   3
+#define HYBRID_HEARTBEAT_INTERVAL_MS 15000UL
 static volatile uint8_t txFailCount = 0;
 
 struct PendingNodeOta {
@@ -236,9 +242,11 @@ static void initRelayOutputs() {
     for (uint8_t i = 0; i < RELAY_COUNT; i++) {
         const gpio_num_t gpio = (gpio_num_t)relayPins[i];
 
+#if SOC_RTCIO_INPUT_OUTPUT_SUPPORTED
         // Relay pins live on RTC-capable GPIOs on ESP32. Explicitly release any
         // RTC/DAC ownership so they behave as normal digital outputs.
         rtc_gpio_deinit(gpio);
+#endif
         gpio_reset_pin(gpio);
         pinMode(relayPins[i], OUTPUT);
         digitalWrite(relayPins[i], offLevel);
@@ -576,10 +584,12 @@ static void sendRfidConfigData() {
 static bool isSupportedRfidVersion(uint8_t version) {
     switch (version) {
         case 0x88: // FM17522 clone
+        case 0x89: // FM17522E clone
         case 0x90: // v0.0
         case 0x91: // v1.0
         case 0x92: // v2.0
         case 0x12: // counterfeit chip commonly reported by the library
+        case 0xB2: // clone variant seen on some RC522 modules
             return true;
         default:
             return false;
@@ -604,12 +614,12 @@ static bool initRfidReader() {
     digitalWrite(RFID_RST_PIN, HIGH);
     delay(5);
 
-    rfidReader.PCD_Init(RFID_CS_PIN, RFID_RST_PIN);
+    rfidReader.PCD_Init();
     delay(50);
 
     uint8_t version = 0x00;
     for (uint8_t attempt = 0; attempt < 3; attempt++) {
-        version = rfidReader.PCD_ReadRegister(MFRC522::VersionReg);
+        version = static_cast<uint8_t>(rfidReader.PCD_GetVersion());
         if (isSupportedRfidVersion(version)) {
             rfidReaderReady = true;
             break;
@@ -620,14 +630,14 @@ static bool initRfidReader() {
 
     if (rfidReaderReady) {
         rfidReader.PCD_AntennaOn();
-        rfidReader.PCD_SetAntennaGain(MFRC522::RxGain_max);
+        rfidReader.PCD_SetAntennaGain(static_cast<uint8_t>(MFRC522::PCD_RxGain::RxGain_max));
         Serial.printf("[RFID] Reader ready. Version=0x%02X CS=%d RST=%d\n",
                       version,
                       RFID_CS_PIN,
                       (int)RFID_RST_PIN);
     } else {
         Serial.printf("[RFID] Reader probe failed. VersionReg=0x%02X CS=%d RST=%d. "
-                      "Check RC522 power/SPI wiring and confirm the module reset line "
+                      "Check RC522 power/SPI wiring and, if used, confirm the module reset line "
                       "is really connected to GPIO%d.\n",
                       version,
                       RFID_CS_PIN,
@@ -652,7 +662,7 @@ static bool serviceRfidReaderHealth(unsigned long now) {
     if ((now - lastRfidHealthCheckAt) < RFID_HEALTH_CHECK_MS) return true;
 
     lastRfidHealthCheckAt = now;
-    const uint8_t version = rfidReader.PCD_ReadRegister(MFRC522::VersionReg);
+    const uint8_t version = static_cast<uint8_t>(rfidReader.PCD_GetVersion());
     if (!isSupportedRfidVersion(version)) {
         markRfidReaderUnavailable("health check failed", version);
         return false;
@@ -662,7 +672,7 @@ static bool serviceRfidReaderHealth(unsigned long now) {
     // without waiting for a full MCU reboot.
     rfidReader.PCD_StopCrypto1();
     rfidReader.PCD_AntennaOn();
-    rfidReader.PCD_SetAntennaGain(MFRC522::RxGain_max);
+    rfidReader.PCD_SetAntennaGain(static_cast<uint8_t>(MFRC522::PCD_RxGain::RxGain_max));
     return true;
 }
 
@@ -1217,6 +1227,7 @@ static void processRxQueue() {
                 savePreferences();
                 txFailCount = 0;
                 nodeState = STATE_PAIRED;
+                lastHeartbeat = millis();
                 for (uint8_t i = 0; i < RELAY_COUNT; i++) lastRelayState[i] = 255;
                 sendActuatorState();
                 Serial.printf("[PAIR]  Paired!  id=%d  ch=%d  master=%02X:%02X:%02X:%02X:%02X:%02X\n",
@@ -1494,6 +1505,7 @@ void loop() {
     handleTouchInputs();
     pollRfidReader();
     processRxQueue();
+    now = millis();
 
     if (nodeState == STATE_PAIRED && txFailCount >= GW_LOST_THRESHOLD) {
         nodeState   = STATE_GW_LOST;
@@ -1521,7 +1533,7 @@ void loop() {
     }
 
     if (nodeState == STATE_PAIRED || nodeState == STATE_DISC_PEND) {
-        if (now - lastHeartbeat >= HEARTBEAT_INTERVAL) {
+        if (now - lastHeartbeat >= HYBRID_HEARTBEAT_INTERVAL_MS) {
             lastHeartbeat = now;
             sendHeartbeat();
         }
