@@ -1,5 +1,5 @@
 /**
- * ESP32 Mesh Gateway Web Interface Client v4.8.0
+ * ESP32 Mesh Gateway Web Interface Client v4.8.1
  *
  * WS Inbound:  { type:"meta"|"update"|"discovered"|"pair_timeout"|"pair_capacity_full"|"ap_config_ack"|
  *                     "offline_ap_config_ack"|
@@ -949,7 +949,13 @@ function setWs(state) {
 function getGatewayBuiltinSensorStatusLabel() {
   if (!gatewayBuiltinSensor.enabled) return "Disabled in firmware";
   if (!gatewayBuiltinSensor.present) return "Sensor not detected";
-  return gatewayBuiltinSensor.model === "bme280" ? "BME280" : "BMP280";
+  return getGatewayBuiltinSensorModelLabel();
+}
+
+function getGatewayBuiltinSensorModelLabel() {
+  if (gatewayBuiltinSensor.model === "bme280") return "BME280";
+  if (gatewayBuiltinSensor.model === "bmp280") return "BMP280";
+  return "AUTO";
 }
 
 function formatGatewayBuiltinSensorValue(value, digits = 1) {
@@ -984,7 +990,7 @@ function renderGatewayBuiltinSensorCard() {
   }
 
   const present = !!gatewayBuiltinSensor.present;
-  const modelLabel = gatewayBuiltinSensor.model === "bme280" ? "BME280" : "BMP280";
+  const modelLabel = getGatewayBuiltinSensorModelLabel();
   let card = $gwBuiltinSensorGrid.querySelector(".gateway-builtin-sensor-card");
   if (!card) {
     $gwBuiltinSensorGrid.innerHTML = `

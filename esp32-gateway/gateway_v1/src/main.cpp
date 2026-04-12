@@ -1,10 +1,10 @@
 /**
     * @file [main.cpp]
     * @brief Main source file for the ESP32 Mesh Gateway firmware
- * @version 2.6.4
+ * @version 2.6.7
     * @author Mrinal (@atechofficials)
  */
-#define FW_VERSION "2.6.4"
+#define FW_VERSION "2.6.7"
 
 #include <Arduino.h>
 #include <WiFi.h>
@@ -30,13 +30,12 @@
 #include <set>
 #include "user_config.h"
 
-#if GATEWAY_BUILTIN_SENSOR_TYPE != GATEWAY_BUILTIN_SENSOR_NONE
+#if GATEWAY_BUILTIN_SENSOR_ENABLED
     #include <SPI.h>
 #endif
 
-#if GATEWAY_BUILTIN_SENSOR_TYPE == GATEWAY_BUILTIN_SENSOR_BME280
+#if GATEWAY_BUILTIN_SENSOR_ENABLED
     #include <Adafruit_BME280.h>
-#elif GATEWAY_BUILTIN_SENSOR_TYPE == GATEWAY_BUILTIN_SENSOR_BMP280
     #include <Adafruit_BMP280.h>
 #endif
 
@@ -247,7 +246,14 @@ enum GatewayBuiltinSensorAltitudeUnit : uint8_t {
     GATEWAY_SENSOR_ALT_FT,
 };
 
+enum GatewayBuiltinSensorModel : uint8_t {
+    GATEWAY_BUILTIN_SENSOR_MODEL_UNKNOWN = 0,
+    GATEWAY_BUILTIN_SENSOR_MODEL_BMP280,
+    GATEWAY_BUILTIN_SENSOR_MODEL_BME280,
+};
+
 static bool gatewayBuiltinSensorPresent = false;
+static GatewayBuiltinSensorModel gatewayBuiltinSensorModel = GATEWAY_BUILTIN_SENSOR_MODEL_UNKNOWN;
 static float gatewayBuiltinSensorTempC = NAN;
 static float gatewayBuiltinSensorPressureHpa = NAN;
 static float gatewayBuiltinSensorHumidity = NAN;
@@ -300,10 +306,11 @@ struct MqttRemovedNodeSnapshot {
 };
 static MqttRemovedNodeSnapshot mqttRemovedNodes[MESH_MAX_NODES];
 
-#if GATEWAY_BUILTIN_SENSOR_TYPE == GATEWAY_BUILTIN_SENSOR_BME280
-static Adafruit_BME280 gatewayBuiltinBme(BME_CS, BME_MOSI, BME_MISO, BME_SCK);
-#elif GATEWAY_BUILTIN_SENSOR_TYPE == GATEWAY_BUILTIN_SENSOR_BMP280
-static Adafruit_BMP280 gatewayBuiltinBmp(BME_CS, BME_MOSI, BME_MISO, BME_SCK);
+#if GATEWAY_BUILTIN_SENSOR_ENABLED
+static SPIClass gatewayBuiltinSensorSpi(FSPI);
+static bool gatewayBuiltinSensorSpiReady = false;
+static Adafruit_BME280 gatewayBuiltinBme(BME_CS, &gatewayBuiltinSensorSpi);
+static Adafruit_BMP280 gatewayBuiltinBmp(BME_CS, &gatewayBuiltinSensorSpi);
 #endif
 
 __attribute__((used)) static const char kGatewayFirmwareVersionMarker[] = OTA_FW_MARKER FW_VERSION;
@@ -636,17 +643,20 @@ static void mqttMarkBuiltinStateDirty();
 static void mqttMarkMetaDirty();
 
 static bool gatewayBuiltinSensorFeatureEnabled() {
-    return GATEWAY_BUILTIN_SENSOR_TYPE != GATEWAY_BUILTIN_SENSOR_NONE;
+    return GATEWAY_BUILTIN_SENSOR_ENABLED;
 }
 
 static const char* gatewayBuiltinSensorModelString() {
-#if GATEWAY_BUILTIN_SENSOR_TYPE == GATEWAY_BUILTIN_SENSOR_BME280
-    return "bme280";
-#elif GATEWAY_BUILTIN_SENSOR_TYPE == GATEWAY_BUILTIN_SENSOR_BMP280
-    return "bmp280";
-#else
-    return "disabled";
-#endif
+    if (!gatewayBuiltinSensorFeatureEnabled()) return "disabled";
+    switch (gatewayBuiltinSensorModel) {
+        case GATEWAY_BUILTIN_SENSOR_MODEL_BME280: return "bme280";
+        case GATEWAY_BUILTIN_SENSOR_MODEL_BMP280: return "bmp280";
+        default: return "auto";
+    }
+}
+
+static bool gatewayBuiltinSensorSupportsHumidity() {
+    return gatewayBuiltinSensorModel == GATEWAY_BUILTIN_SENSOR_MODEL_BME280;
 }
 
 static const char* gatewayBuiltinSensorTempUnitString() {
@@ -762,27 +772,138 @@ static void saveGatewayBuiltinSensorSettings(GatewayBuiltinSensorTempUnit tempUn
     mqttMarkMetaDirty();
 }
 
+#if GATEWAY_BUILTIN_SENSOR_ENABLED
+static bool gatewayBuiltinSensorEnsureSpiReady() {
+    if (gatewayBuiltinSensorSpiReady) return true;
+
+    pinMode(BME_CS, OUTPUT);
+    digitalWrite(BME_CS, HIGH);
+    gatewayBuiltinSensorSpiReady = gatewayBuiltinSensorSpi.begin(BME_SCK, BME_MISO, BME_MOSI, BME_CS);
+    if (!gatewayBuiltinSensorSpiReady) {
+        Serial.printf("[GW SENS] Failed to start SPI bus for built-in %s (SCK=%d MISO=%d MOSI=%d CS=%d).\n",
+                      gatewayBuiltinSensorModelString(), BME_SCK, BME_MISO, BME_MOSI, BME_CS);
+        return false;
+    }
+    delay(2);
+    return true;
+}
+
+static uint8_t gatewayBuiltinSensorReadSpiReg(uint8_t reg, uint8_t dataMode) {
+    if (!gatewayBuiltinSensorEnsureSpiReady()) return 0xFF;
+
+    gatewayBuiltinSensorSpi.beginTransaction(SPISettings(1000000, MSBFIRST, dataMode));
+    digitalWrite(BME_CS, LOW);
+    gatewayBuiltinSensorSpi.transfer(reg | 0x80);
+    const uint8_t value = gatewayBuiltinSensorSpi.transfer(0x00);
+    digitalWrite(BME_CS, HIGH);
+    gatewayBuiltinSensorSpi.endTransaction();
+    return value;
+}
+
+static const char* gatewayBuiltinSensorChipIdDescription(uint8_t chipId) {
+    switch (chipId) {
+        case 0x60: return "BME280";
+        case 0x58: return "BMP280";
+        case 0x56:
+        case 0x57: return "BMP280-family";
+        case 0x00: return "no SPI response (stuck low)";
+        case 0xFF: return "no SPI response (stuck high)";
+        default:   return "unknown response";
+    }
+}
+
+static GatewayBuiltinSensorModel gatewayBuiltinSensorModelFromChipId(uint8_t chipId) {
+    switch (chipId) {
+        case 0x60: return GATEWAY_BUILTIN_SENSOR_MODEL_BME280;
+        case 0x56:
+        case 0x57:
+        case 0x58: return GATEWAY_BUILTIN_SENSOR_MODEL_BMP280;
+        default:   return GATEWAY_BUILTIN_SENSOR_MODEL_UNKNOWN;
+    }
+}
+
+static void logGatewayBuiltinSensorProbe() {
+    if (!gatewayBuiltinSensorEnsureSpiReady()) return;
+
+    const uint8_t chipIdMode0 = gatewayBuiltinSensorReadSpiReg(0xD0, SPI_MODE0);
+    const uint8_t chipIdMode3 = gatewayBuiltinSensorReadSpiReg(0xD0, SPI_MODE3);
+    Serial.printf("[GW SENS] SPI probe for built-in sensor on SCK=%d MISO=%d MOSI=%d CS=%d -> mode0=0x%02X (%s), mode3=0x%02X (%s)\n",
+                  BME_SCK, BME_MISO, BME_MOSI, BME_CS,
+                  chipIdMode0, gatewayBuiltinSensorChipIdDescription(chipIdMode0),
+                  chipIdMode3, gatewayBuiltinSensorChipIdDescription(chipIdMode3));
+    const GatewayBuiltinSensorModel probeModel =
+        gatewayBuiltinSensorModelFromChipId(chipIdMode0) != GATEWAY_BUILTIN_SENSOR_MODEL_UNKNOWN
+            ? gatewayBuiltinSensorModelFromChipId(chipIdMode0)
+            : gatewayBuiltinSensorModelFromChipId(chipIdMode3);
+    if (probeModel == GATEWAY_BUILTIN_SENSOR_MODEL_BME280) {
+        Serial.println("[GW SENS] Probe suggests the module is replying as BME280.");
+    } else if (probeModel == GATEWAY_BUILTIN_SENSOR_MODEL_BMP280) {
+        Serial.println("[GW SENS] Probe suggests the module is replying as BMP280.");
+    }
+}
+#endif
+
 static bool initGatewayBuiltinSensor() {
-#if GATEWAY_BUILTIN_SENSOR_TYPE == GATEWAY_BUILTIN_SENSOR_BME280
-    gatewayBuiltinSensorPresent = gatewayBuiltinBme.begin();
-#elif GATEWAY_BUILTIN_SENSOR_TYPE == GATEWAY_BUILTIN_SENSOR_BMP280
-    gatewayBuiltinSensorPresent = gatewayBuiltinBmp.begin();
-#else
-    gatewayBuiltinSensorPresent = false;
+    bool spiReady = true;
+#if GATEWAY_BUILTIN_SENSOR_ENABLED
+    spiReady = gatewayBuiltinSensorEnsureSpiReady();
 #endif
 
     if (!gatewayBuiltinSensorFeatureEnabled()) {
         gatewayBuiltinSensorPresent = false;
+        gatewayBuiltinSensorModel = GATEWAY_BUILTIN_SENSOR_MODEL_UNKNOWN;
+        gatewayBuiltinSensorTempC = NAN;
+        gatewayBuiltinSensorPressureHpa = NAN;
+        gatewayBuiltinSensorHumidity = NAN;
         mqttMarkBuiltinDiscoveryDirty();
         mqttMarkBuiltinStateDirty();
         mqttMarkMetaDirty();
         return false;
     }
 
+    gatewayBuiltinSensorPresent = false;
+    gatewayBuiltinSensorModel = GATEWAY_BUILTIN_SENSOR_MODEL_UNKNOWN;
+    gatewayBuiltinSensorTempC = NAN;
+    gatewayBuiltinSensorPressureHpa = NAN;
+    gatewayBuiltinSensorHumidity = NAN;
+
+#if GATEWAY_BUILTIN_SENSOR_ENABLED
+    uint8_t chipIdMode0 = 0xFF;
+    uint8_t chipIdMode3 = 0xFF;
+    if (spiReady) {
+        chipIdMode0 = gatewayBuiltinSensorReadSpiReg(0xD0, SPI_MODE0);
+        chipIdMode3 = gatewayBuiltinSensorReadSpiReg(0xD0, SPI_MODE3);
+        gatewayBuiltinSensorModel =
+            gatewayBuiltinSensorModelFromChipId(chipIdMode0) != GATEWAY_BUILTIN_SENSOR_MODEL_UNKNOWN
+                ? gatewayBuiltinSensorModelFromChipId(chipIdMode0)
+                : gatewayBuiltinSensorModelFromChipId(chipIdMode3);
+
+        switch (gatewayBuiltinSensorModel) {
+            case GATEWAY_BUILTIN_SENSOR_MODEL_BME280:
+                gatewayBuiltinSensorPresent = gatewayBuiltinBme.begin();
+                break;
+            case GATEWAY_BUILTIN_SENSOR_MODEL_BMP280:
+                gatewayBuiltinSensorPresent = gatewayBuiltinBmp.begin();
+                break;
+            default:
+                gatewayBuiltinSensorPresent = false;
+                break;
+        }
+    }
+#endif
+
     if (gatewayBuiltinSensorPresent) {
         Serial.printf("[GW SENS] Built-in %s detected on SPI.\n", gatewayBuiltinSensorModelString());
     } else {
-        Serial.printf("[GW SENS] Built-in %s not detected.\n", gatewayBuiltinSensorModelString());
+        if (gatewayBuiltinSensorModel != GATEWAY_BUILTIN_SENSOR_MODEL_UNKNOWN) {
+            Serial.printf("[GW SENS] Built-in %s probe succeeded, but driver init failed.\n",
+                          gatewayBuiltinSensorModelString());
+        } else {
+            Serial.println("[GW SENS] Built-in BMP280/BME280 sensor not detected.");
+        }
+#if GATEWAY_BUILTIN_SENSOR_ENABLED
+        logGatewayBuiltinSensorProbe();
+#endif
     }
     mqttMarkBuiltinDiscoveryDirty();
     mqttMarkBuiltinStateDirty();
@@ -794,19 +915,23 @@ static bool sampleGatewayBuiltinSensor() {
     if (!gatewayBuiltinSensorFeatureEnabled() || !gatewayBuiltinSensorPresent) return false;
     gatewayBuiltinSensorLastSampleAt = millis();
 
-#if GATEWAY_BUILTIN_SENSOR_TYPE == GATEWAY_BUILTIN_SENSOR_BME280
-    const float tempC = gatewayBuiltinBme.readTemperature();
-    const float pressurePa = gatewayBuiltinBme.readPressure();
-    const float humidity = gatewayBuiltinBme.readHumidity();
-#elif GATEWAY_BUILTIN_SENSOR_TYPE == GATEWAY_BUILTIN_SENSOR_BMP280
-    const float tempC = gatewayBuiltinBmp.readTemperature();
-    const float pressurePa = gatewayBuiltinBmp.readPressure();
-    const float humidity = NAN;
-#else
-    const float tempC = NAN;
-    const float pressurePa = NAN;
-    const float humidity = NAN;
-#endif
+    float tempC = NAN;
+    float pressurePa = NAN;
+    float humidity = NAN;
+    switch (gatewayBuiltinSensorModel) {
+        case GATEWAY_BUILTIN_SENSOR_MODEL_BME280:
+            tempC = gatewayBuiltinBme.readTemperature();
+            pressurePa = gatewayBuiltinBme.readPressure();
+            humidity = gatewayBuiltinBme.readHumidity();
+            break;
+        case GATEWAY_BUILTIN_SENSOR_MODEL_BMP280:
+            tempC = gatewayBuiltinBmp.readTemperature();
+            pressurePa = gatewayBuiltinBmp.readPressure();
+            humidity = NAN;
+            break;
+        default:
+            return false;
+    }
 
     if (!isfinite(tempC) || !isfinite(pressurePa) || pressurePa <= 0.0f) {
         Serial.println("[GW SENS] Built-in sensor read failed.");
@@ -4889,11 +5014,9 @@ static String buildMetaJson() {
         if (isfinite(seaLevelPressure)) {
             doc["gw_builtin_sensor_pressure_hpa"] = seaLevelPressure;
         }
-#if GATEWAY_BUILTIN_SENSOR_TYPE == GATEWAY_BUILTIN_SENSOR_BME280
         if (isfinite(gatewayBuiltinSensorHumidity)) {
             doc["gw_builtin_sensor_humidity"] = gatewayBuiltinSensorHumidity;
         }
-#endif
     }
     doc["credentials_set"] = credentialsSet();
     doc["ota_supported"]   = gatewayOtaSupported();
@@ -5520,7 +5643,7 @@ static void mqttPublishBuiltinDiscovery() {
         mqttBuiltinBaseTopic() + "/humidity/state",
         "humidity",
         "%",
-        strcmp(gatewayBuiltinSensorModelString(), "bme280") == 0);
+        gatewayBuiltinSensorSupportsHumidity());
     mqttBuiltinDiscoveryDirty = false;
     Serial.printf("[MQTT] Built-in sensor discovery refreshed: model=%s present=%s\n",
                   gatewayBuiltinSensorModelString(),
@@ -5548,9 +5671,7 @@ static void mqttPublishBuiltinState() {
         const float pressure = gatewayBuiltinSeaLevelPressureHpa();
         if (isfinite(displayTemp)) doc["temperature"] = displayTemp;
         if (isfinite(pressure)) doc["pressure_hpa"] = pressure;
-#if GATEWAY_BUILTIN_SENSOR_TYPE == GATEWAY_BUILTIN_SENSOR_BME280
         if (isfinite(gatewayBuiltinSensorHumidity)) doc["humidity"] = gatewayBuiltinSensorHumidity;
-#endif
     }
     String payload;
     serializeJson(doc, payload);
@@ -5569,15 +5690,14 @@ static void mqttPublishBuiltinState() {
         if (isfinite(pressure)) {
             mqttPublishRetained(mqttBuiltinBaseTopic() + "/pressure/state", String(pressure, 1));
         }
-#if GATEWAY_BUILTIN_SENSOR_TYPE == GATEWAY_BUILTIN_SENSOR_BME280
         if (isfinite(gatewayBuiltinSensorHumidity)) {
             mqttPublishRetained(mqttBuiltinBaseTopic() + "/humidity/state", String(gatewayBuiltinSensorHumidity, 1));
         } else {
             mqttClearRetained(mqttBuiltinBaseTopic() + "/humidity/state");
         }
-#else
-        mqttClearRetained(mqttBuiltinBaseTopic() + "/humidity/state");
-#endif
+        if (!gatewayBuiltinSensorSupportsHumidity()) {
+            mqttClearRetained(mqttBuiltinBaseTopic() + "/humidity/state");
+        }
     }
 
     mqttBuiltinStateDirty = false;

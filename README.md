@@ -3,7 +3,7 @@
 A local-first ESP32 smart-home system for **wireless sensing and control**.
 
 This project lets you build a small home mesh using **ESP32-based nodes** and a central **ESP32-S3 gateway**.  
-The gateway connects to your Wi-Fi, hosts a browser-based dashboard, can optionally expose its own built-in **BMP280/BME280 room sensor**, communicates with nearby nodes over **ESP-NOW**, can fall back to its own **Offline Mode AP** when your router is unavailable, optionally bridges the system to a local **MQTT broker**, publishes **Home Assistant MQTT auto-discovery**, and uses a companion **ESP32-C3 coprocessor** to handle **gateway-managed Node OTA updates** and future helper tasks.
+The gateway connects to your Wi-Fi, hosts a browser-based dashboard, can optionally expose its own built-in **SPI room sensor with runtime BMP280/BME280 auto-detection**, communicates with nearby nodes over **ESP-NOW**, can fall back to its own **Offline Mode AP** when your router is unavailable, optionally bridges the system to a local **MQTT broker**, publishes **Home Assistant MQTT auto-discovery**, and uses a companion **ESP32-C3 coprocessor** to handle **gateway-managed Node OTA updates** and future helper tasks.
 
 That means you can:
 
@@ -173,7 +173,7 @@ The current gateway hardware release line now consists of four single-layer, thi
 | `ESP32_Mesh_Gateway_v1D` | Waveshare ESP32-S3-DevKit-C-N8R8 | ESP32-C3 Super Mini |
 
 Shared board-level notes for all four variants:
-- All four variants provide solder pads for an optional built-in **BMP280** or **BME280** gateway room sensor module
+- All four variants provide solder pads for an optional built-in **BMP280** or **BME280** gateway room sensor module, and the gateway auto-detects which one is attached at boot
 - All four variants are intentionally kept on a single copper layer with thick traces for easier home fabrication
 - The earlier ESP32-S3 Super Mini based gateway carrier should now be considered deprecated because that board's 4 MB flash is not suitable for the current gateway firmware line, which expects an 8 MB class ESP32-S3 target
 

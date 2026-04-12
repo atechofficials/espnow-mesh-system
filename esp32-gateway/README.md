@@ -1,6 +1,6 @@
 # ESP32 Gateway
 
-The gateway is the heart of the ESPNow Mesh System. It runs on an **ESP32-S3** and bridges your Wi-Fi network with the ESP-NOW mesh while serving a live web dashboard, managing paired nodes, optionally exposing a built-in **BMP280/BME280 room sensor**, supporting a local **MQTT bridge** with **Home Assistant MQTT auto-discovery**, supporting **web-based gateway OTA firmware updates**, coordinating **gateway-managed Node OTA updates** for sensor, actuator, and hybrid nodes with a companion **ESP32-C3 coprocessor**, and providing an **Offline Mode AP** so the dashboard stays reachable even when your home router is unavailable.
+The gateway is the heart of the ESPNow Mesh System. It runs on an **ESP32-S3** and bridges your Wi-Fi network with the ESP-NOW mesh while serving a live web dashboard, managing paired nodes, optionally exposing a built-in **SPI room sensor with runtime BMP280/BME280 auto-detection**, supporting a local **MQTT bridge** with **Home Assistant MQTT auto-discovery**, supporting **web-based gateway OTA firmware updates**, coordinating **gateway-managed Node OTA updates** for sensor, actuator, and hybrid nodes with a companion **ESP32-C3 coprocessor**, and providing an **Offline Mode AP** so the dashboard stays reachable even when your home router is unavailable.
 
 ---
 
@@ -24,7 +24,7 @@ The current gateway hardware release line now tracks four single-layer, thick-tr
 | `ESP32_Mesh_Gateway_v1C` | Seeed Studio XIAO ESP32-S3 | DFRobot Beetle ESP32-C3 |
 | `ESP32_Mesh_Gateway_v1D` | Waveshare ESP32-S3-DevKit-C-N8R8 | ESP32-C3 Super Mini |
 
-All four variants include solder pads for an optional built-in **BMP280** or **BME280** gateway-side room sensor. The older ESP32-S3 Super Mini based carrier should now be treated as deprecated because the current gateway firmware line expects an 8 MB class ESP32-S3 target.
+All four variants include solder pads for an optional built-in **BMP280** or **BME280** gateway-side room sensor, and the gateway now auto-detects the attached sensor model at runtime. The older ESP32-S3 Super Mini based carrier should now be treated as deprecated because the current gateway firmware line expects an 8 MB class ESP32-S3 target.
 
 ---
 
@@ -35,7 +35,7 @@ All four variants include solder pads for an optional built-in **BMP280** or **B
 - Automatically falls back to the Offline Mode AP when the router Wi-Fi link is lost and returns to router mode when the saved router SSID is visible again
 - Accepts ESP-NOW registrations from nodes and assigns them IDs
 - Receives sensor data, heartbeats, and actuator states from paired nodes
-- Optionally reads a gateway-side BMP280/BME280 room sensor and exposes it as a dedicated dashboard card instead of a paired node
+- Optionally probes a gateway-side BMP280/BME280 room sensor over SPI, logs clearer detection diagnostics, auto-detects the sensor model at runtime, and exposes it as a dedicated dashboard card instead of a paired node
 - Persists built-in sensor display settings such as temperature unit and altitude reference for sea-level pressure calculation
 - Publishes optional MQTT discovery/state topics for the gateway, built-in sensor, and supported paired nodes
 - Routes supported Home Assistant / MQTT commands back into the same gateway and node control flow used by the dashboard
@@ -89,8 +89,9 @@ The factory-reset LED sequence temporarily overrides the normal gateway LED owne
 | v2.3.1 | Hardened OTA coordination so Node OTA, Gateway OTA, and coprocessor OTA cannot fight over the ESP32-C3 helper, surfaced the shared **Coprocessor Busy** feedback across both gateway MCU targets, fixed a Node OTA helper-target regression, and auto-clears stale OTA panel state after backend cleanup |
 | v2.4.0 | Added **Gateway Offline Mode** on the ESP32-S3 with manual setup-portal selection, automatic router-loss fallback, automatic router-return recovery, reconnect-safe dashboard notifications, runtime physical factory reset handling via the configurable `RESET_BTN_PIN`, and a dedicated factory-reset RGB LED sequence |
 | v2.4.1 | Updates gateway factory reset so all currently paired nodes are sent a graceful unpair/disconnect command before the gateway wipes its own state, preventing nodes from treating factory reset like a temporary gateway reboot |
-| v2.5.0 | Added optional gateway built-in BMP280/BME280 sensor support with dedicated dashboard/settings handling, aligned sensor-type selection with build-time hardware configuration, and hardened ESP32-C3 Super Mini helper Wi-Fi behavior for more stable Node OTA AP sessions |
+| v2.5.0 | Added optional gateway built-in BMP280/BME280 sensor support with dedicated dashboard/settings handling, and hardened ESP32-C3 Super Mini helper Wi-Fi behavior for more stable Node OTA AP sessions |
 | v2.6.4 | Added MQTT bridging and Home Assistant MQTT auto-discovery, exposed gateway reboot/factory-reset controls in Home Assistant, kept supported sensor/actuator/hybrid node controls synchronized through MQTT, and clears retained MQTT discovery/state during gateway factory reset so the gateway and child devices disappear cleanly from Home Assistant |
+| v2.6.7 | Improved built-in sensor probe and diagnosis logging, auto-detects whether the connected SPI module is BMP280 or BME280 at runtime, and removes the old manual built-in sensor type selection logic from the active gateway configuration path |
 
 ---
 
@@ -120,13 +121,13 @@ gateway_v1/
 
 ## Current Release Notes
 
-- Gateway firmware version: **v2.6.4**
+- Gateway firmware version: **v2.6.7**
 - Gateway coprocessor firmware version: **v0.3.1**
 - Shared helper transport: `coproc_ota_protocol.h` **v1.1.0**
 - Shared mesh protocol: `mesh_protocol.h` **v3.3.2**
-- User configuration header: `user_config.h` **v1.1.2**
+- User configuration header: `user_config.h` **v1.1.3**
 - Web UI assets:
-  - `app.js` **v4.8.0**
+  - `app.js` **v4.8.1**
   - `index.html` **v4.2.0**
   - `style.css` **v3.7.0**
 - Active partition layout: **`partitions_8mb_ota.csv`**

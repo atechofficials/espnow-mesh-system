@@ -1,11 +1,16 @@
 # Gateway v1 - Build, Flash, and OTA Guide
 
-Firmware version: **2.6.4**  
+Firmware version: **2.6.7**  
 Target board: `esp32-s3-devkitc1-n8r8`
 
 Gateway helper coprocessor: **ESP32-C3 firmware v0.3.1**
 
 ---
+
+## Highlights in v2.6.7
+- Adds clearer built-in sensor probe and diagnosis logging in the gateway serial output
+- Auto-detects whether the connected built-in SPI sensor is **BMP280** or **BME280** at runtime and shows data accordingly
+- Removes the old manual built-in sensor type selection logic and keeps only a simple built-in sensor enable flag
 
 ## Highlights in v2.6.4
 - Adds an optional **MQTT bridge** from the gateway to a local broker using `PubSubClient`
@@ -19,7 +24,7 @@ Gateway helper coprocessor: **ESP32-C3 firmware v0.3.1**
 - Adds optional gateway built-in **BMP280/BME280** sensor support on the dedicated gateway PCB header/pads
 - Adds a dedicated **Gateway Built-in Sensor** dashboard card plus Settings-page controls for temperature unit and altitude reference
 - Keeps the built-in sensor separate from paired-node management and shows a clear Sensor not detected state when the feature is enabled but the hardware is missing or faulty
-- Aligns built-in sensor selection with build configuration using `GATEWAY_BUILTIN_SENSOR_TYPE`
+- Keeps the optional built-in sensor feature board-gated while moving BMP280/BME280 model selection to runtime auto-detection in the newer release line
 - Hardens **ESP32-C3 Super Mini** helper AP behavior for Node OTA by applying the documented **8.5 dBm** Wi-Fi TX power cap after Wi-Fi startup and preserving helper-side Wi-Fi stability safeguards
 - Refines gateway-side Node OTA status wording so accepted OTA requests report that the gateway is waiting for the node to connect to the helper AP
 
@@ -144,7 +149,7 @@ The gateway release line now exposes explicit build environments in `platformio.
 
 When building or uploading from USB, select the environment that matches the actual gateway hardware pair you are using.
 
-The same build-configuration flow can also select the optional gateway built-in sensor type per environment through `GATEWAY_BUILTIN_SENSOR_TYPE` (`NONE`, `BMP280`, or `BME280`).
+The current release line keeps the optional gateway built-in sensor feature behind `GATEWAY_BUILTIN_SENSOR_ENABLED`, and the firmware auto-detects whether the attached SPI module is BMP280 or BME280 at runtime.
 
 The newer release line also keeps board and helper selection in PlatformIO build environments while `include/user_config.h` provides guarded defaults and invalid-define correction when no explicit board combination is selected.
 ## Dependencies
@@ -311,15 +316,16 @@ The current gateway release line can optionally expose a gateway-side **BMP280**
 
 ### Configuration
 
-- the sensor type is selected at build time with `GATEWAY_BUILTIN_SENSOR_TYPE`
-- valid options are `NONE`, `BMP280`, and `BME280`
-- the gateway reuses the board-specific SPI pin mapping defined in `user_config.h`
+- the built-in sensor feature is enabled or disabled with `GATEWAY_BUILTIN_SENSOR_ENABLED`
+- when enabled, the gateway probes the attached SPI module at boot and auto-detects whether it is a BMP280 or BME280
+- the gateway reuses the board-specific SPI pin mapping defined in `user_config.h` and prints clearer serial probe diagnostics when detection succeeds or fails
 
 ### Dashboard and Settings behavior
 
 - the dashboard shows a dedicated **Gateway Built-in Sensor** card instead of treating the sensor like a paired node
-- temperature and sea-level-corrected pressure are shown for both BMP280 and BME280 builds
-- humidity is shown only for BME280 builds
+- temperature and sea-level-corrected pressure are shown for both detected BMP280 and BME280 modules
+- the built-in sensor status badge reflects the detected model (`BMP280` or `BME280`)
+- humidity is shown only when the detected module is BME280
 - the Settings page exposes temperature-unit and altitude-reference controls for the built-in sensor
 - if the feature is enabled in firmware but the module is missing or faulty, the dashboard and Settings page remain visible and report **Sensor not detected**
 - the MQTT / Home Assistant bridge publishes gateway built-in temperature in **degrees Celsius only** and does not expose the built-in sensor temperature-unit setting, because Home Assistant already handles unit conversion on its own side

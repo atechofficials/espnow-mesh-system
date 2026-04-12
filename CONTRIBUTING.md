@@ -34,12 +34,12 @@ Current file versions:
 
 | Component | Current Version |
 |----------|-----------------|
-| ESP32-S3 Gateway firmware `main.cpp` | `v2.6.4` |
+| ESP32-S3 Gateway firmware `main.cpp` | `v2.6.7` |
 | ESP32-C3 Gateway Coprocessor firmware `main.cpp` | `v0.3.1` |
-| Gateway `user_config.h` | `v1.1.2` |
+| Gateway `user_config.h` | `v1.1.3` |
 | `coproc_ota_protocol.h` | `v1.1.0` |
 | `index.html` | `v4.2.0` |
-| `app.js` | `v4.8.0` |
+| `app.js` | `v4.8.1` |
 | `style.css` | `v3.7.0` |
 | ESP32 Sensor Node firmware `main.cpp` | `v2.2.0` |
 | ESP32 Sensor Node `user_config.h` | `v1.0.1` |
@@ -76,7 +76,7 @@ The current Node OTA system has been validated with:
 - automatic recovery from the ESP32-S3 Offline Mode AP back to the saved router connection
 - runtime physical factory reset from the dedicated gateway reset button
 - graceful node unpair/disconnect before gateway factory reset wipes the local node registry
-- gateway built-in sensor dashboard/settings behavior for disabled, enabled-not-detected, and detected runtime states
+- gateway built-in sensor dashboard/settings behavior for disabled, enabled-not-detected, BMP280-detected, and BME280-detected runtime states, including probe and diagnosis logging
 - Node OTA helper AP stability on ESP32-C3 Super Mini coprocessor builds with the board-specific Wi-Fi TX power cap enabled
 - MQTT bridge enable/disable from the gateway dashboard
 - Home Assistant MQTT auto-discovery for the gateway, built-in gateway sensor, sensor nodes, actuator nodes, and hybrid nodes
@@ -354,7 +354,7 @@ Things typically handled in the gateway:
 - node registration and re-registration
 - settings routing
 - sensor data handling
-- optional gateway built-in sensor sampling, unit conversion, and settings persistence
+- optional gateway built-in sensor sampling, runtime BMP280/BME280 auto-detection, diagnosis logging, unit conversion, and settings persistence
 - actuator state caching
 - MQTT broker connection management and Home Assistant MQTT discovery publishing
 - MQTT command routing back into gateway and node control flows
@@ -366,11 +366,13 @@ Things typically handled in the gateway:
 - physical factory reset input handling and LED feedback sequencing
 - retained MQTT cleanup during gateway factory reset
 
+For the current release line, keep the built-in gateway sensor feature behind `GATEWAY_BUILTIN_SENSOR_ENABLED` only. The gateway now auto-detects BMP280 vs BME280 at runtime, so do not reintroduce a manual built-in sensor type selector.
+
 Before changing gateway logic:
 - confirm whether the change belongs in the gateway, helper, or the node
 - keep settings and sensor handling schema-driven
 - do not hardcode node-specific behavior unless it is truly gateway-specific
-- retest the built-in gateway sensor feature in the relevant compile-time modes (`NONE` / `BMP280` / `BME280`) when changing gateway sensor sampling, metadata, or settings persistence
+- retest the built-in gateway sensor feature in disabled/enabled modes, and verify runtime auto-detection for both BMP280 and BME280 when changing gateway sensor sampling, metadata, diagnosis logging, or settings persistence
 - retest online -> offline -> online router transition behavior when changing Wi-Fi reconnect logic, scan timing, access-point behavior, or saved-credential handling
 - retest dashboard reachability at both the router IP and `http://192.168.8.1/` when touching Offline Mode logic
 - retest end-to-end Node OTA when changing OTA job timing, status handling, or reconnect logic
